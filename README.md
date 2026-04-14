@@ -1,96 +1,133 @@
 # pool-pepepow
 
-## Project Overview
+PEPEPOW community pool skeleton for a single low-resource ARM64 Ubuntu host.
 
-`pool-pepepow` is a PEPEPOW community pool repository. It is designed as a single-coin-first, ARM64-friendly, low-resource-oriented monorepo that remains easy for human contributors and AI agents to understand and modify.
+## Current Scope
 
-## Goals
+This repository currently contains:
 
-- Build a stable PEPEPOW-only community pool foundation.
-- Keep the initial system operable on a single low-resource host.
-- Separate pool, API, frontend, and ops concerns to reduce coupling.
-- Favor clear structure and incremental validation over premature feature depth.
+- a lightweight public API service
+- a static frontend that reads the API only
+- a minimal `pool-core` runtime snapshot producer
+- a daemon-independent Stratum ingress service with synthetic Stratum v1 job broadcast
+- a local JSONL share ingest and accounting pipeline
+- bounded JSONL rotation/retention plus snapshot-first replay
+- systemd/nginx/env deployment examples
+- fallback mock snapshot data
 
-## Initial Scope
+This round still does not implement:
 
-- Single coin: PEPEPOW only.
-- Algorithm target: `hoohash-pepew` / `hoohashv110-pepew`.
-- Single-machine deployment for the MVP phase.
-- Runtime planning around `PEPEPOWd`, Redis, pool core, stats/API, frontend, nginx, and systemd.
+- real share validation against daemon templates
+- real block template retrieval
+- candidate block handling or `submitblock`
+- payout automation
+- Redis-backed runtime accounting
 
-## Non-Goals
+## Services
 
-- Multi-coin abstractions in the initial phase.
-- Heavy framework adoption just to make the repository look complete.
-- Payout automation, account systems, or misleading placeholder product features.
-- Public exposure of internal runtime dependencies.
+- `apps/api`
+  - Flask + Waitress
+  - reads runtime snapshot first, fallback snapshot second
+- `apps/frontend/site`
+  - static HTML/CSS/JS
+  - consumes public API only
+- `apps/pool-core`
+  - read-only daemon adapter
+  - daemon-independent Stratum ingress
+  - synthetic/fake `mining.set_difficulty` and `mining.notify`
+  - writes public runtime snapshot JSON
+  - writes additive activity snapshot JSON
+  - merges local share/activity accounting into the snapshot
 
-## Target Environment
+## Public And Private Boundaries
 
-- Oracle Cloud
-- Ubuntu
-- ARM64 / aarch64
-- systemd-managed services
-- Initial host profile: 1 vCPU, 6 GB RAM
+Public:
 
-## Planned Runtime Components
+- nginx website
+- nginx API
+- future stratum endpoint
 
-- `PEPEPOWd` for chain and wallet operations
-- Redis for internal pool/state coordination
-- pool core for share handling and mining workflow
-- stats/API service for controlled data access
-- frontend for public pool views
-- nginx for reverse proxy and edge routing
-- systemd for service supervision
+Private only:
 
-Constraints:
+- PEPEPOWd RPC
+- Redis
+- payout tooling
+- admin automation
 
-- daemon RPC must not be directly exposed to the public network
-- Redis must not be directly exposed to the public network
-- frontend must not connect directly to daemon RPC
+## Local Start
 
-## Repository Structure
+API:
 
-```text
-pool-pepepow/
-├─ README.md
-├─ .gitignore
-├─ docs/
-│  ├─ requirements.md
-│  ├─ architecture.md
-│  ├─ deployment-plan.md
-│  ├─ decisions/
-│  └─ runbooks/
-├─ apps/
-│  ├─ pool-core/
-│  ├─ api/
-│  └─ frontend/
-├─ ops/
-│  ├─ systemd/
-│  ├─ nginx/
-│  ├─ scripts/
-│  └─ env/
-├─ config/
-│  ├─ examples/
-│  └─ coins/
-└─ tests/
+```bash
+cd /home/ubuntu/pool-pepepow/apps/api
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+python app.py
 ```
 
-## Development Principles
+Producer once:
 
-- Stability first, then simplicity, maintainability, extensibility, and cosmetic features.
-- Make small changes and validate incrementally.
-- Keep repository structure AI-agent-friendly and easy to reason about.
-- Avoid direct frontend-to-daemon coupling.
-- Keep stats, API, frontend, and ops boundaries as loose as practical.
+```bash
+cd /home/ubuntu/pool-pepepow/apps/pool-core
+python3 producer.py --once
+```
 
-## MVP Acceptance Targets
+Frontend:
 
-- Repository structure supports incremental implementation without major reorganization.
-- Core runtime boundaries are documented clearly enough to avoid unsafe direct exposure.
-- Deployment assumptions fit a single ARM64 Ubuntu host with constrained resources.
-- Future implementation work can start without introducing premature multi-coin complexity.
+```bash
+cd /home/ubuntu/pool-pepepow/apps/frontend/site
+python3 -m http.server 3000
+```
 
-## Next Step
+## Runtime Snapshot Flow
 
-Confirm the first implementation slice: pool core candidate approach, minimal API/stats stack, and the deployment path for an ARM64 single-host MVP.
+1. `PEPEPOWd` exposes read-only RPC on localhost/private network only
+2. `apps/pool-core/producer.py` reads low-cost RPC data and writes a snapshot
+3. `apps/pool-core` optionally reads a local JSONL share log for miner activity
+4. `apps/api` serves the runtime snapshot
+5. if runtime snapshot is missing, API falls back to repository mock data
+6. frontend reads only `GET /api/*`
+
+Current Stratum job flow is synthetic/fake work for protocol compatibility only.
+It is non-validated, not blockchain verified, and does not use real templates yet.
+
+## RPC Enablement
+
+Daemon RPC must be explicitly configured in `~/.PEPEPOWcore/PEPEPOW.conf`.
+After editing the file, stop `PEPEPOWd` and start it again. Do not rely on
+reload behavior.
+
+The current live host uses `rpcport=8834`; keep repo env files aligned with the
+working daemon configuration.
+
+`8834` is the daemon RPC port and should stay bound to `127.0.0.1` only.
+`8833` is the P2P network port and is not used by the pool API or producer.
+
+## Reindex-Safe Validation
+
+While the daemon is running with `-reindex` or is otherwise unsynced, this round
+accepts validation of:
+
+- RPC connectivity and authentication
+- `producer.py --once`
+- runtime snapshot generation
+- API runtime-vs-fallback behavior
+- stale/degraded metadata
+- local share/activity accounting
+
+This round does not treat reindex-time height, difficulty, or latest block data
+as final live acceptance.
+
+## Verification
+
+```bash
+cd /home/ubuntu/pool-pepepow
+python3 -m unittest discover tests
+```
+
+See:
+
+- [docs/local-development.md](/home/ubuntu/pool-pepepow/docs/local-development.md)
+- [docs/oracle-ubuntu-deployment.md](/home/ubuntu/pool-pepepow/docs/oracle-ubuntu-deployment.md)
+- [docs/runbooks/snapshot-pipeline.md](/home/ubuntu/pool-pepepow/docs/runbooks/snapshot-pipeline.md)

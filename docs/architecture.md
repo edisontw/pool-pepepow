@@ -2,7 +2,8 @@
 
 ## Overview
 
-This document defines the target architecture for a lightweight PEPEPOW community mining pool designed for:
+This document defines the target architecture for a lightweight PEPEPOW
+community mining pool designed for:
 
 - PEPEPOW only
 - Oracle Cloud small instance deployment
@@ -19,75 +20,72 @@ The initial target environment is:
 - systemd
 - single-host deployment
 
-This project is intended to prioritize:
+This project prioritizes:
 
 1. stability
 2. simplicity
 3. maintainability
 4. low resource consumption
-5. clean visual presentation
+5. clean public presentation
 
 ---
 
 ## Product Positioning
 
-The pool is initially positioned as a:
+The pool is currently positioned as a:
 
 - community pool
 - learning platform
 - testing-capable public mining endpoint
 
-It is **not** initially intended to be:
+It is not currently intended to be:
 
 - a large-scale commercial mining pool
 - a multi-coin switching platform
-- a profit-switching pool
 - an exchange-integrated payout system
 - a complex user-account platform
 
-The first objective is to build a **reliable single-coin PEPEPOW pool** that can be operated safely on a small ARM server and improved incrementally.
+The immediate objective is a reliable single-coin PEPEPOW stack with real miner
+ingress, lightweight activity accounting, and a public API/frontend that do not
+depend on a healthy daemon for share ingest.
 
 ---
 
 ## Architecture Principles
 
 ### 1. Single-Coin First
-The system should be designed specifically for PEPEPOW in the initial phase.
 
-- single coin
-- single algorithm family
-- single deployment target
-- single operational context
-
-Avoid early abstraction for multi-coin support.
+The system is designed specifically for PEPEPOW in the initial phase.
 
 ### 2. Low Coupling
-Separate the following concerns as much as possible:
+
+Separate these concerns as much as possible:
 
 - blockchain daemon access
-- pool core logic
+- Stratum ingress and share ingest
+- activity accounting
 - stats aggregation
 - frontend rendering
 - ops / deployment / monitoring
 
 ### 3. Cache Before Query
+
 The frontend should not directly depend on daemon RPC.
 
-- pool/network stats should be aggregated
-- repeated dashboard requests should hit cache or precomputed summaries
-- expensive blockchain or wallet calls should be minimized
-
 ### 4. Small-Step Iteration
-The architecture should allow AI agents to modify one area at a time without destabilizing the whole system.
+
+The architecture should allow one subsystem at a time to change without
+destabilizing the rest of the stack.
 
 ### 5. Low-Resource Operation
-Every component must be chosen with 1 core / 6 GB RAM in mind.
+
+Every component must fit a 1 core / 6 GB RAM host.
 
 ---
 
 ## High-Level System Layout
 
-The system should be separated into the following logical layers:
+The system is separated into these logical layers:
 
 1. Blockchain / Daemon Layer
 2. Pool Core Layer
@@ -100,105 +98,130 @@ The system should be separated into the following logical layers:
 ## 1. Blockchain / Daemon Layer
 
 ### Purpose
+
 Provides direct interaction with the PEPEPOW blockchain.
 
 ### Main Responsibilities
+
 - run `PEPEPOWd`
 - expose local RPC
-- provide block templates
-- accept submitted blocks
-- provide wallet and payout-related functionality
-- expose network state data to internal services
+- provide chain state for runtime snapshots
+- provide future block templates
+- provide future block submission path
+- provide future wallet and payout functionality
 
 ### Requirements
+
 - daemon RPC must remain internal
 - wallet access must not be directly exposed publicly
 - configuration must be minimal and locked down
 - this layer must be isolated from public website traffic
 
 ### Notes
-The daemon is one of the most sensitive and resource-critical services in the system.  
-No UI or external API should directly depend on raw daemon calls.
+
+The daemon is sensitive and resource-critical. No UI or public API path should
+directly depend on raw daemon calls.
 
 ---
 
 ## 2. Pool Core Layer
 
 ### Purpose
-Implements mining pool behavior.
 
-### Main Responsibilities
-- accept miner connections via stratum
+Implements pool-side mining behavior.
+
+### Current Responsibilities
+
+- accept miner connections via Stratum
+- accept `mining.subscribe`
+- accept `mining.authorize`
+- accept `mining.submit`
+- append submitted shares to JSONL
+- maintain lightweight in-memory wallet/worker accounting
+- write an additive activity snapshot
+
+### Future Responsibilities
+
 - validate shares
-- manage worker accounting
+- manage difficulty and work distribution
 - build and submit candidate blocks
-- manage pool rounds
-- track block states
-- maintain payout accounting inputs
+- manage rounds and block states
+- provide payout accounting inputs
 
-### Initial Scope
+### Current Scope
+
 - PEPEPOW only
 - hoohash-pepew / hoohashv110-pepew only
-- one payout scheme only, preferably PPLNS
 - wallet-address-based miner identity
 - no user account system
+- no Redis requirement
 
-### Initial Non-Goals
-- multi-coin switching
+### Current Non-Goals
+
+- share validation against daemon work
+- payout processing
 - exchange payouts
 - complex user auth
-- advanced referral systems
-- per-user web dashboards requiring login
+- Redis-backed runtime coordination
 
 ### Design Notes
-The pool core should be treated as the operational engine.  
-It should expose clean internal stats or data outputs that can be consumed by a separate stats/API layer.
+
+Pool core is currently split into two low-coupling paths:
+
+- daemon-aware runtime snapshot producer
+- daemon-independent Stratum ingress and activity snapshot writer
 
 ---
 
 ## 3. Stats / API Layer
 
 ### Purpose
+
 Acts as the translation layer between the pool backend and the frontend.
 
 ### Main Responsibilities
+
 - aggregate pool statistics
 - aggregate network statistics
 - expose miner lookup endpoints
-- expose blocks, payments, and workers endpoints
+- expose blocks and payments endpoints
+- merge activity snapshot data over runtime or fallback chain snapshots
 - provide frontend-friendly JSON responses
-- reduce direct coupling between UI and backend internals
 
 ### API Goals
+
 - stable JSON format
 - cacheable responses
 - low-latency reads
 - safe separation from daemon internals
 - reduced RPC load
 
-### Recommended Data Groups
-- pool summary
-- network summary
-- blocks list
-- payments list
-- miner summary by wallet
-- worker summary by wallet
-- status / health information
+### Current Public Endpoints
+
+- `GET /api/health`
+- `GET /api/pool/summary`
+- `GET /api/network/summary`
+- `GET /api/blocks`
+- `GET /api/payments`
+- `GET /api/miner/<wallet>`
 
 ### Design Rules
+
 - no public raw RPC passthrough
 - expensive queries should be pre-aggregated
-- API should prefer summary snapshots over real-time heavy recalculation
-- allow future addition of alerting or status endpoints
+- API should prefer summary snapshots over real-time recalculation
+- activity overlay must be additive and must not change endpoint shapes
 
 ---
 
 ## 4. Frontend / Portal Layer
 
 ### Purpose
+
 Provides the public-facing mining pool interface.
 
 ### Main Responsibilities
+
 - landing page
 - live pool summary
 - miner lookup
@@ -206,35 +229,23 @@ Provides the public-facing mining pool interface.
 - payments view
 - connection instructions
 - notices and maintenance information
-- status and service visibility
-
-### Frontend Priorities
-- professional appearance
-- modern layout
-- clean data hierarchy
-- responsive design
-- easy wallet lookup
-- copyable mining commands
-- clear presentation of algorithm and connection parameters
-
-### UI Principles
-- dark professional blockchain/mining aesthetic
-- PEPEPOW-oriented identity
-- avoid clutter
-- prioritize clarity over novelty
-- support both desktop and mobile users
+- service visibility
 
 ### Frontend Data Policy
-The frontend must read from the stats/API layer, not directly from the daemon or pool internals.
+
+The frontend must read from the stats/API layer, not directly from the daemon
+or raw pool internals.
 
 ---
 
 ## 5. Ops / Runtime Layer
 
 ### Purpose
+
 Supports deployment, reliability, recoverability, and maintenance.
 
 ### Main Responsibilities
+
 - service lifecycle management with systemd
 - reverse proxy with nginx
 - TLS termination
@@ -242,9 +253,9 @@ Supports deployment, reliability, recoverability, and maintenance.
 - backup and restore procedures
 - process isolation
 - health checks
-- optional basic alerting
 
 ### Operational Principles
+
 - every major service should be restartable independently
 - configuration should be explicit and documented
 - rollback should be possible
@@ -254,47 +265,62 @@ Supports deployment, reliability, recoverability, and maintenance.
 
 ## Suggested Initial Runtime Components
 
-A practical initial stack may consist of:
+A practical current stack consists of:
 
 - `PEPEPOWd`
-- `Redis`
-- pool core service
+- pool-core snapshot producer
+- Stratum ingress
+- activity snapshot writer
 - stats/API service
 - frontend service
 - `nginx`
 - `systemd`
-- logrotate
 
-This should remain a **single-host deployment** initially.
+Optional future components:
+
+- `Redis`
+- payout worker
+- notification worker
+
+This should remain a single-host deployment initially.
 
 ---
 
 ## Recommended Service Boundaries
 
 ### Service A: Daemon
-- PEPEPOWd
+
+- `PEPEPOWd`
 - private RPC only
 
-### Service B: Data Cache
-- Redis
-- private only
+### Service B: Runtime Snapshot Producer
 
-### Service C: Pool Core
-- stratum
-- share processing
-- round and block handling
+- daemon-aware chain snapshot generation
+- reads low-cost RPC only
+- writes `pool-snapshot.json`
+
+### Service C: Stratum Ingress / Activity Path
+
+- Stratum listener
+- share ingest
+- in-memory activity accounting
+- writes `share-events.jsonl`
+- writes `activity-snapshot.json`
 
 ### Service D: Stats/API
+
 - public or reverse-proxied API
 - read-oriented
-- lightweight
 - cache-first
+- merges runtime/fallback snapshot with activity snapshot
 
 ### Service E: Frontend
+
 - public web interface
 - static or semi-dynamic UI
 
 ### Service F: Reverse Proxy
+
 - nginx
 - TLS
 - routing
@@ -304,19 +330,34 @@ This should remain a **single-host deployment** initially.
 
 ## Data Flow
 
-### Miner Data Flow
-1. miner connects to stratum endpoint
-2. pool core validates connection and difficulty policy
-3. miner submits shares
-4. pool core validates and records shares
+### Current Implemented Share Flow
+
+1. miner connects to Stratum endpoint
+2. miner sends `mining.subscribe`
+3. miner sends `mining.authorize`
+4. miner sends `mining.submit`
+5. Stratum ingress accepts the share without validation
+6. share is appended to `share-events.jsonl`
+7. in-memory wallet/worker accounting is updated
+8. `activity-snapshot.json` is written atomically
+9. API loads runtime or fallback base snapshot
+10. API overlays activity fields from `activity-snapshot.json`
+11. frontend displays merged pool/network/miner state
+
+### Future Validated Pool Flow
+
+1. miner connects to Stratum endpoint
+2. pool assigns work and difficulty
+3. miner submits share
+4. pool validates share against daemon-backed work
 5. valid candidate block is found
-6. pool core submits block to daemon
+6. pool submits block to daemon
 7. daemon accepts or rejects block
-8. pool core updates block state
-9. stats/API layer exposes updated summaries
-10. frontend displays updated state
+8. pool updates round and block state
+9. stats/API layer exposes validated summaries
 
 ### User Data Flow
+
 1. user visits site
 2. frontend requests summarized data from API
 3. API returns cached or aggregated pool/network/miner data
@@ -326,18 +367,19 @@ This should remain a **single-host deployment** initially.
 
 ## Initial Data Domains
 
-The architecture should account for the following data domains:
-
 ### Pool Domain
+
 - pool hashrate
 - active miners
 - active workers
 - fee
-- payout threshold
-- pool luck / effort
-- recent shares summary
+- payout threshold metadata
+- worker distribution
+- recent share summaries
+- rolling windows for `1m`, `5m`, `15m`
 
 ### Network Domain
+
 - current height
 - difficulty
 - network hashrate
@@ -345,38 +387,55 @@ The architecture should account for the following data domains:
 - daemon / chain status
 
 ### Block Domain
-- pending
-- immature
-- confirmed
-- orphan
-- rejected or invalid if applicable
+
+- observed network blocks
+- block height
+- block hash
+- found time
+- confirmations
+- future validated pool block states
 
 ### Miner Domain
+
 - wallet
-- current estimated hashrate
+- estimated hashrate
 - workers
-- balance / pending
-- total paid
-- payment history
+- per-wallet share count
+- per-worker share count
+- rolling windows
 - last share timestamps
+- future balance / payment data
+
+---
+
+## Current Trust Model
+
+- pool activity metrics are derived from shares
+- share-derived metrics are not blockchain verified
+- estimated hashrate uses an assumed share difficulty
+- accepted shares at this stage do not imply valid shares
+- chain fields remain owned by the runtime/fallback chain snapshot path
 
 ---
 
 ## Security Boundaries
 
 ### Must Remain Internal
+
 - daemon RPC
-- Redis
+- future Redis deployments
 - wallet management endpoints
-- any administrative tooling not explicitly hardened
+- administrative tooling not explicitly hardened
 
 ### Publicly Exposed
+
 - pool website
 - public stats API
-- stratum ports
-- status/maintenance pages if needed
+- Stratum port
+- status / maintenance pages if needed
 
 ### Security Principles
+
 - minimize public surface area
 - avoid exposing raw internals
 - isolate wallet-sensitive operations
@@ -386,58 +445,95 @@ The architecture should account for the following data domains:
 
 ## Performance Strategy
 
-Given the small server size, the architecture should enforce:
+Given the small server size, the architecture enforces:
 
 - cached summary endpoints
 - bounded polling intervals
 - no heavy frontend auto-refresh loops
 - no expensive repeated wallet scans from public pages
-- limited historical aggregation on-demand
-- coarse-grained charts rather than high-frequency metrics
+- in-memory rolling windows for live activity
+- snapshot reads instead of raw log parsing on request paths
 
 ---
 
 ## Extensibility Strategy
 
-The architecture should support later addition of:
+The architecture should later support:
 
-- improved charts
-- Telegram/Discord notifications
+- validated share handling
+- `mining.notify` and difficulty management
+- block submission
 - richer miner analytics
-- admin pages
 - better health reporting
-- external status pages
+- notifications
+- optional Redis-backed coordination
 - future horizontal separation of services
 
-However, these must remain **secondary to core correctness and stability**.
+These remain secondary to current correctness and stability.
+
+---
+
+## Current Repository Implementation
+
+The current repository intentionally stops below full pool functionality.
+
+### Implemented Now
+
+- lightweight public API service under `apps/api`
+- static public frontend under `apps/frontend/site`
+- daemon-aware runtime snapshot producer under `apps/pool-core/producer.py`
+- daemon-independent Stratum ingress under `apps/pool-core/stratum_ingress.py`
+- additive activity snapshot overlay in `apps/api/store.py`
+- share-derived accounting contracts under `apps/pool-core/contracts`
+- systemd and nginx deployment skeleton under `ops/`
+
+### Not Yet Implemented
+
+- block template retrieval for mining
+- real share validation
+- candidate block detection and submission
+- payout processing
+- Redis-backed runtime coordination
+
+---
+
+## Success Criteria
+
+### Current Round Success
+
+The current architecture is successful when:
+
+- miners can connect successfully
+- submitted shares are accepted into the ingest pipeline
+- wallet and worker activity is tracked
+- activity snapshots are written atomically
+- API exposes live miner activity without daemon dependence
+- services restart and recover cleanly
+- the stack can be reproduced on a fresh server
+
+### Future Full-Pool Success
+
+The full architecture will be successful when:
+
+- validated shares are tracked correctly
+- block templates are retrieved correctly
+- valid blocks can be submitted
+- payout correctness is demonstrable
+- pool/network/miner summaries remain accurate under validated mining
 
 ---
 
 ## Explicit Non-Goals for Initial Version
 
-The initial architecture should **not** attempt to solve:
+The initial architecture does not attempt to solve:
 
 - multi-region pool deployment
-- distributed stratum clusters
+- distributed Stratum clusters
 - complex HA topologies
 - large-scale SQL analytics
 - advanced account/auth systems
 - automated exchange-based payouts
 - generalized multi-coin orchestration
-
----
-
-## MVP Architecture Success Criteria
-
-The architecture is considered successful for MVP when:
-
-- miners can connect successfully
-- shares are accepted and tracked
-- block templates are retrieved correctly
-- valid blocks can be submitted
-- pool/network/miner summaries can be displayed
-- services can restart and recover cleanly
-- the stack can be reproduced on a fresh server
 
 ---
 

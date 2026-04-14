@@ -1,0 +1,13 @@
+{
+  "name": "PEPEPOW",
+  "symbol": "PEPEPOW",
+  "algorithm": "hoohashv110-pepew",
+  "websiteTitle": "PEPEPOW Community Pool",
+  "defaultPoolFeePercent": 1.0,
+  "defaultMinPayout": 10.0,
+  "defaultStratumPort": 3333,
+  "notes": [
+    "Single-coin MVP only",
+    "Do not expose daemon RPC or Redis publicly"
+  ]
+}

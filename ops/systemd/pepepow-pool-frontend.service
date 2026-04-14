@@ -1,0 +1,21 @@
+[Unit]
+Description=PEPEPOW Pool Frontend Static Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pepepow
+Group=pepepow
+WorkingDirectory=/opt/pepepow-pool/apps/frontend/site
+EnvironmentFile=/opt/pepepow-pool/ops/env/frontend.env
+ExecStart=/bin/sh -lc 'exec /usr/bin/python3 -m http.server "${PEPEPOW_POOL_FRONTEND_PORT:-3000}" --bind "${PEPEPOW_POOL_FRONTEND_HOST:-127.0.0.1}" --directory "${PEPEPOW_POOL_FRONTEND_SITE_DIR:-/opt/pepepow-pool/apps/frontend/site}"'
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

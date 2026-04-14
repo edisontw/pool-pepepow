@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PEPEPOW Pool How to Mine</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body data-page="connect">
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PEPEPOW Community Pool</p>
+          <h1>How to mine</h1>
+        </div>
+        <nav class="nav">
+          <a href="/">Dashboard</a>
+          <a href="/blocks.html">Blocks</a>
+          <a href="/payments.html">Payments</a>
+          <a href="/miner.html">Miner Lookup</a>
+          <a href="/connect.html">How to Mine</a>
+        </nav>
+      </header>
+
+      <main class="page-grid">
+        <section class="panel">
+          <h3>Connection profile</h3>
+          <div class="kv-list">
+            <div><span>Coin</span><strong>PEPEPOW</strong></div>
+            <div><span>Algorithm</span><strong id="connect-algorithm">hoohashv110-pepew</strong></div>
+            <div><span>Endpoint</span><strong id="connect-endpoint">stratum+tcp://pool.example.com:3333</strong></div>
+            <div><span>Identity</span><strong>Wallet address</strong></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Sample command</h3>
+          <pre class="code-block" id="sample-command">Loading...</pre>
+        </section>
+
+        <section class="panel">
+          <h3>Notes</h3>
+          <ul class="text-list">
+            <li>Use your PEPEPOW wallet address as the username.</li>
+            <li>Worker names can be appended with a dot suffix.</li>
+            <li>This MVP site is snapshot-backed while pool core is still being integrated.</li>
+          </ul>
+        </section>
+
+        <section class="panel">
+          <h3>Security boundary</h3>
+          <p class="muted">
+            The public website and API do not proxy daemon RPC or Redis. Only the future
+            stratum endpoint will be exposed for miners.
+          </p>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

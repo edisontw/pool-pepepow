@@ -2,9 +2,12 @@
 
 ## Purpose
 
-This document defines the deployment strategy for the initial PEPEPOW community pool.
+This document defines the deployment strategy for the current PEPEPOW community
+pool stack.
 
-The goal is to deploy a lightweight, maintainable, reproducible pool stack on a small Oracle Cloud ARM64 instance while minimizing operational risk and unnecessary complexity.
+The goal is to deploy a lightweight, maintainable, reproducible stack on a
+small Oracle Cloud ARM64 instance while minimizing operational risk and keeping
+the current daemon-independent share-ingest path available.
 
 ---
 
@@ -26,6 +29,7 @@ The deployment must achieve the following:
 ## 2. Target Environment
 
 ### Infrastructure
+
 - Oracle Cloud VM
 - ARM64 / aarch64
 - Ubuntu
@@ -34,53 +38,73 @@ The deployment must achieve the following:
 - domain or subdomain for the pool website
 
 ### Initial Deployment Model
+
 Single-host deployment.
 
-This means the following services are expected to run on the same VM initially:
+The current services expected to run on the same VM are:
 
-- PEPEPOWd
-- Redis
-- pool core
-- stats/API
+- `PEPEPOWd`
+- pool-core snapshot producer
+- Stratum ingress
+- public API
 - frontend
 - nginx
 
-This model is chosen because it is simpler, lighter, and easier to manage at the current scale.
+Optional future services:
+
+- Redis
+- payout worker
+- notification worker
+
+This model is chosen because it is simpler, lighter, and easier to manage at
+the current scale.
 
 ---
 
 ## 3. Deployment Principles
 
 ### 3.1 Simplicity First
-Use the minimum number of services required to achieve a working pool.
+
+Use the minimum number of services required to achieve a working public mining
+endpoint and website.
 
 ### 3.2 Reproducibility
-A fresh server should be able to reproduce the environment from documented steps.
+
+A fresh server should be able to reproduce the environment from documented
+steps.
 
 ### 3.3 Isolation of Sensitive Services
+
 Internal services must not be publicly exposed unless explicitly intended.
 
 ### 3.4 Safe Iteration
+
 Deployments should support small changes, verification, and rollback.
 
 ### 3.5 Low Resource Awareness
-Polling frequency, service count, and frontend behavior must be chosen carefully for a 1-core machine.
+
+Polling frequency, service count, and frontend behavior must be chosen
+carefully for a 1-core machine.
 
 ---
 
 ## 4. Proposed Runtime Layout
 
 ## Public-Facing Components
+
 - nginx
 - frontend
 - public stats/API endpoints
-- stratum endpoint(s)
+- Stratum endpoint
 
 ## Private/Internal Components
+
 - PEPEPOWd RPC
-- Redis
+- runtime snapshot producer internals
+- activity snapshot file
 - any payout tooling
 - any admin-only scripts or maintenance tools
+- optional future Redis
 
 ---
 
@@ -97,11 +121,13 @@ A possible filesystem layout:
 - `/var/log/pepepow-pool/`
   - service-specific logs if not using journald only
 - `/var/lib/pepepow-pool/`
-  - persistent app data if needed
+  - runtime snapshot, activity snapshot, and share log
 - daemon data directory
-- Redis data/config as appropriate
 
-The exact layout may vary, but it should remain explicit and documented.
+Optional future paths:
+
+- Redis data/config
+- payout state or reporting data
 
 ---
 
@@ -111,15 +137,19 @@ The exact layout may vary, but it should remain explicit and documented.
 
 Before any installation begins, confirm:
 
-- chosen pool core is compatible with PEPEPOW requirements
 - all major dependencies are ARM64-compatible
 - daemon version matches current PEPEPOW network requirements
 - domain/subdomain plan is decided
 - firewall/public port policy is decided
-- wallet/payout operational policy is decided
 - backup approach is defined
+- current round scope is understood:
+  - share ingest first
+  - daemon-independent Stratum ingress
+  - no validated block submission
+  - no payouts
 
 ### Deliverables
+
 - dependency review
 - service inventory
 - network exposure plan
@@ -132,6 +162,7 @@ Before any installation begins, confirm:
 Prepare the server for deployment.
 
 ### Tasks
+
 - create deployment user where appropriate
 - update system packages
 - install required OS packages
@@ -140,35 +171,40 @@ Prepare the server for deployment.
 - create directory structure
 - prepare firewall rules
 - install nginx
-- install runtime dependencies for chosen stack
-- install Redis
+- install runtime dependencies for the current stack
 - prepare TLS certificate plan
 
+Optional future tasks:
+
+- install Redis
+
 ### Validation
+
 - system updated successfully
 - required packages installed
 - directories created
 - basic firewall policy applied
 - nginx starts successfully
-- Redis starts successfully
 
 ---
 
 ## Phase 2: Daemon Deployment
 
-Deploy PEPEPOWd and ensure chain compatibility.
+Deploy `PEPEPOWd` and ensure chain compatibility for the runtime snapshot
+producer.
 
 ### Tasks
-- install or deploy PEPEPOWd binary
+
+- install or deploy `PEPEPOWd` binary
 - configure data directory
 - configure RPC to bind privately
 - configure credentials securely
 - start daemon with systemd
 - confirm sync status
 - confirm RPC works locally only
-- confirm wallet behavior and payout policy assumptions
 
 ### Validation
+
 - daemon starts on boot
 - local RPC responds
 - node is synced or syncing correctly
@@ -176,32 +212,47 @@ Deploy PEPEPOWd and ensure chain compatibility.
 - logs are readable
 
 ### Notes
-This phase must be stable before pool-core work proceeds.
+
+Current Stratum ingress bring-up does not depend on daemon health. Daemon health
+still matters for the chain snapshot producer.
 
 ---
 
 ## Phase 3: Pool Core Deployment
 
-Deploy the mining pool engine.
+Deploy the currently implemented pool-core services.
 
 ### Tasks
-- deploy pool core code
-- configure PEPEPOW coin settings
-- configure algorithm settings
-- configure Redis connectivity
-- configure daemon RPC integration
-- configure stratum endpoint
-- configure vardiff/basic miner policies
-- run as dedicated systemd service
+
+- deploy pool-core code
+- configure PEPEPOW coin settings and public Stratum metadata
+- configure `stratum_ingress.py`
+- configure bind host and bind port
+- configure share log path
+- configure activity snapshot output path
+- configure queue size
+- configure activity snapshot interval
+- configure `producer.py` runtime snapshot output path
+- configure daemon RPC only for the runtime snapshot producer
+- run `pepepow-pool-stratum.service` as a dedicated systemd service
+- run `pepepow-pool-core.service` as a dedicated systemd service when chain
+  snapshots are desired
 
 ### Validation
-- pool core starts successfully
-- stratum port listens correctly
+
+- Stratum service starts successfully
+- Stratum port listens correctly
 - miner can connect
-- valid shares are accepted
-- invalid shares are rejected
-- basic stats are generated
+- `mining.subscribe`, `mining.authorize`, and `mining.submit` succeed
+- submitted shares are appended to JSONL
+- activity snapshot updates
+- no crash or blocking under burst load
 - service restarts cleanly
+
+### Notes
+
+This phase does not require share validation, block templates, vardiff, or
+daemon-dependent mining logic.
 
 ---
 
@@ -210,19 +261,24 @@ Deploy the mining pool engine.
 Deploy the API layer that feeds the frontend.
 
 ### Tasks
+
 - deploy lightweight API service
 - expose pool summary endpoints
 - expose network summary endpoints
 - expose blocks endpoints
 - expose payments endpoints
 - expose miner lookup endpoints
-- add caching or pre-aggregation
+- configure runtime snapshot path
+- configure fallback snapshot path
+- configure optional activity snapshot overlay path
 - route through nginx if public
 
 ### Validation
+
 - API returns expected JSON
 - API does not directly expose daemon internals
-- repeated requests do not cause excessive daemon load
+- API can serve fallback chain data plus live activity overlay
+- repeated requests do not cause expensive raw log parsing
 - service restarts cleanly
 
 ---
@@ -232,6 +288,7 @@ Deploy the API layer that feeds the frontend.
 Deploy the public website.
 
 ### Tasks
+
 - deploy frontend app or static site
 - connect frontend to stats/API
 - build landing page
@@ -244,6 +301,7 @@ Deploy the public website.
 - ensure responsive behavior
 
 ### Validation
+
 - site loads correctly
 - core pages work
 - commands are copyable
@@ -258,6 +316,7 @@ Deploy the public website.
 Publish the service through nginx.
 
 ### Tasks
+
 - configure domain/subdomain
 - configure reverse proxy routing
 - configure HTTPS
@@ -267,20 +326,39 @@ Publish the service through nginx.
 - separate web/API routing from internal-only services
 
 ### Validation
+
 - HTTPS works
 - public site is accessible
 - public API is accessible as intended
+- Stratum port is publicly reachable if intended
 - daemon RPC remains private
-- Redis remains private
 - rate limiting/basic protection is functional
+
+---
+
+## Future Full-Pool Deployment Phase
+
+The following work remains future full-pool deployment and is not part of the
+current deployable scope:
+
+- share validation
+- difficulty policies / vardiff
+- block template retrieval for mining
+- candidate block detection
+- block submission
+- round tracking
+- payouts
+- optional Redis-backed coordination
 
 ---
 
 ## Phase 7: Payout Workflow Enablement
 
-Enable payment operations only after mining correctness is confirmed.
+Not part of the current deployable scope. Enable payment operations only after
+validated mining correctness is confirmed.
 
 ### Tasks
+
 - validate accounting logic
 - validate block maturity handling
 - define payment threshold
@@ -289,6 +367,7 @@ Enable payment operations only after mining correctness is confirmed.
 - verify wallet exposure remains minimal
 
 ### Validation
+
 - payment candidates are correct
 - immature/orphan blocks do not pay
 - payment action logs exist
@@ -301,6 +380,7 @@ Enable payment operations only after mining correctness is confirmed.
 Add baseline operational safety features.
 
 ### Tasks
+
 - configure logrotate if needed
 - confirm journald visibility
 - add backup scripts
@@ -310,6 +390,7 @@ Add baseline operational safety features.
 - optionally add Discord/Telegram notifications
 
 ### Validation
+
 - logs are accessible
 - backups run successfully
 - restore procedure is documented
@@ -321,36 +402,43 @@ Add baseline operational safety features.
 ## 7. Public Exposure Plan
 
 ## Required Public Exposure
+
 - website (HTTPS)
 - public stats/API endpoints
-- one or more stratum ports
+- one Stratum port
 
 ## Must Not Be Public
+
 - daemon RPC
-- Redis
 - internal scripts
 - payout admin tooling
 - raw internal configs
+- optional future Redis
 
 ---
 
 ## 8. Firewall and Port Planning
 
-Actual port numbers may vary depending on implementation, but the policy should be:
+Actual port numbers may vary depending on implementation, but the policy should
+be:
 
 ### Allow Public
-- 80/tcp only if needed for redirect or certificate flow
-- 443/tcp for website/API
-- stratum port(s) for miners
+
+- `80/tcp` only if needed for redirect or certificate flow
+- `443/tcp` for website/API
+- configured Stratum port for miners
 
 ### Internal Only
+
 - daemon RPC port
-- Redis port
+- API bind port if proxied privately
 - any internal app port not meant for public proxying
+- optional future Redis port
 
 ### Notes
-Public exposure must be justified service by service.  
-Default-deny is preferred where practical.
+
+Public exposure must be justified service by service. Default-deny is preferred
+where practical.
 
 ---
 
@@ -362,11 +450,16 @@ Configuration should be split clearly between:
 - service configs
 - nginx configs
 - daemon config
-- Redis config
 - pool config
-- frontend build/runtime config
+- frontend runtime config
+
+Optional future config groups:
+
+- Redis config
+- payout config
 
 ### Rules
+
 - secrets must not be hardcoded into source files
 - config names must be documented
 - defaults should be sane and conservative
@@ -376,26 +469,38 @@ Configuration should be split clearly between:
 
 ## 10. systemd Service Plan
 
-Each long-running component should have a dedicated systemd service where practical.
+Each long-running component should have a dedicated systemd service where
+practical.
 
-Potential services:
+Current services:
 
 - `pepepowd.service`
-- `pepepow-pool.service`
+- `pepepow-pool-core.service`
+- `pepepow-pool-stratum.service`
 - `pepepow-pool-api.service`
 - `pepepow-pool-frontend.service`
 
-Optional:
-- periodic stats collector
+Optional future services:
+
+- Redis
 - payout worker
 - notification worker
 
 ### Service Rules
+
 - restart policy should be defined
 - service user should be explicit where practical
 - working directory should be explicit
 - environment file usage should be documented
 - logs should be inspectable
+
+### Snapshot Ownership Notes
+
+- `pepepow-pool-core.service` owns `pool-snapshot.json`
+- `pepepow-pool-stratum.service` owns `share-events.jsonl` and
+  `activity-snapshot.json`
+- API reads runtime snapshot first, fallback snapshot second, and applies the
+  optional activity snapshot overlay
 
 ---
 
@@ -404,15 +509,17 @@ Optional:
 Logs must support troubleshooting in these categories:
 
 - daemon sync/connectivity problems
-- pool core startup failures
+- runtime snapshot producer failures
 - miner connection/share failures
-- block submission failures
-- payout failures
+- activity snapshot failures
 - API failures
 - frontend serving failures
 - nginx proxy/TLS issues
+- future block submission failures
+- future payout failures
 
 ### Preferred Approach
+
 - journald for service logs
 - optional file logs for components that benefit from them
 - logrotate for file-based logs
@@ -425,12 +532,17 @@ The deployment plan must include backup considerations for:
 
 - daemon wallet or wallet-related sensitive state
 - application configuration
-- payment/accounting records if not reconstructable
-- nginx configuration
+- runtime snapshot and activity snapshot configuration
 - environment files
+- nginx configuration
 - custom scripts
 
+Future full-pool backup considerations:
+
+- payment/accounting records if not reconstructable
+
 ### Recovery Goals
+
 - rebuild on a fresh host
 - restore configuration
 - restore wallet-sensitive material securely
@@ -438,7 +550,9 @@ The deployment plan must include backup considerations for:
 - recover website and mining functionality
 
 ### Recovery Documentation
+
 At minimum, document:
+
 - what must be backed up
 - where it lives
 - how to restore it
@@ -451,13 +565,15 @@ At minimum, document:
 Every major deployment step should have a rollback path.
 
 ### Examples
+
 - keep previous app release available
 - keep previous nginx config backup
 - keep previous systemd unit backup
-- separate schema or storage changes where possible
+- separate storage/schema changes where possible
 - validate before switching traffic
 
 ### Rollback Principles
+
 - rollback should be possible without guesswork
 - changes should be incremental
 - large refactors should not be deployed without validation checkpoints
@@ -467,48 +583,67 @@ Every major deployment step should have a rollback path.
 ## 14. Validation Checklist by Stage
 
 ## Base Host
+
 - OS updated
 - required packages installed
 - firewall baseline configured
-- nginx and Redis healthy
+- nginx healthy
 
 ## Daemon
+
 - starts successfully
 - local RPC works
 - sync state acceptable
 - not publicly exposed
 
 ## Pool Core
-- starts successfully
+
+- Stratum service starts successfully
 - miner connects
 - share flow works
-- block template retrieval works
+- activity snapshot updates
+- API overlay works
 
 ## API
+
 - returns correct data
 - remains lightweight
 - does not over-query daemon
+- does not parse raw JSONL logs on request paths
 
 ## Frontend
+
 - pages render
 - wallet lookup works
 - key info is clear
 - responsive behavior acceptable
 
 ## Public Access
+
 - HTTPS works
 - public routes correct
 - internal services remain private
 
-## Payout
-- thresholds correct
-- payment flow logged
+## Future Full-Pool Validation
+
+- block template retrieval works
+- validated shares are handled correctly
+- valid blocks can be submitted
+- payout thresholds are correct
+- payment flow is logged
 - immature/orphan protection works
 
 ## Recovery
+
 - restart works
 - backup exists
 - restore process documented
+
+## Benchmark Guidance
+
+Current stress tests and benchmark examples are documented in:
+
+- [docs/benchmarks/2026-04-13-stratum-ingress.md](/home/ubuntu/pool-pepepow/docs/benchmarks/2026-04-13-stratum-ingress.md)
 
 ---
 
@@ -523,37 +658,49 @@ Because the host has only 1 core / 6 GB RAM:
 - avoid large databases unless clearly necessary
 - prefer summarized metrics to expensive real-time analytics
 
-If the host also runs other PEPEPOW services, resource contention must be considered before expanding features.
+If the host also runs other PEPEPOW services, resource contention must be
+considered before expanding features.
 
 ---
 
 ## 16. Post-MVP Deployment Expansion
 
-Only after stable MVP deployment, consider:
+Only after stable current deployment, consider:
 
-- improved visual analytics
+- validated mining flow
 - richer miner metrics
 - notifications and status integrations
 - better admin tooling
 - separated API/frontend hosts
-- split stratum and web workloads
+- split Stratum and web workloads further
 - stronger alerting and incident tooling
 
-These must remain secondary to core pool correctness and safe operation.
+These remain secondary to core correctness and safe operation.
 
 ---
 
 ## 17. Final Deployment Goal
 
-The deployment is considered successful when the following are true:
+### Current Deployable Goal
+
+The current deployment is successful when:
 
 - a PEPEPOW miner can connect and submit shares
-- the pool can retrieve templates and submit valid blocks
-- the website clearly exposes pool/network/miner information
+- shares are ingested into JSONL
+- activity snapshots are updated
+- the website exposes pool/network/miner information
 - services recover cleanly after restart
 - internal services remain protected
 - documentation is sufficient to reproduce the environment
-- the system is stable enough for controlled community use
+
+### Future Full-Pool Goal
+
+The future full-pool deployment will be successful when:
+
+- the pool retrieves templates
+- validated blocks can be submitted
+- payout correctness is demonstrable
+- the system is stable enough for broader controlled community use
 
 ---
 
@@ -568,3 +715,33 @@ When deployment decisions conflict, prioritize:
 5. reproducibility
 6. performance optimization
 7. visual enhancement
+
+---
+
+## 19. Current Skeleton Deliverables
+
+This repository currently includes:
+
+- `ops/systemd/pepepow-pool-api.service`
+- `ops/systemd/pepepow-pool-frontend.service`
+- `ops/systemd/pepepow-pool-core.service`
+- `ops/systemd/pepepow-pool-stratum.service`
+- `ops/nginx/pepepow-pool.conf.example`
+- `ops/scripts/bootstrap.sh`
+- `ops/scripts/deploy.sh`
+- `ops/scripts/restart-services.sh`
+- `ops/scripts/logs.sh`
+- `ops/scripts/healthcheck.sh`
+
+The implemented public stack is:
+
+- nginx
+- static frontend service
+- lightweight API service
+- daemon-independent Stratum ingress
+
+The current private-only assumptions remain:
+
+- daemon RPC is not proxied publicly
+- payout tooling is not exposed
+- Redis is optional future infrastructure, not a current dependency

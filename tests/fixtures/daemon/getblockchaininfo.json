@@ -1,0 +1,11 @@
+{
+  "chain": "main",
+  "blocks": 4355984,
+  "headers": 4355984,
+  "bestblockhash": "000000036b21010bd6d2bc7106ed96e0744ac48069198f3ccfb847c712fc8bd5",
+  "difficulty": 0.07605209165011048,
+  "mediantime": 1776019945,
+  "verificationprogress": 0.9999996334849908,
+  "chainwork": "0000000000000000000000000000000000000000000000004c6839f9909dc67c",
+  "pruned": false
+}

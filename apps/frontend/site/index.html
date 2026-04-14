@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PEPEPOW Pool</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body data-page="dashboard">
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PEPEPOW Community Pool</p>
+          <h1>Single-coin MVP skeleton</h1>
+        </div>
+        <nav class="nav">
+          <a href="/">Dashboard</a>
+          <a href="/blocks.html">Blocks</a>
+          <a href="/payments.html">Payments</a>
+          <a href="/miner.html">Miner Lookup</a>
+          <a href="/connect.html">How to Mine</a>
+        </nav>
+      </header>
+
+      <main class="page-grid">
+        <section class="panel hero">
+          <div>
+            <p class="eyebrow">Algorithm</p>
+            <h2 id="algorithm">Loading...</h2>
+            <p class="muted">
+              Public website and API are live-facing. Daemon RPC, Redis, and payout
+              tooling stay private.
+            </p>
+          </div>
+          <div class="status-badge" id="pool-status">Checking status</div>
+        </section>
+
+        <section class="panel metrics">
+          <h3>Pool Summary</h3>
+          <div class="metric-grid">
+            <article>
+              <span>Pool Hashrate</span>
+              <strong id="pool-hashrate">-</strong>
+            </article>
+            <article>
+              <span>Active Miners</span>
+              <strong id="active-miners">-</strong>
+            </article>
+            <article>
+              <span>Active Workers</span>
+              <strong id="active-workers">-</strong>
+            </article>
+            <article>
+              <span>Last Block</span>
+              <strong id="last-block-time">-</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Network Summary</h3>
+          <div class="kv-list">
+            <div><span>Height</span><strong id="network-height">-</strong></div>
+            <div><span>Difficulty</span><strong id="network-difficulty">-</strong></div>
+            <div><span>Network Hashrate</span><strong id="network-hashrate">-</strong></div>
+            <div><span>Node Sync</span><strong id="network-sync">-</strong></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Connect</h3>
+          <div class="callout">
+            <p class="muted">Sample stratum endpoint placeholder</p>
+            <code id="stratum-endpoint">stratum+tcp://pool.example.com:3333</code>
+          </div>
+          <p class="muted small-gap">
+            This MVP currently serves mock snapshot data to validate service boundaries.
+          </p>
+          <a class="button" href="/connect.html">Open connection guide</a>
+        </section>
+
+        <section class="panel">
+          <h3>Recent Blocks</h3>
+          <div id="recent-blocks" class="list-state">Loading blocks...</div>
+        </section>
+
+        <section class="panel">
+          <h3>Recent Payments</h3>
+          <div id="recent-payments" class="list-state">Loading payments...</div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

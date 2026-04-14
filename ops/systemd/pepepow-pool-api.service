@@ -1,0 +1,21 @@
+[Unit]
+Description=PEPEPOW Pool Public API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pepepow
+Group=pepepow
+WorkingDirectory=/opt/pepepow-pool/apps/api
+EnvironmentFile=/opt/pepepow-pool/ops/env/api.env
+ExecStart=/opt/pepepow-pool/.venv-api/bin/python /opt/pepepow-pool/apps/api/app.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+{
+  "version": 2090002,
+  "subversion": "/PEPEPOW Core:2.9.0.2/",
+  "protocolversion": 70521,
+  "localservices": "0000000000000005",
+  "localrelay": true,
+  "timeoffset": 0,
+  "networkactive": true,
+  "connections": 26,
+  "warnings": ""
+}

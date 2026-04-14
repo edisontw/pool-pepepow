@@ -1,0 +1,81 @@
+{
+  "generatedAt": "2026-04-12T12:00:00Z",
+  "meta": {
+    "schemaVersion": "2.2",
+    "producer": "fallback-mock",
+    "degraded": true,
+    "stale": true,
+    "daemonReachable": false,
+    "lastSuccessfulRuntimeAt": null,
+    "lastError": "Runtime snapshot unavailable; serving repository fallback snapshot.",
+    "blockFeedKind": "observed-network-blocks",
+    "chainDataSource": "pepepowd-rpc-read-only",
+    "chainState": "synced",
+    "chainVerificationProgress": 1,
+    "minerLookupImplemented": false,
+    "paymentsStatus": "placeholder",
+    "activityMode": "testing-local-ingest",
+    "activityDataSource": "local-jsonl-share-log",
+    "activityWindowSeconds": 900,
+    "activityDataStatus": "empty",
+    "activityLastShareAt": null,
+    "activityWarningCount": 0,
+    "activityDerivedFromShares": false,
+    "blockchainVerified": true,
+    "assumedShareDifficulty": null,
+    "hashratePolicy": "not-computed",
+    "placeholderFields": [
+      "pool.poolHashrate",
+      "pool.lastBlockFoundAt",
+      "network.reward",
+      "blocks.reward",
+      "payments",
+      "miners"
+    ]
+  },
+  "pool": {
+    "coin": "PEPEPOW",
+    "algorithm": "hoohashv110-pepew",
+    "poolStatus": "degraded",
+    "feePercent": 1.0,
+    "minPayout": 10.0,
+    "poolHashrate": null,
+    "activeMiners": 0,
+    "activeWorkers": 0,
+    "workerDistribution": [],
+    "lastBlockFoundAt": null,
+    "stratum": {
+      "host": "pool.example.com",
+      "port": 3333,
+      "tls": false
+    }
+  },
+  "network": {
+    "height": 4355984,
+    "difficulty": 0.07605209165011048,
+    "networkHashrate": 17126345.61111111,
+    "lastBlockAt": "2026-04-12T12:13:20Z",
+    "reward": null,
+    "synced": true
+  },
+  "blocks": [
+    {
+      "height": 4355984,
+      "hash": "000000036b21010bd6d2bc7106ed96e0744ac48069198f3ccfb847c712fc8bd5",
+      "status": "observed-network",
+      "foundAt": "2026-04-12T12:13:20Z",
+      "reward": null,
+      "confirmations": 1
+    },
+    {
+      "height": 4355983,
+      "hash": "0000000633af13e8cbdd2f09e1646ce47db17fa3e542460398e987e21486bdca",
+      "status": "observed-network",
+      "foundAt": "2026-04-12T12:12:03Z",
+      "reward": null,
+      "confirmations": 2
+    }
+  ],
+  "payments": [],
+  "miners": {}
+}

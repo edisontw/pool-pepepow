@@ -1,0 +1,388 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pool-pepepow.local/schemas/pool-snapshot.schema.json",
+  "title": "PEPEPOW Pool Snapshot",
+  "type": "object",
+  "required": [
+    "generatedAt",
+    "pool",
+    "network",
+    "blocks",
+    "payments",
+    "miners"
+  ],
+  "properties": {
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "string"
+        },
+        "producer": {
+          "type": "string"
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "stale": {
+          "type": "boolean"
+        },
+        "daemonReachable": {
+          "type": "boolean"
+        },
+        "lastSuccessfulRuntimeAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "lastError": {
+          "type": ["string", "null"]
+        },
+        "blockFeedKind": {
+          "type": "string"
+        },
+        "chainDataSource": {
+          "type": "string"
+        },
+        "chainState": {
+          "type": "string",
+          "enum": ["reindexing", "syncing", "synced"]
+        },
+        "chainVerificationProgress": {
+          "type": ["number", "null"]
+        },
+        "minerLookupImplemented": {
+          "type": "boolean"
+        },
+        "paymentsStatus": {
+          "type": "string"
+        },
+        "activityMode": {
+          "type": "string"
+        },
+        "activityDataSource": {
+          "type": "string"
+        },
+        "activityWindowSeconds": {
+          "type": "integer"
+        },
+        "activityDataStatus": {
+          "type": "string",
+          "enum": ["empty", "live", "stale"]
+        },
+        "activityLastShareAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "activityWarningCount": {
+          "type": "integer"
+        },
+        "activityDerivedFromShares": {
+          "type": "boolean"
+        },
+        "blockchainVerified": {
+          "type": "boolean"
+        },
+        "assumedShareDifficulty": {
+          "type": ["number", "null"]
+        },
+        "hashratePolicy": {
+          "type": "string"
+        },
+        "placeholderFields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "pool": {
+      "type": "object",
+      "required": [
+        "coin",
+        "algorithm",
+        "poolStatus",
+        "feePercent",
+        "minPayout",
+        "poolHashrate",
+        "activeMiners",
+        "activeWorkers",
+        "workerDistribution",
+        "lastBlockFoundAt",
+        "stratum"
+      ],
+      "properties": {
+        "coin": {
+          "type": "string"
+        },
+        "algorithm": {
+          "type": "string"
+        },
+        "poolStatus": {
+          "type": "string"
+        },
+        "feePercent": {
+          "type": "number"
+        },
+        "minPayout": {
+          "type": "number"
+        },
+        "poolHashrate": {
+          "type": ["number", "null"]
+        },
+        "activeMiners": {
+          "type": ["integer", "null"]
+        },
+        "activeWorkers": {
+          "type": ["integer", "null"]
+        },
+        "workerDistribution": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "wallet",
+              "workers",
+              "activeWorkers",
+              "shares15m",
+              "hashrate"
+            ],
+            "properties": {
+              "wallet": {
+                "type": "string"
+              },
+              "workers": {
+                "type": "integer"
+              },
+              "activeWorkers": {
+                "type": "integer"
+              },
+              "shares15m": {
+                "type": "integer"
+              },
+              "hashrate": {
+                "type": ["number", "null"]
+              }
+            }
+          }
+        },
+        "lastBlockFoundAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "stratum": {
+          "type": "object",
+          "required": ["host", "port", "tls"],
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "tls": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "required": [
+        "height",
+        "difficulty",
+        "networkHashrate",
+        "lastBlockAt",
+        "reward",
+        "synced"
+      ],
+      "properties": {
+        "height": {
+          "type": "integer"
+        },
+        "difficulty": {
+          "type": "number"
+        },
+        "networkHashrate": {
+          "type": ["number", "null"]
+        },
+        "lastBlockAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reward": {
+          "type": ["number", "null"]
+        },
+        "synced": {
+          "type": "boolean"
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "height",
+          "hash",
+          "status",
+          "foundAt",
+          "reward",
+          "confirmations"
+        ],
+        "properties": {
+          "height": {
+            "type": "integer"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "foundAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reward": {
+            "type": ["number", "null"]
+          },
+          "confirmations": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "payments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "txid",
+          "wallet",
+          "amount",
+          "paidAt",
+          "confirmations"
+        ],
+        "properties": {
+          "txid": {
+            "type": "string"
+          },
+          "wallet": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "paidAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "confirmations": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "miners": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["summary", "workers", "payments"],
+        "properties": {
+          "summary": {
+            "type": "object",
+            "properties": {
+              "hashrate": {
+                "type": ["number", "null"]
+              },
+              "pendingBalance": {
+                "type": ["number", "null"]
+              },
+              "totalPaid": {
+                "type": ["number", "null"]
+              },
+              "lastShareAt": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "acceptedShares": {
+                "type": "integer"
+              },
+              "rejectedShares": {
+                "type": "integer"
+              },
+              "shareCount": {
+                "type": "integer"
+              },
+              "activeWorkers": {
+                "type": "integer"
+              },
+              "rolling": {
+                "type": "object"
+              }
+            }
+          },
+          "workers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "hashrate", "lastShareAt"],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "hashrate": {
+                  "type": ["number", "null"]
+                },
+                "lastShareAt": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "acceptedShares": {
+                  "type": "integer"
+                },
+                "rejectedShares": {
+                  "type": "integer"
+                },
+                "shareCount": {
+                  "type": "integer"
+                },
+                "rolling": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "payments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["txid", "amount", "paidAt", "confirmations"],
+              "properties": {
+                "txid": {
+                  "type": "string"
+                },
+                "amount": {
+                  "type": "number"
+                },
+                "paidAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "confirmations": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

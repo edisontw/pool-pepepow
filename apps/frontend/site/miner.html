@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PEPEPOW Pool Miner Lookup</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body data-page="miner">
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PEPEPOW Community Pool</p>
+          <h1>Miner lookup</h1>
+        </div>
+        <nav class="nav">
+          <a href="/">Dashboard</a>
+          <a href="/blocks.html">Blocks</a>
+          <a href="/payments.html">Payments</a>
+          <a href="/miner.html">Miner Lookup</a>
+          <a href="/connect.html">How to Mine</a>
+        </nav>
+      </header>
+
+      <main class="page-single">
+        <section class="panel">
+          <form id="miner-form" class="lookup-form">
+            <label for="wallet-input">Wallet Address</label>
+            <div class="lookup-row">
+              <input
+                id="wallet-input"
+                name="wallet"
+                type="text"
+                placeholder="PEPEPOW wallet address"
+                value="PEPEPOW1SampleWalletAddress000001"
+              >
+              <button class="button" type="submit">Lookup</button>
+            </div>
+          </form>
+          <div id="miner-result" class="list-state">Enter a wallet address to inspect miner summary.</div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

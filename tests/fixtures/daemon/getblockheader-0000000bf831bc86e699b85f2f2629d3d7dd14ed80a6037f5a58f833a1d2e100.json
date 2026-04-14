@@ -1,0 +1,14 @@
+{
+  "hash": "0000000bf831bc86e699b85f2f2629d3d7dd14ed80a6037f5a58f833a1d2e100",
+  "confirmations": 3,
+  "height": 4355982,
+  "version": 536887296,
+  "merkleroot": "a608b8ea14e86b2b82f0eef39cb207413cadf607d5ee3ff7c642180976e48301",
+  "time": 1776019859,
+  "mediantime": 1776019820,
+  "nonce": 9988776,
+  "bits": "1d0d2610",
+  "difficulty": 0.07488344988344989,
+  "chainwork": "0000000000000000000000000000000000000000000000004c6839f969ad52d0",
+  "previousblockhash": "0000000f98b4392a744fe16e2f31f0b8d420d3f7eedccfd45e5522f5f86efc19"
+}

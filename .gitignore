@@ -62,3 +62,5 @@ Thumbs.db
 config/local/
 config/**/*.local.*
 ops/env/*.local
+ops/env/*.env
+apps/frontend/site/runtime-config.json

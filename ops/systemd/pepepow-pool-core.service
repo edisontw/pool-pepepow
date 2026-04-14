@@ -1,0 +1,22 @@
+[Unit]
+Description=PEPEPOW Pool Snapshot Producer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pepepow
+Group=pepepow
+WorkingDirectory=/opt/pepepow-pool/apps/pool-core
+EnvironmentFile=/opt/pepepow-pool/ops/env/pool-core.env
+ExecStart=/usr/bin/python3 /opt/pepepow-pool/apps/pool-core/producer.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/pepepow-pool
+
+[Install]
+WantedBy=multi-user.target

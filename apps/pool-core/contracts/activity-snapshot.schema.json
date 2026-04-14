@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pool-pepepow.local/schemas/activity-snapshot.schema.json",
+  "title": "PEPEPOW Activity Snapshot",
+  "type": "object",
+  "required": ["generatedAt", "meta", "pool", "miners"],
+  "properties": {
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "meta": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "activityMode",
+        "activityDataSource",
+        "activityDerivedFromShares",
+        "blockchainVerified",
+        "syntheticJobMode",
+        "shareValidationMode",
+        "hashratePolicy",
+        "assumedShareDifficulty",
+        "windowSeconds",
+        "lastShareAt",
+        "warningCount",
+        "sequence",
+        "windowReplaySequenceFloor",
+        "dataStatus"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "string" },
+        "activityMode": { "type": "string" },
+        "activityDataSource": { "type": "string" },
+        "activityDerivedFromShares": { "type": "boolean" },
+        "blockchainVerified": { "type": "boolean" },
+        "syntheticJobMode": { "type": "string" },
+        "shareValidationMode": { "type": "string" },
+        "hashratePolicy": { "type": "string" },
+        "assumedShareDifficulty": { "type": "number" },
+        "windowSeconds": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "lastShareAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "warningCount": { "type": "integer" },
+        "sequence": { "type": "integer" },
+        "logPath": { "type": ["string", "null"] },
+        "logOffset": { "type": "integer" },
+        "logInode": { "type": ["integer", "null"] },
+        "windowReplayOffset": { "type": "integer" },
+        "windowReplaySequenceFloor": { "type": "integer" },
+        "dataStatus": {
+          "type": "string",
+          "enum": ["empty", "live", "stale"]
+        }
+      }
+    },
+    "pool": {
+      "type": "object",
+      "required": [
+        "poolHashrate",
+        "activeMiners",
+        "activeWorkers",
+        "workerDistribution",
+        "rolling"
+      ],
+      "properties": {
+        "poolHashrate": { "type": ["number", "null"] },
+        "activeMiners": { "type": "integer" },
+        "activeWorkers": { "type": "integer" },
+        "workerDistribution": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "wallet",
+              "workers",
+              "activeWorkers",
+              "shares15m",
+              "hashrate"
+            ],
+            "properties": {
+              "wallet": { "type": "string" },
+              "workers": { "type": "integer" },
+              "activeWorkers": { "type": "integer" },
+              "shares15m": { "type": "integer" },
+              "hashrate": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "rolling": {
+          "type": "object",
+          "properties": {
+            "1m": { "$ref": "#/$defs/rollingWindow" },
+            "5m": { "$ref": "#/$defs/rollingWindow" },
+            "15m": { "$ref": "#/$defs/rollingWindow" }
+          }
+        }
+      }
+    },
+    "miners": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["summary", "workers", "payments"],
+        "properties": {
+          "summary": {
+            "type": "object",
+            "properties": {
+              "hashrate": { "type": ["number", "null"] },
+              "pendingBalance": { "type": ["number", "null"] },
+              "totalPaid": { "type": ["number", "null"] },
+              "lastShareAt": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              },
+              "acceptedShares": { "type": "integer" },
+              "rejectedShares": { "type": "integer" },
+              "shareCount": { "type": "integer" },
+              "activeWorkers": { "type": "integer" },
+              "rolling": {
+                "type": "object",
+                "properties": {
+                  "1m": { "$ref": "#/$defs/rollingWindow" },
+                  "5m": { "$ref": "#/$defs/rollingWindow" },
+                  "15m": { "$ref": "#/$defs/rollingWindow" }
+                }
+              }
+            }
+          },
+          "workers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "hashrate",
+                "lastShareAt",
+                "acceptedShares",
+                "rejectedShares",
+                "shareCount",
+                "rolling"
+              ],
+              "properties": {
+                "name": { "type": "string" },
+                "hashrate": { "type": ["number", "null"] },
+                "lastShareAt": {
+                  "type": ["string", "null"],
+                  "format": "date-time"
+                },
+                "acceptedShares": { "type": "integer" },
+                "rejectedShares": { "type": "integer" },
+                "shareCount": { "type": "integer" },
+                "rolling": {
+                  "type": "object",
+                  "properties": {
+                    "1m": { "$ref": "#/$defs/rollingWindow" },
+                    "5m": { "$ref": "#/$defs/rollingWindow" },
+                    "15m": { "$ref": "#/$defs/rollingWindow" }
+                  }
+                }
+              }
+            }
+          },
+          "payments": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rollingWindow": {
+      "type": "object",
+      "required": [
+        "windowSeconds",
+        "shareCount",
+        "acceptedShares",
+        "rejectedShares",
+        "hashrate"
+      ],
+      "properties": {
+        "windowSeconds": { "type": "integer" },
+        "shareCount": { "type": "integer" },
+        "acceptedShares": { "type": "integer" },
+        "rejectedShares": { "type": "integer" },
+        "hashrate": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

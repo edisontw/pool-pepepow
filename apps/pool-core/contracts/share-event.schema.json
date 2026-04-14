@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pool-pepepow.local/schemas/share-event.schema.json",
+  "title": "PEPEPOW Local Share Event",
+  "type": "object",
+  "properties": {
+    "timestamp": {
+      "type": ["string", "number"],
+      "description": "ISO-8601 timestamp or unix epoch seconds"
+    },
+    "submittedAt": {
+      "type": ["string", "number"]
+    },
+    "observedAt": {
+      "type": ["string", "number"]
+    },
+    "wallet": {
+      "type": "string"
+    },
+    "worker": {
+      "type": "string"
+    },
+    "login": {
+      "type": "string",
+      "description": "wallet.worker style miner login"
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    },
+    "result": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "remoteAddress": {
+      "type": "string"
+    },
+    "sessionId": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer"
+    },
+    "jobId": {
+      "type": ["string", "null"]
+    },
+    "difficulty": {
+      "type": "number"
+    },
+    "syntheticWork": {
+      "type": "boolean"
+    },
+    "blockchainVerified": {
+      "type": "boolean"
+    },
+    "shareValidationMode": {
+      "type": "string"
+    },
+    "submit": {
+      "description": "Raw submit params captured from Stratum ingress"
+    }
+  },
+  "anyOf": [
+    {
+      "required": ["timestamp", "wallet"]
+    },
+    {
+      "required": ["timestamp", "login"]
+    },
+    {
+      "required": ["submittedAt", "wallet"]
+    },
+    {
+      "required": ["submittedAt", "login"]
+    },
+    {
+      "required": ["observedAt", "wallet"]
+    },
+    {
+      "required": ["observedAt", "login"]
+    }
+  ],
+  "additionalProperties": true
+}

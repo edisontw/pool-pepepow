@@ -1,0 +1,30 @@
+[coin]
+name = "PEPEPOW"
+symbol = "PEPEPOW"
+algorithm = "hoohashv110-pepew"
+
+[stratum]
+bind_host = "0.0.0.0"
+bind_port = 3333
+vardiff = true
+
+[daemon_rpc]
+host = "127.0.0.1"
+port = 8834
+username = "change-me"
+password = "change-me"
+timeout_seconds = 5
+
+[redis]
+host = "127.0.0.1"
+port = 6379
+db = 0
+
+[payout]
+scheme = "pplns"
+minimum_threshold = 10.0
+enabled = false
+
+[snapshot]
+output_path = "/var/lib/pepepow-pool/pool-snapshot.json"
+write_interval_seconds = 60
