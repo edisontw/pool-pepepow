@@ -34,6 +34,7 @@ BIND_HOST=""
 SHARE_DIFFICULTY=""
 JOB_INTERVAL_SECONDS=""
 SNAPSHOT_INTERVAL_SECONDS=""
+LOG_ROTATE_BYTES=""
 
 clear_shell_loaded_launch_env() {
   unset PEPEPOW_POOL_CORE_STRATUM_BIND_HOST
@@ -54,6 +55,7 @@ set_effective_defaults() {
   SHARE_DIFFICULTY="${PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY:-0.00000001}"
   JOB_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS:-5}"
   SNAPSHOT_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS:-1}"
+  LOG_ROTATE_BYTES="${PEPEPOW_LIVE_STRATUM_LOG_ROTATE_BYTES:-33554432}"
 }
 
 ensure_runtime_dir() {
@@ -77,6 +79,9 @@ print_paths() {
   cat <<EOF
 endpoint: stratum+tcp://${PUBLIC_HOST}:${PORT}
 bind: ${BIND_HOST}:${PORT}
+effective_difficulty: ${SHARE_DIFFICULTY}
+difficulty_source: ${LAUNCH_ENV_FILE} -> PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY
+notify_interval_seconds: ${JOB_INTERVAL_SECONDS}
 runtime_dir: ${RUNTIME_DIR}
 pid_file: ${PID_FILE}
 log_file: ${LOG_FILE}
@@ -132,6 +137,20 @@ port_is_listening() {
   [[ -n "$(listener_details)" ]]
 }
 
+rotate_log_if_needed() {
+  if [[ ! -f "${LOG_FILE}" ]]; then
+    return
+  fi
+
+  local current_size
+  current_size="$(stat -c '%s' "${LOG_FILE}")"
+  if (( current_size < LOG_ROTATE_BYTES )); then
+    return
+  fi
+
+  mv "${LOG_FILE}" "${LOG_FILE}.1"
+}
+
 write_launch_env() {
   cat >"${LAUNCH_ENV_FILE}" <<EOF
 PEPEPOW_POOL_CORE_STRATUM_BIND_HOST=${BIND_HOST}
@@ -176,6 +195,14 @@ print(f"active_miners: {pool.get('activeMiners')}")
 PY
 }
 
+print_runtime_sizes() {
+  for path in "${LOG_FILE}" "${SHARE_LOG}" "${ACTIVITY_SNAPSHOT}"; do
+    if [[ -f "${path}" ]]; then
+      printf 'size_bytes[%s]: %s\n' "$(basename "${path}")" "$(stat -c '%s' "${path}")"
+    fi
+  done
+}
+
 start_service() {
   clear_shell_loaded_launch_env
   set_effective_defaults
@@ -197,6 +224,7 @@ start_service() {
   fi
 
   write_launch_env
+  rotate_log_if_needed
   touch "${LOG_FILE}"
   printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "live-stratum start requested" >>"${LOG_FILE}"
 
@@ -307,6 +335,7 @@ status_service() {
     echo "not listening on ${PORT}"
   fi
   print_snapshot_summary
+  print_runtime_sizes
   print_paths
 }
 

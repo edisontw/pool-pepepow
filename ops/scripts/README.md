@@ -46,7 +46,9 @@ Purpose:
 
 - provide a stable synthetic Stratum endpoint for repeated external miner retests
 - keep PID, stdout log, share log, and activity snapshot paths fixed
+- make the effective synthetic difficulty explicit via `launch.env` and `status`
 - support fast `start`, `stop`, `restart`, `status`, `logs`, and `paths` flows
+- rotate `stratum.log` on start when it grows beyond the configured size guard
 
 Runtime paths:
 
@@ -61,6 +63,18 @@ Example:
 ```bash
 /home/ubuntu/pool-pepepow/ops/scripts/live-stratum.sh start
 ```
+
+Effective difficulty:
+
+- source of truth: `.runtime/live-stratum/launch.env`
+- variable: `PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY`
+- default live-test value: `0.00000001`
+- override: export `PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY=<value>` before `start`
+
+Long-run note:
+
+- `stratum.log` is rotated to `stratum.log.1` on `start` when it exceeds
+  `PEPEPOW_LIVE_STRATUM_LOG_ROTATE_BYTES` (default `33554432`)
 
 ## `stratum_smoke_report.py`
 
