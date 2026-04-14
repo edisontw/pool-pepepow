@@ -36,6 +36,7 @@ out/
 
 # Logs and runtime files
 logs/
+.runtime/
 *.log
 *.pid
 *.pid.lock

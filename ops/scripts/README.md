@@ -5,6 +5,8 @@ maintenance, and verification.
 
 - `healthcheck.sh` checks the public API and prints runtime/fallback, chain, and
   activity metadata
+- `live-stratum.sh` manages the repo-local synthetic Stratum live-test listener
+  with fixed PID/log/snapshot paths under `.runtime/live-stratum`
 - `restart-services.sh` restarts the pool core, API, and frontend services
 - `run-stratum-preflight.sh` starts the daemon-independent synthetic Stratum
   preflight listener and writes pool-side artifacts under
@@ -18,9 +20,9 @@ Purpose:
 
 - launch an isolated synthetic Stratum endpoint without daemon/template
   dependencies
-- expose a reproducible target for local or external miner smoke tests
-- emit `stratum.log`, `share-events.jsonl`, `activity-snapshot.json`, and
-  `pool-snapshot.json`
+- expose a foreground debugging target for local or external miner smoke tests
+- emit `stratum.log`, `share-events.jsonl`, and `activity-snapshot.json`
+- stay separate from the repo-local live-test wrapper used for repeated retests
 
 Important environment variables:
 
@@ -36,6 +38,28 @@ External GPU smoke example:
 PEPEPOW_PREFLIGHT_PUBLIC_HOST=192.9.160.179 \
 PEPEPOW_PREFLIGHT_SHARE_DIFFICULTY=0.000001 \
 /home/ubuntu/pool-pepepow/ops/scripts/run-stratum-preflight.sh
+```
+
+## `live-stratum.sh`
+
+Purpose:
+
+- provide a stable synthetic Stratum endpoint for repeated external miner retests
+- keep PID, stdout log, share log, and activity snapshot paths fixed
+- support fast `start`, `stop`, `restart`, `status`, `logs`, and `paths` flows
+
+Runtime paths:
+
+- `/home/ubuntu/pool-pepepow/.runtime/live-stratum/stratum.pid`
+- `/home/ubuntu/pool-pepepow/.runtime/live-stratum/stratum.log`
+- `/home/ubuntu/pool-pepepow/.runtime/live-stratum/share-events.jsonl`
+- `/home/ubuntu/pool-pepepow/.runtime/live-stratum/activity-snapshot.json`
+- `/home/ubuntu/pool-pepepow/.runtime/live-stratum/launch.env`
+
+Example:
+
+```bash
+/home/ubuntu/pool-pepepow/ops/scripts/live-stratum.sh start
 ```
 
 ## `stratum_smoke_report.py`

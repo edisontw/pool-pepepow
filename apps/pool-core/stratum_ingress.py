@@ -67,6 +67,15 @@ class DispatchResult:
     start_notify_loop: bool = False
 
 
+@dataclass
+class SessionStats:
+    accepted_share_count: int = 0
+    first_share_at: datetime | None = None
+    last_share_at: datetime | None = None
+    last_submitted_job_id: str | None = None
+    unexpected_job_status_warning_emitted: bool = False
+
+
 class RecoveryTracker:
     def __init__(self) -> None:
         self.current_offset = 0
@@ -129,6 +138,7 @@ class StratumIngressService:
         self._job_counter = 0
         self._active_log_first_sequence: int | None = None
         self._active_log_last_sequence: int | None = None
+        self._client_writers: set[asyncio.StreamWriter] = set()
 
     async def start(self) -> None:
         await self._bootstrap_state()
@@ -161,6 +171,15 @@ class StratumIngressService:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
+
+        client_writers = list(self._client_writers)
+        for writer in client_writers:
+            writer.close()
+        if client_writers:
+            await asyncio.gather(
+                *(writer.wait_closed() for writer in client_writers),
+                return_exceptions=True,
+            )
 
         if self._append_task is not None:
             await self._append_task
@@ -263,9 +282,16 @@ class StratumIngressService:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         state = new_connection_state()
+        session_stats = SessionStats()
         remote_address = _format_peer(writer.get_extra_info("peername"))
         send_lock = asyncio.Lock()
         notify_task: asyncio.Task[None] | None = None
+        self._client_writers.add(writer)
+        LOGGER.info(
+            "Miner connected: remote=%s session=%s",
+            remote_address,
+            state.session_id,
+        )
 
         try:
             while not reader.at_eof():
@@ -277,7 +303,12 @@ class StratumIngressService:
                 if not line:
                     continue
 
-                dispatch = await self._dispatch_line(line, state, remote_address)
+                dispatch = await self._dispatch_line(
+                    line,
+                    state,
+                    remote_address,
+                    session_stats,
+                )
                 await self._send_message(writer, send_lock, dispatch.response)
                 for message in dispatch.notifications:
                     await self._send_message(writer, send_lock, message)
@@ -297,9 +328,23 @@ class StratumIngressService:
             writer.close()
             with suppress(ConnectionError):
                 await writer.wait_closed()
+            self._client_writers.discard(writer)
+            LOGGER.info(
+                "Miner disconnected: remote=%s session=%s acceptedShares=%s firstShareAt=%s lastShareAt=%s lastJobId=%s",
+                remote_address,
+                state.session_id,
+                session_stats.accepted_share_count,
+                _isoformat_or_none(session_stats.first_share_at),
+                _isoformat_or_none(session_stats.last_share_at),
+                session_stats.last_submitted_job_id,
+            )
 
     async def _dispatch_line(
-        self, line: str, state: ConnectionState, remote_address: str
+        self,
+        line: str,
+        state: ConnectionState,
+        remote_address: str,
+        session_stats: SessionStats,
     ) -> DispatchResult:
         try:
             request = parse_request(line)
@@ -323,13 +368,33 @@ class StratumIngressService:
             state.authorized_login = normalized_login
             state.authorized_wallet = wallet
             state.authorized_worker = worker
+            LOGGER.info(
+                "Miner authorized: session=%s wallet=%s worker=%s login=%s",
+                state.session_id,
+                wallet,
+                worker,
+                normalized_login,
+            )
 
             notifications: list[dict[str, Any]] = []
             desired_difficulty = self._synthetic_difficulty()
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
                 notifications.append(difficulty_notification(desired_difficulty))
-            notifications.append(self._new_notify_message(state))
+                LOGGER.info(
+                    "Difficulty sent: session=%s difficulty=%s",
+                    state.session_id,
+                    desired_difficulty,
+                )
+            notify_message = self._new_notify_message(state)
+            LOGGER.info(
+                "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s",
+                state.session_id,
+                state.current_job_id,
+                state.previous_job_id,
+                notify_message["params"][8],
+            )
+            notifications.append(notify_message)
 
             return DispatchResult(
                 success_response(request.request_id, True),
@@ -341,7 +406,47 @@ class StratumIngressService:
             wallet, worker, login = resolve_submit_identity(request.params, state)
             sequence = self._engine.next_sequence()
             observed_at = utc_now()
-            submit_job_id = _coerce_job_id(request.params, state.current_job_id)
+            submit_job_id = _extract_submit_job_id(request.params)
+            job_status = _classify_submit_job_id(
+                submit_job_id,
+                current_job_id=state.current_job_id,
+                previous_job_id=state.previous_job_id,
+            )
+            session_stats.accepted_share_count += 1
+            session_stats.last_submitted_job_id = submit_job_id
+            session_stats.last_share_at = observed_at
+            if session_stats.first_share_at is None:
+                session_stats.first_share_at = observed_at
+                LOGGER.info(
+                    "First accepted share: session=%s wallet=%s worker=%s jobId=%s jobStatus=%s",
+                    state.session_id,
+                    wallet,
+                    worker,
+                    submit_job_id,
+                    job_status,
+                )
+            if (
+                job_status == "unexpected"
+                and not session_stats.unexpected_job_status_warning_emitted
+            ):
+                LOGGER.warning(
+                    "Unexpected job id accepted in synthetic mode: session=%s remote=%s submittedJobId=%s currentJobId=%s previousJobId=%s",
+                    state.session_id,
+                    remote_address,
+                    submit_job_id,
+                    state.current_job_id,
+                    state.previous_job_id,
+                )
+                session_stats.unexpected_job_status_warning_emitted = True
+            LOGGER.info(
+                "Submit received: session=%s shareCount=%s submittedJobId=%s currentJobId=%s previousJobId=%s jobStatus=%s",
+                state.session_id,
+                session_stats.accepted_share_count,
+                submit_job_id,
+                state.current_job_id,
+                state.previous_job_id,
+                job_status,
+            )
             event = ShareEvent(
                 wallet=wallet,
                 worker=worker,
@@ -363,6 +468,7 @@ class StratumIngressService:
                 "sessionId": state.session_id,
                 "sequence": sequence,
                 "jobId": submit_job_id,
+                "jobStatus": job_status,
                 "difficulty": state.current_difficulty or self._synthetic_difficulty(),
                 "syntheticWork": True,
                 "blockchainVerified": False,
@@ -401,10 +507,18 @@ class StratumIngressService:
                 if not state.authorized:
                     continue
                 try:
+                    notify_message = self._new_notify_message(state)
+                    LOGGER.info(
+                        "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s",
+                        state.session_id,
+                        state.current_job_id,
+                        state.previous_job_id,
+                        notify_message["params"][8],
+                    )
                     await self._send_message(
                         writer,
                         send_lock,
-                        self._new_notify_message(state),
+                        notify_message,
                     )
                 except ConnectionError:
                     return
@@ -563,6 +677,7 @@ class StratumIngressService:
 
     def _new_notify_message(self, state: ConnectionState) -> dict[str, Any]:
         self._job_counter += 1
+        state.previous_job_id = state.current_job_id
         state.current_job_id = f"job-{self._job_counter:016x}"
         return notify_notification(
             job_id=state.current_job_id,
@@ -605,16 +720,39 @@ class StratumIngressService:
         return payload if isinstance(payload, dict) else None
 
 
-def _coerce_job_id(params: list[Any], current_job_id: str | None) -> str | None:
+def _extract_submit_job_id(params: list[Any]) -> str | None:
     if len(params) >= 2 and isinstance(params[1], str) and params[1].strip():
         return params[1].strip()
-    return current_job_id
+    return None
+
+
+def _classify_submit_job_id(
+    submit_job_id: str | None,
+    *,
+    current_job_id: str | None,
+    previous_job_id: str | None,
+) -> str:
+    if submit_job_id is None:
+        return "missing"
+    if current_job_id is not None and submit_job_id == current_job_id:
+        return "current"
+    if previous_job_id is not None and submit_job_id == previous_job_id:
+        return "previous"
+    return "unexpected"
 
 
 def _format_peer(peer: Any) -> str:
     if isinstance(peer, tuple) and len(peer) >= 2:
         return f"{peer[0]}:{peer[1]}"
     return str(peer or "unknown")
+
+
+def _isoformat_or_none(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.replace(microsecond=0).astimezone(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
 
 
 def _safe_int(raw_value: Any) -> int:

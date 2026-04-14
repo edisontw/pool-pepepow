@@ -125,6 +125,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     share_event["difficulty"],
                     config.hashrate_assumed_share_difficulty,
                 )
+                self.assertEqual(share_event["jobStatus"], "current")
                 self.assertTrue(share_event["syntheticWork"])
                 self.assertFalse(share_event["blockchainVerified"])
                 self.assertEqual(share_event["shareValidationMode"], "none")
@@ -218,6 +219,238 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     {"id": 2, "method": "mining.extranonce.subscribe", "params": []},
                 )
                 self.assertTrue(extranonce_response["result"])
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_previous_job_id_is_tagged_previous(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                synthetic_job_interval_seconds=1.0,
+            )
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                first_notify = await self._read_json(reader)
+                second_notify = await asyncio.wait_for(self._read_json(reader), timeout=2.5)
+
+                self.assertEqual(first_notify["method"], "mining.notify")
+                self.assertEqual(second_notify["method"], "mining.notify")
+
+                response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": [
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            first_notify["params"][0],
+                            "extra",
+                            "ntime",
+                            "nonce",
+                        ],
+                    },
+                )
+                self.assertTrue(response["result"])
+
+                await self._wait_for(
+                    lambda: self._read_share_events(config.activity_log_path)
+                )
+                share_event = json.loads(
+                    self._read_share_events(config.activity_log_path)[0]
+                )
+                self.assertEqual(share_event["jobStatus"], "previous")
+                self.assertEqual(share_event["jobId"], first_notify["params"][0])
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_missing_job_id_is_tagged_missing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                await self._read_json(reader)
+
+                response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "", "extra"],
+                    },
+                )
+                self.assertTrue(response["result"])
+
+                await self._wait_for(
+                    lambda: self._read_share_events(config.activity_log_path)
+                )
+                share_event = json.loads(
+                    self._read_share_events(config.activity_log_path)[0]
+                )
+                self.assertEqual(share_event["jobStatus"], "missing")
+                self.assertIsNone(share_event["jobId"])
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_unexpected_job_id_is_tagged_unexpected(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                await self._read_json(reader)
+
+                response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": [
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            "job-not-known-here",
+                            "extra",
+                            "ntime",
+                            "nonce",
+                        ],
+                    },
+                )
+                self.assertTrue(response["result"])
+
+                await self._wait_for(
+                    lambda: self._read_share_events(config.activity_log_path)
+                )
+                share_event = json.loads(
+                    self._read_share_events(config.activity_log_path)[0]
+                )
+                self.assertEqual(share_event["jobStatus"], "unexpected")
+                self.assertEqual(share_event["jobId"], "job-not-known-here")
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_stop_closes_active_client_after_notify_loop_started(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                synthetic_job_interval_seconds=1.0,
+            )
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                await self._read_json(reader)
+
+                await asyncio.wait_for(service.stop(), timeout=2.0)
+                self.assertEqual(await asyncio.wait_for(reader.readline(), timeout=2.0), b"")
+                writer.close()
+                await writer.wait_closed()
+                writer = None
             finally:
                 if writer is not None:
                     writer.close()
@@ -396,6 +629,11 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
     def _load_json(self, path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _read_share_events(self, path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
 
     def _make_config(
         self,

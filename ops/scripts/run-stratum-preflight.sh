@@ -48,7 +48,9 @@ Artifacts
   stratum log: ${OUTPUT_DIR}/stratum.log
   share log: ${OUTPUT_DIR}/share-events.jsonl
   activity snapshot: ${OUTPUT_DIR}/activity-snapshot.json
-  runtime snapshot: ${OUTPUT_DIR}/pool-snapshot.json
+
+For repeated external live testing, prefer:
+  /home/ubuntu/pool-pepepow/ops/scripts/live-stratum.sh start
 EOF
 
 cd "${POOL_CORE_DIR}"
@@ -60,7 +62,6 @@ env \
   PEPEPOW_POOL_CORE_STRATUM_PORT="${PORT}" \
   PEPEPOW_POOL_CORE_ACTIVITY_LOG_PATH="${OUTPUT_DIR}/share-events.jsonl" \
   PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_OUTPUT="${OUTPUT_DIR}/activity-snapshot.json" \
-  PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT="${OUTPUT_DIR}/pool-snapshot.json" \
   PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY="${SHARE_DIFFICULTY}" \
   PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS="${JOB_INTERVAL_SECONDS}" \
   python3 stratum_ingress.py 2>&1 | tee "${OUTPUT_DIR}/stratum.log"

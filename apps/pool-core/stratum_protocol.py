@@ -35,6 +35,7 @@ class ConnectionState:
     authorized_worker: str | None = None
     current_difficulty: float | None = None
     current_job_id: str | None = None
+    previous_job_id: str | None = None
 
 
 def new_connection_state() -> ConnectionState:
