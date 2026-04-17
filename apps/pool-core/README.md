@@ -9,6 +9,7 @@ current PEPEPOW round.
 - conservative snapshot producer
 - daemon-independent Stratum ingress
 - synthetic/fake Stratum v1 job broadcast for miner compatibility
+- optional daemon-backed block template polling with synthetic-safe fallback
 - atomic snapshot writes for the API layer
 - degraded fallback behavior when daemon RPC is unavailable
 - local JSONL share ingest for testing-mode and Stratum activity data
@@ -19,7 +20,6 @@ current PEPEPOW round.
 ## Not Implemented In This Round
 
 - real share validation
-- real block template retrieval
 - candidate block handling or `submitblock`
 - payout-grade accounting
 - payout automation
@@ -112,17 +112,19 @@ Current minimal scope:
 - accepts `mining.authorize`
 - pushes synthetic `mining.set_difficulty`
 - pushes synthetic `mining.notify`
+- can attach daemon template context to jobs when `PEPEPOW_POOL_CORE_TEMPLATE_MODE=daemon-template`
 - accepts `mining.submit`
 - always accepts submitted shares
 - writes every submitted share to JSONL with `source="stratum"`
 - writes a daemon-independent activity snapshot for the API to overlay
+- exposes template fetch/job-cache status through the activity snapshot
 - rotates JSONL by size and replays bounded retained tail on restart
 
 Not implemented in this round:
 
 - real difficulty management
 - daemon/template validation
-- real template retrieval
+- real candidate validation or `submitblock`
 - payouts
 
 Important boundaries:
@@ -131,6 +133,42 @@ Important boundaries:
 - submitted shares are non-validated
 - activity output is not blockchain verified
 - bounded replay is snapshot-first and only restores retained rolling tail
+
+## PEPEPOW Hash Bridge
+
+The local share-hash classification bridge is intentionally small:
+
+- [`stratum_ingress.py`](/home/ubuntu/pool-pepepow/apps/pool-core/stratum_ingress.py)
+- [`pepepow_pow.py`](/home/ubuntu/pool-pepepow/apps/pool-core/pepepow_pow.py)
+- [`pepepow_pow_helper.c`](/home/ubuntu/pool-pepepow/apps/pool-core/pepepow_pow_helper.c)
+- vendored static libraries under
+  [`libs/aarch64-linux/`](/home/ubuntu/pool-pepepow/apps/pool-core/libs/aarch64-linux)
+
+Authority and provenance:
+
+- The installed daemon/client on this host are the primary authority:
+  `PEPEPOWd` / `PEPEPOW-cli` `v2.9.0.4-c1394e6`
+- Runtime correctness is checked against local daemon RPC and real chain data.
+- `PEPEPOWd` is a stripped executable, not a stable reusable library ABI, so the
+  pool does not link against the daemon binary directly.
+- The vendored `libhoohash.a` and `libblake3.a` were copied from Hoosat's
+  aarch64 stratum-bridge build so the runtime bridge does not depend on any
+  `/tmp` exploration checkout.
+
+Current runtime dependency boundary:
+
+- runtime does not import code from `/tmp/HTND`, `/tmp/htn-stratum-bridge`, or
+  other exploration trees
+- the helper builds a local
+  `/home/ubuntu/pool-pepepow/.runtime/pool-core-build/libpepepow_pow.so`
+  from repo-vendored sources and static libraries
+
+Current non-essential artifacts:
+
+- `/home/ubuntu/pool-pepepow/.runtime/pool-core-build/libpepepow_pow.so` is a
+  generated artifact and can be rebuilt
+- `/home/ubuntu/pool-pepepow/.runtime/pool-core-build/blake3.h` is not needed
+  for runtime; it is only a leftover build copy if present
 
 ## Reindex Behavior
 

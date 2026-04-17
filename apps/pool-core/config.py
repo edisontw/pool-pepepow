@@ -41,6 +41,10 @@ class PoolCoreConfig:
     stratum_queue_maxsize: int
     hashrate_assumed_share_difficulty: float
     synthetic_job_interval_seconds: float
+    template_mode: str
+    template_fetch_interval_seconds: float
+    template_job_ttl_seconds: int
+    template_job_cache_size: int
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
 
@@ -149,6 +153,37 @@ def load_config() -> PoolCoreConfig:
                 os.getenv(
                     "PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS",
                     "30",
+                )
+            ),
+        ),
+        template_mode=os.getenv(
+            "PEPEPOW_POOL_CORE_TEMPLATE_MODE", "synthetic"
+        ).strip()
+        or "synthetic",
+        template_fetch_interval_seconds=max(
+            5.0,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_TEMPLATE_FETCH_INTERVAL_SECONDS",
+                    "15",
+                )
+            ),
+        ),
+        template_job_ttl_seconds=max(
+            30,
+            int(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS",
+                    "180",
+                )
+            ),
+        ),
+        template_job_cache_size=max(
+            4,
+            int(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE",
+                    "64",
                 )
             ),
         ),

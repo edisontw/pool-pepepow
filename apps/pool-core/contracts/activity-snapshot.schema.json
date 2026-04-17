@@ -3,7 +3,7 @@
   "$id": "https://pool-pepepow.local/schemas/activity-snapshot.schema.json",
   "title": "PEPEPOW Activity Snapshot",
   "type": "object",
-  "required": ["generatedAt", "meta", "pool", "miners"],
+  "required": ["generatedAt", "meta", "pool", "miners", "jobs"],
   "properties": {
     "generatedAt": {
       "type": "string",
@@ -26,7 +26,18 @@
         "warningCount",
         "sequence",
         "windowReplaySequenceFloor",
-        "dataStatus"
+        "dataStatus",
+        "templateModeConfigured",
+        "templateModeEffective",
+        "templateDaemonRpcStatus",
+        "templateDaemonRpcReachable",
+        "templateFetchStatus",
+        "templateLastAttemptAt",
+        "templateLastSuccessAt",
+        "templateLatestTemplateAgeSeconds",
+        "templateLatestTemplateAnchor",
+        "templateLastError",
+        "activeJobCount"
       ],
       "properties": {
         "schemaVersion": { "type": "string" },
@@ -56,7 +67,30 @@
         "dataStatus": {
           "type": "string",
           "enum": ["empty", "live", "stale"]
-        }
+        },
+        "templateModeConfigured": { "type": "string" },
+        "templateModeEffective": { "type": "string" },
+        "templateDaemonRpcStatus": { "type": "string" },
+        "templateDaemonRpcReachable": { "type": "boolean" },
+        "templateFetchStatus": { "type": "string" },
+        "templateLastAttemptAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "templateLastSuccessAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "templateLatestTemplateAgeSeconds": {
+          "type": ["integer", "null"]
+        },
+        "templateLatestTemplateAnchor": {
+          "type": ["string", "null"]
+        },
+        "templateLastError": {
+          "type": ["string", "null"]
+        },
+        "activeJobCount": { "type": "integer" }
       }
     },
     "pool": {
@@ -168,6 +202,82 @@
           },
           "payments": {
             "type": "array"
+          }
+        }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "required": [
+        "configuredMode",
+        "currentMode",
+        "daemonRpcStatus",
+        "daemonRpcReachable",
+        "templateFetchStatus",
+        "lastAttemptAt",
+        "lastSuccessAt",
+        "latestTemplateAgeSeconds",
+        "latestTemplateAnchor",
+        "lastError",
+        "activeJobCount",
+        "active"
+      ],
+      "properties": {
+        "configuredMode": { "type": "string" },
+        "currentMode": { "type": "string" },
+        "daemonRpcStatus": { "type": "string" },
+        "daemonRpcReachable": { "type": "boolean" },
+        "templateFetchStatus": { "type": "string" },
+        "lastAttemptAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "lastSuccessAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "latestTemplateAgeSeconds": {
+          "type": ["integer", "null"]
+        },
+        "latestTemplateAnchor": {
+          "type": ["string", "null"]
+        },
+        "lastError": {
+          "type": ["string", "null"]
+        },
+        "activeJobCount": { "type": "integer" },
+        "active": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "jobId",
+              "templateAnchor",
+              "targetContext",
+              "createdAt",
+              "expiresAt",
+              "staleBasis",
+              "stale",
+              "ageSeconds",
+              "source"
+            ],
+            "properties": {
+              "jobId": { "type": "string" },
+              "templateAnchor": { "type": "string" },
+              "targetContext": { "type": "object" },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "staleBasis": { "type": "string" },
+              "stale": { "type": "boolean" },
+              "ageSeconds": { "type": "integer" },
+              "source": { "type": "string" }
+            }
           }
         }
       }

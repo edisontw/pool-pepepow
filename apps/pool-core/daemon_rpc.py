@@ -53,6 +53,14 @@ class DaemonRpcClient:
     def get_mining_info(self) -> dict[str, Any]:
         return self._cached_call("getmininginfo", ttl=15)
 
+    def get_block_template(self) -> dict[str, Any]:
+        result = self.call("getblocktemplate", [{}])
+        if not isinstance(result, dict):
+            raise DaemonRpcResponseError(
+                "getblocktemplate returned an invalid payload type"
+            )
+        return result
+
     def get_block_hash(self, height: int) -> str:
         result = self.call("getblockhash", [height])
         if not isinstance(result, str) or not result:

@@ -35,20 +35,21 @@ SHARE_DIFFICULTY=""
 JOB_INTERVAL_SECONDS=""
 SNAPSHOT_INTERVAL_SECONDS=""
 LOG_ROTATE_BYTES=""
-
-clear_shell_loaded_launch_env() {
-  unset PEPEPOW_POOL_CORE_STRATUM_BIND_HOST
-  unset PEPEPOW_POOL_CORE_STRATUM_BIND_PORT
-  unset PEPEPOW_POOL_CORE_STRATUM_PORT
-  unset PEPEPOW_POOL_CORE_STRATUM_HOST
-  unset PEPEPOW_POOL_CORE_ACTIVITY_LOG_PATH
-  unset PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_OUTPUT
-  unset PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY
-  unset PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS
-  unset PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS
-}
+TEMPLATE_MODE=""
+TEMPLATE_FETCH_INTERVAL_SECONDS=""
+TEMPLATE_JOB_TTL_SECONDS=""
+TEMPLATE_JOB_CACHE_SIZE=""
+RPC_HOST=""
+RPC_PORT=""
+RPC_URL=""
+RPC_USER=""
+RPC_PASSWORD=""
+RPC_TIMEOUT_SECONDS=""
 
 set_effective_defaults() {
+  local detected_rpc_host detected_rpc_port
+  detected_rpc_host="${PEPEPOWD_RPC_HOST:-127.0.0.1}"
+  detected_rpc_port="${PEPEPOWD_RPC_PORT:-8834}"
   PORT="${PEPEPOW_POOL_CORE_STRATUM_BIND_PORT:-39333}"
   PUBLIC_HOST="${PEPEPOW_POOL_CORE_STRATUM_HOST:-$(detect_default_host)}"
   BIND_HOST="${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST:-0.0.0.0}"
@@ -56,6 +57,16 @@ set_effective_defaults() {
   JOB_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS:-5}"
   SNAPSHOT_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS:-1}"
   LOG_ROTATE_BYTES="${PEPEPOW_LIVE_STRATUM_LOG_ROTATE_BYTES:-33554432}"
+  TEMPLATE_MODE="${PEPEPOW_POOL_CORE_TEMPLATE_MODE:-synthetic}"
+  TEMPLATE_FETCH_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_TEMPLATE_FETCH_INTERVAL_SECONDS:-15}"
+  TEMPLATE_JOB_TTL_SECONDS="${PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS:-180}"
+  TEMPLATE_JOB_CACHE_SIZE="${PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE:-64}"
+  RPC_HOST="${detected_rpc_host}"
+  RPC_PORT="${detected_rpc_port}"
+  RPC_URL="${PEPEPOWD_RPC_URL:-http://${detected_rpc_host}:${detected_rpc_port}}"
+  RPC_USER="${PEPEPOWD_RPC_USER:-}"
+  RPC_PASSWORD="${PEPEPOWD_RPC_PASSWORD:-}"
+  RPC_TIMEOUT_SECONDS="${PEPEPOWD_RPC_TIMEOUT_SECONDS:-5}"
 }
 
 ensure_runtime_dir() {
@@ -63,16 +74,95 @@ ensure_runtime_dir() {
 }
 
 load_launch_env_if_present() {
-  if [[ -f "${LAUNCH_ENV_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${LAUNCH_ENV_FILE}"
-    PORT="${PEPEPOW_POOL_CORE_STRATUM_BIND_PORT:-${PORT}}"
-    PUBLIC_HOST="${PEPEPOW_POOL_CORE_STRATUM_HOST:-${PUBLIC_HOST}}"
-    BIND_HOST="${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST:-${BIND_HOST}}"
-    SHARE_DIFFICULTY="${PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY:-${SHARE_DIFFICULTY}}"
-    JOB_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS:-${JOB_INTERVAL_SECONDS}}"
-    SNAPSHOT_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS:-${SNAPSHOT_INTERVAL_SECONDS}}"
+  local loaded_bind_host loaded_port loaded_public_host
+  local loaded_share_difficulty loaded_job_interval loaded_snapshot_interval
+  local loaded_template_mode loaded_template_fetch_interval
+  local loaded_template_job_ttl loaded_template_job_cache_size
+  local loaded_rpc_host loaded_rpc_port loaded_rpc_url
+  local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
+
+  if [[ ! -f "${LAUNCH_ENV_FILE}" ]]; then
+    return
   fi
+
+  loaded_bind_host="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_BIND_HOST)"
+  loaded_port="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_BIND_PORT)"
+  loaded_public_host="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_HOST)"
+  loaded_share_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY)"
+  loaded_job_interval="$(launch_env_value PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS)"
+  loaded_snapshot_interval="$(launch_env_value PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS)"
+  loaded_template_mode="$(launch_env_value PEPEPOW_POOL_CORE_TEMPLATE_MODE)"
+  loaded_template_fetch_interval="$(launch_env_value PEPEPOW_POOL_CORE_TEMPLATE_FETCH_INTERVAL_SECONDS)"
+  loaded_template_job_ttl="$(launch_env_value PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS)"
+  loaded_template_job_cache_size="$(launch_env_value PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE)"
+  loaded_rpc_host="$(launch_env_value PEPEPOWD_RPC_HOST)"
+  loaded_rpc_port="$(launch_env_value PEPEPOWD_RPC_PORT)"
+  loaded_rpc_url="$(launch_env_value PEPEPOWD_RPC_URL)"
+  loaded_rpc_user="$(launch_env_value PEPEPOWD_RPC_USER)"
+  loaded_rpc_password="$(launch_env_value PEPEPOWD_RPC_PASSWORD)"
+  loaded_rpc_timeout="$(launch_env_value PEPEPOWD_RPC_TIMEOUT_SECONDS)"
+
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST+x}" && -n "${loaded_bind_host}" ]]; then
+    BIND_HOST="${loaded_bind_host}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_PORT+x}" && -n "${loaded_port}" ]]; then
+    PORT="${loaded_port}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_HOST+x}" && -n "${loaded_public_host}" ]]; then
+    PUBLIC_HOST="${loaded_public_host}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY+x}" && -n "${loaded_share_difficulty}" ]]; then
+    SHARE_DIFFICULTY="${loaded_share_difficulty}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS+x}" && -n "${loaded_job_interval}" ]]; then
+    JOB_INTERVAL_SECONDS="${loaded_job_interval}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS+x}" && -n "${loaded_snapshot_interval}" ]]; then
+    SNAPSHOT_INTERVAL_SECONDS="${loaded_snapshot_interval}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_TEMPLATE_MODE+x}" && -n "${loaded_template_mode}" ]]; then
+    TEMPLATE_MODE="${loaded_template_mode}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_TEMPLATE_FETCH_INTERVAL_SECONDS+x}" && -n "${loaded_template_fetch_interval}" ]]; then
+    TEMPLATE_FETCH_INTERVAL_SECONDS="${loaded_template_fetch_interval}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS+x}" && -n "${loaded_template_job_ttl}" ]]; then
+    TEMPLATE_JOB_TTL_SECONDS="${loaded_template_job_ttl}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE+x}" && -n "${loaded_template_job_cache_size}" ]]; then
+    TEMPLATE_JOB_CACHE_SIZE="${loaded_template_job_cache_size}"
+  fi
+  if [[ -z "${PEPEPOWD_RPC_HOST+x}" && -n "${loaded_rpc_host}" ]]; then
+    RPC_HOST="${loaded_rpc_host}"
+  fi
+  if [[ -z "${PEPEPOWD_RPC_PORT+x}" && -n "${loaded_rpc_port}" ]]; then
+    RPC_PORT="${loaded_rpc_port}"
+  fi
+  if [[ -z "${PEPEPOWD_RPC_URL+x}" && -n "${loaded_rpc_url}" ]]; then
+    RPC_URL="${loaded_rpc_url}"
+  fi
+  if [[ -z "${PEPEPOWD_RPC_USER+x}" && -n "${loaded_rpc_user}" ]]; then
+    RPC_USER="${loaded_rpc_user}"
+  fi
+  if [[ -z "${PEPEPOWD_RPC_PASSWORD+x}" && -n "${loaded_rpc_password}" ]]; then
+    RPC_PASSWORD="${loaded_rpc_password}"
+  fi
+  if [[ -z "${PEPEPOWD_RPC_TIMEOUT_SECONDS+x}" && -n "${loaded_rpc_timeout}" ]]; then
+    RPC_TIMEOUT_SECONDS="${loaded_rpc_timeout}"
+  fi
+}
+
+launch_env_value() {
+  local var_name="$1"
+  env -i bash -lc "source '${LAUNCH_ENV_FILE}' >/dev/null 2>&1; printf '%s' \"\${${var_name}:-}\""
+}
+
+masked_rpc_password() {
+  if [[ -n "${RPC_PASSWORD}" ]]; then
+    printf 'set'
+    return
+  fi
+  printf 'unset'
 }
 
 print_paths() {
@@ -82,6 +172,16 @@ bind: ${BIND_HOST}:${PORT}
 effective_difficulty: ${SHARE_DIFFICULTY}
 difficulty_source: ${LAUNCH_ENV_FILE} -> PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY
 notify_interval_seconds: ${JOB_INTERVAL_SECONDS}
+template_mode: ${TEMPLATE_MODE}
+template_fetch_interval_seconds: ${TEMPLATE_FETCH_INTERVAL_SECONDS}
+template_job_ttl_seconds: ${TEMPLATE_JOB_TTL_SECONDS}
+template_job_cache_size: ${TEMPLATE_JOB_CACHE_SIZE}
+rpc_host: ${RPC_HOST}
+rpc_port: ${RPC_PORT}
+rpc_url: ${RPC_URL}
+rpc_user: ${RPC_USER:-unset}
+rpc_password: $(masked_rpc_password)
+rpc_timeout_seconds: ${RPC_TIMEOUT_SECONDS}
 runtime_dir: ${RUNTIME_DIR}
 pid_file: ${PID_FILE}
 log_file: ${LOG_FILE}
@@ -152,6 +252,7 @@ rotate_log_if_needed() {
 }
 
 write_launch_env() {
+  umask 077
   cat >"${LAUNCH_ENV_FILE}" <<EOF
 PEPEPOW_POOL_CORE_STRATUM_BIND_HOST=${BIND_HOST}
 PEPEPOW_POOL_CORE_STRATUM_BIND_PORT=${PORT}
@@ -162,8 +263,19 @@ PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_OUTPUT=${ACTIVITY_SNAPSHOT}
 PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY=${SHARE_DIFFICULTY}
 PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS=${JOB_INTERVAL_SECONDS}
 PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS=${SNAPSHOT_INTERVAL_SECONDS}
+PEPEPOW_POOL_CORE_TEMPLATE_MODE=${TEMPLATE_MODE}
+PEPEPOW_POOL_CORE_TEMPLATE_FETCH_INTERVAL_SECONDS=${TEMPLATE_FETCH_INTERVAL_SECONDS}
+PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS=${TEMPLATE_JOB_TTL_SECONDS}
+PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE=${TEMPLATE_JOB_CACHE_SIZE}
+PEPEPOWD_RPC_HOST=${RPC_HOST}
+PEPEPOWD_RPC_PORT=${RPC_PORT}
+PEPEPOWD_RPC_URL=${RPC_URL}
+PEPEPOWD_RPC_USER=${RPC_USER}
+PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
+PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
 PYTHONUNBUFFERED=1
 EOF
+  chmod 600 "${LAUNCH_ENV_FILE}"
 }
 
 print_snapshot_summary() {
@@ -192,6 +304,11 @@ print(f"last_share_at: {meta.get('lastShareAt')}")
 print(f"sequence: {meta.get('sequence')}")
 print(f"accepted_shares_total: {accepted_total}")
 print(f"active_miners: {pool.get('activeMiners')}")
+print(f"template_mode_effective: {meta.get('templateModeEffective')}")
+print(f"template_fetch_status: {meta.get('templateFetchStatus')}")
+print(f"template_daemon_rpc_status: {meta.get('templateDaemonRpcStatus')}")
+print(f"template_latest_age_seconds: {meta.get('templateLatestTemplateAgeSeconds')}")
+print(f"active_job_count: {meta.get('activeJobCount')}")
 PY
 }
 
@@ -204,9 +321,9 @@ print_runtime_sizes() {
 }
 
 start_service() {
-  clear_shell_loaded_launch_env
   set_effective_defaults
   ensure_runtime_dir
+  load_launch_env_if_present
   remove_stale_pid_file_if_needed
 
   local pid
@@ -240,6 +357,16 @@ start_service() {
     export PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY="${SHARE_DIFFICULTY}"
     export PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS="${JOB_INTERVAL_SECONDS}"
     export PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS="${SNAPSHOT_INTERVAL_SECONDS}"
+    export PEPEPOW_POOL_CORE_TEMPLATE_MODE="${TEMPLATE_MODE}"
+    export PEPEPOW_POOL_CORE_TEMPLATE_FETCH_INTERVAL_SECONDS="${TEMPLATE_FETCH_INTERVAL_SECONDS}"
+    export PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS="${TEMPLATE_JOB_TTL_SECONDS}"
+    export PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE="${TEMPLATE_JOB_CACHE_SIZE}"
+    export PEPEPOWD_RPC_HOST="${RPC_HOST}"
+    export PEPEPOWD_RPC_PORT="${RPC_PORT}"
+    export PEPEPOWD_RPC_URL="${RPC_URL}"
+    export PEPEPOWD_RPC_USER="${RPC_USER}"
+    export PEPEPOWD_RPC_PASSWORD="${RPC_PASSWORD}"
+    export PEPEPOWD_RPC_TIMEOUT_SECONDS="${RPC_TIMEOUT_SECONDS}"
     setsid python3 stratum_ingress.py </dev/null >>"${LOG_FILE}" 2>&1 &
     echo "$!" >"${PID_FILE}"
   )

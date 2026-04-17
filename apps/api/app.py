@@ -83,8 +83,51 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     "activityDerivedFromShares"
                 ),
                 "blockchainVerified": record.meta.get("blockchainVerified"),
+                "templateModeConfigured": record.meta.get("templateModeConfigured"),
+                "templateModeEffective": record.meta.get("templateModeEffective"),
+                "templateDaemonRpcStatus": record.meta.get(
+                    "templateDaemonRpcStatus"
+                ),
+                "templateDaemonRpcReachable": record.meta.get(
+                    "templateDaemonRpcReachable"
+                ),
+                "templateFetchStatus": record.meta.get("templateFetchStatus"),
+                "templateLastAttemptAt": record.meta.get("templateLastAttemptAt"),
+                "templateLastSuccessAt": record.meta.get("templateLastSuccessAt"),
+                "templateLatestTemplateAgeSeconds": record.meta.get(
+                    "templateLatestTemplateAgeSeconds"
+                ),
+                "templateLatestTemplateAnchor": record.meta.get(
+                    "templateLatestTemplateAnchor"
+                ),
+                "templateLastError": record.meta.get("templateLastError"),
+                "activeJobCount": record.meta.get("activeJobCount"),
                 "assumedShareDifficulty": record.meta.get("assumedShareDifficulty"),
                 "hashratePolicy": record.meta.get("hashratePolicy"),
+                "submitValidationMode": record.meta.get("submitValidationMode"),
+                "submitAcceptedCount": record.meta.get("submitAcceptedCount"),
+                "submitRejectedCount": record.meta.get("submitRejectedCount"),
+                "submitDuplicateWindowSize": record.meta.get(
+                    "submitDuplicateWindowSize"
+                ),
+                "submitCandidatePossibleCount": record.meta.get(
+                    "submitCandidatePossibleCount"
+                ),
+                "shareHashValidationMode": record.meta.get(
+                    "shareHashValidationMode"
+                ),
+                "submitClassificationCounts": record.meta.get(
+                    "submitClassificationCounts"
+                ),
+                "submitRejectReasonCounts": record.meta.get(
+                    "submitRejectReasonCounts"
+                ),
+                "submitTargetValidationCounts": record.meta.get(
+                    "submitTargetValidationCounts"
+                ),
+                "submitShareHashValidationCounts": record.meta.get(
+                    "submitShareHashValidationCounts"
+                ),
                 "runtimeSnapshotPath": str(app_config.runtime_snapshot_path),
                 "fallbackSnapshotPath": str(app_config.fallback_snapshot_path),
                 "activitySnapshotPath": str(app_config.activity_snapshot_path),
@@ -107,6 +150,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
             "activityDerivedFromShares"
         )
         payload["blockchainVerified"] = record.meta.get("blockchainVerified")
+        payload["templateModeEffective"] = record.meta.get("templateModeEffective")
+        payload["activeJobCount"] = record.meta.get("activeJobCount")
         payload["assumedShareDifficulty"] = record.meta.get(
             "assumedShareDifficulty"
         )

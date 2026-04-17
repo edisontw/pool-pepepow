@@ -193,9 +193,37 @@ def make_activity_snapshot() -> dict:
             "activityDerivedFromShares": True,
             "blockchainVerified": False,
             "syntheticJobMode": "synthetic-stratum-v1",
-            "shareValidationMode": "none",
+            "shareValidationMode": "structural-skeleton",
             "hashratePolicy": "share-rate-assumed-diff",
             "assumedShareDifficulty": 1.0,
+            "submitValidationMode": "structural-skeleton",
+            "submitAcceptedCount": 5,
+            "submitRejectedCount": 2,
+            "submitDuplicateWindowSize": 512,
+            "submitCandidatePossibleCount": 3,
+            "shareHashValidationMode": "hoohashv110-pepew-header80",
+            "submitClassificationCounts": {
+                "current": 4,
+                "previous": 1,
+                "stale": 1,
+                "unknown": 0,
+                "malformed": 1
+            },
+            "submitRejectReasonCounts": {
+                "stale-job": 1,
+                "malformed-submit": 1
+            },
+            "submitTargetValidationCounts": {
+                "candidate-possible": 3,
+                "target-context-missing": 0,
+                "target-context-mismatch": 1
+            },
+            "submitShareHashValidationCounts": {
+                "share-hash-valid": 2,
+                "share-hash-invalid": 1,
+                "preimage-missing": 0,
+                "preimage-mismatch": 1
+            },
             "windowSeconds": [60, 300, 900],
             "lastShareAt": "2999-01-01T00:00:00Z",
             "warningCount": 0,
@@ -205,7 +233,18 @@ def make_activity_snapshot() -> dict:
             "logInode": 1234,
             "windowReplayOffset": 0,
             "windowReplaySequenceFloor": 1,
-            "dataStatus": "live"
+            "dataStatus": "live",
+            "templateModeConfigured": "daemon-template",
+            "templateModeEffective": "daemon-template",
+            "templateDaemonRpcStatus": "reachable",
+            "templateDaemonRpcReachable": True,
+            "templateFetchStatus": "ok",
+            "templateLastAttemptAt": "2999-01-01T00:00:01Z",
+            "templateLastSuccessAt": "2999-01-01T00:00:01Z",
+            "templateLatestTemplateAgeSeconds": 0,
+            "templateLatestTemplateAnchor": "deadbeefcafebabe00112233",
+            "templateLastError": None,
+            "activeJobCount": 1
         },
         "pool": {
             "poolHashrate": 57266230.61333334,
@@ -222,7 +261,39 @@ def make_activity_snapshot() -> dict:
             ],
             "rolling": runtime_snapshot["miners"]["PEPEPOW1KnownWalletAddress000000"]["summary"]["rolling"]
         },
-        "miners": runtime_snapshot["miners"]
+        "miners": runtime_snapshot["miners"],
+        "jobs": {
+            "configuredMode": "daemon-template",
+            "currentMode": "daemon-template",
+            "daemonRpcStatus": "reachable",
+            "daemonRpcReachable": True,
+            "templateFetchStatus": "ok",
+            "lastAttemptAt": "2999-01-01T00:00:01Z",
+            "lastSuccessAt": "2999-01-01T00:00:01Z",
+            "latestTemplateAgeSeconds": 0,
+            "latestTemplateAnchor": "deadbeefcafebabe00112233",
+            "lastError": None,
+            "activeJobCount": 1,
+            "active": [
+                {
+                    "jobId": "job-0000000000000001",
+                    "templateAnchor": "deadbeefcafebabe00112233",
+                    "targetContext": {
+                        "bits": "1c0ffff0",
+                        "target": "0f" * 32,
+                        "height": 123456,
+                        "version": "20000000",
+                        "curtime": 1713225600
+                    },
+                    "createdAt": "2999-01-01T00:00:01Z",
+                    "expiresAt": "2999-01-01T00:03:01Z",
+                    "staleBasis": "created+180s",
+                    "stale": False,
+                    "ageSeconds": 0,
+                    "source": "daemon-template"
+                }
+            ]
+        }
     }
 
 
@@ -448,12 +519,53 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(payload["poolHashrate"], 57266230.61333334)
             self.assertEqual(payload["activityMode"], "stratum-share-ingest")
             self.assertTrue(payload["activityDerivedFromShares"])
+            self.assertEqual(payload["templateModeEffective"], "daemon-template")
+            self.assertEqual(payload["activeJobCount"], 1)
 
             miner_response = client.get("/api/miner/PEPEPOW1KnownWalletAddress000000")
             self.assertEqual(miner_response.status_code, 200)
             miner_payload = miner_response.get_json()
             self.assertTrue(miner_payload["found"])
             self.assertEqual(miner_payload["summary"]["shareCount"], 5)
+
+            health_response = client.get("/api/health")
+            self.assertEqual(health_response.status_code, 200)
+            health_payload = health_response.get_json()
+            self.assertEqual(health_payload["templateModeEffective"], "daemon-template")
+            self.assertEqual(health_payload["templateDaemonRpcStatus"], "reachable")
+            self.assertEqual(health_payload["templateFetchStatus"], "ok")
+            self.assertEqual(health_payload["activeJobCount"], 1)
+            self.assertEqual(
+                health_payload["submitValidationMode"], "structural-skeleton"
+            )
+            self.assertEqual(health_payload["submitAcceptedCount"], 5)
+            self.assertEqual(health_payload["submitRejectedCount"], 2)
+            self.assertEqual(health_payload["submitCandidatePossibleCount"], 3)
+            self.assertEqual(
+                health_payload["shareHashValidationMode"],
+                "hoohashv110-pepew-header80",
+            )
+            self.assertEqual(
+                health_payload["submitRejectReasonCounts"]["stale-job"], 1
+            )
+            self.assertEqual(
+                health_payload["submitTargetValidationCounts"][
+                    "target-context-mismatch"
+                ],
+                1,
+            )
+            self.assertEqual(
+                health_payload["submitShareHashValidationCounts"][
+                    "share-hash-valid"
+                ],
+                2,
+            )
+            self.assertEqual(
+                health_payload["submitShareHashValidationCounts"][
+                    "preimage-mismatch"
+                ],
+                1,
+            )
 
     def test_missing_all_snapshots_returns_503(self):
         missing_path = REPO_ROOT / "apps" / "api" / "data" / "mock" / "missing.json"

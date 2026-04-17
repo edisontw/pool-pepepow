@@ -241,6 +241,8 @@ class ActivityEngine:
         log_inode: int | None = None,
         window_replay_offset: int = 0,
         window_replay_sequence_floor: int = 0,
+        job_cache_snapshot: dict[str, Any] | None = None,
+        submit_validation_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         effective_now = now or utc_now()
         now_second = int(effective_now.timestamp())
@@ -350,8 +352,55 @@ class ActivityEngine:
             "windowReplaySequenceFloor": window_replay_sequence_floor,
             "dataStatus": data_status,
         }
+        if isinstance(job_cache_snapshot, dict):
+            meta["templateModeConfigured"] = job_cache_snapshot.get("configuredMode")
+            meta["templateModeEffective"] = job_cache_snapshot.get("currentMode")
+            meta["templateDaemonRpcStatus"] = job_cache_snapshot.get("daemonRpcStatus")
+            meta["templateDaemonRpcReachable"] = bool(
+                job_cache_snapshot.get("daemonRpcReachable", False)
+            )
+            meta["templateFetchStatus"] = job_cache_snapshot.get("templateFetchStatus")
+            meta["templateLastAttemptAt"] = job_cache_snapshot.get("lastAttemptAt")
+            meta["templateLastSuccessAt"] = job_cache_snapshot.get("lastSuccessAt")
+            meta["templateLatestTemplateAgeSeconds"] = job_cache_snapshot.get(
+                "latestTemplateAgeSeconds"
+            )
+            meta["templateLatestTemplateAnchor"] = job_cache_snapshot.get(
+                "latestTemplateAnchor"
+            )
+            meta["templateLastError"] = job_cache_snapshot.get("lastError")
+            meta["activeJobCount"] = int(job_cache_snapshot.get("activeJobCount", 0))
+        if isinstance(submit_validation_snapshot, dict):
+            meta["submitValidationMode"] = submit_validation_snapshot.get("mode")
+            meta["submitAcceptedCount"] = int(
+                submit_validation_snapshot.get("accepted", 0)
+            )
+            meta["submitRejectedCount"] = int(
+                submit_validation_snapshot.get("rejected", 0)
+            )
+            meta["submitDuplicateWindowSize"] = int(
+                submit_validation_snapshot.get("duplicateWindowSize", 0)
+            )
+            meta["submitCandidatePossibleCount"] = int(
+                submit_validation_snapshot.get("candidatePossibleCount", 0)
+            )
+            meta["shareHashValidationMode"] = submit_validation_snapshot.get(
+                "shareHashValidationMode"
+            )
+            meta["submitClassificationCounts"] = dict(
+                submit_validation_snapshot.get("classificationCounts", {})
+            )
+            meta["submitRejectReasonCounts"] = dict(
+                submit_validation_snapshot.get("rejectReasonCounts", {})
+            )
+            meta["submitTargetValidationCounts"] = dict(
+                submit_validation_snapshot.get("targetValidationCounts", {})
+            )
+            meta["submitShareHashValidationCounts"] = dict(
+                submit_validation_snapshot.get("shareHashValidationCounts", {})
+            )
 
-        return {
+        snapshot = {
             "generatedAt": isoformat(effective_now),
             "meta": meta,
             "pool": {
@@ -363,6 +412,9 @@ class ActivityEngine:
             },
             "miners": miners,
         }
+        if isinstance(job_cache_snapshot, dict):
+            snapshot["jobs"] = job_cache_snapshot
+        return snapshot
 
     def _build_rolling_payload(
         self,

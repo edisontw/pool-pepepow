@@ -268,9 +268,80 @@ def _overlay_activity_snapshot(
     base_meta["shareValidationMode"] = activity_meta.get(
         "shareValidationMode", base_meta.get("shareValidationMode")
     )
+    base_meta["templateModeConfigured"] = activity_meta.get(
+        "templateModeConfigured", base_meta.get("templateModeConfigured")
+    )
+    base_meta["templateModeEffective"] = activity_meta.get(
+        "templateModeEffective", base_meta.get("templateModeEffective")
+    )
+    base_meta["templateDaemonRpcStatus"] = activity_meta.get(
+        "templateDaemonRpcStatus", base_meta.get("templateDaemonRpcStatus")
+    )
+    base_meta["templateDaemonRpcReachable"] = activity_meta.get(
+        "templateDaemonRpcReachable", base_meta.get("templateDaemonRpcReachable")
+    )
+    base_meta["templateFetchStatus"] = activity_meta.get(
+        "templateFetchStatus", base_meta.get("templateFetchStatus")
+    )
+    base_meta["templateLastAttemptAt"] = activity_meta.get(
+        "templateLastAttemptAt", base_meta.get("templateLastAttemptAt")
+    )
+    base_meta["templateLastSuccessAt"] = activity_meta.get(
+        "templateLastSuccessAt", base_meta.get("templateLastSuccessAt")
+    )
+    base_meta["templateLatestTemplateAgeSeconds"] = activity_meta.get(
+        "templateLatestTemplateAgeSeconds",
+        base_meta.get("templateLatestTemplateAgeSeconds"),
+    )
+    base_meta["templateLatestTemplateAnchor"] = activity_meta.get(
+        "templateLatestTemplateAnchor",
+        base_meta.get("templateLatestTemplateAnchor"),
+    )
+    base_meta["templateLastError"] = activity_meta.get(
+        "templateLastError", base_meta.get("templateLastError")
+    )
+    base_meta["activeJobCount"] = int(activity_meta.get("activeJobCount", 0) or 0)
     base_meta["assumedShareDifficulty"] = activity_meta.get("assumedShareDifficulty")
     base_meta["hashratePolicy"] = activity_meta.get(
         "hashratePolicy", base_meta.get("hashratePolicy")
+    )
+    base_meta["submitValidationMode"] = activity_meta.get(
+        "submitValidationMode", base_meta.get("submitValidationMode")
+    )
+    base_meta["submitAcceptedCount"] = int(
+        activity_meta.get("submitAcceptedCount", 0) or 0
+    )
+    base_meta["submitRejectedCount"] = int(
+        activity_meta.get("submitRejectedCount", 0) or 0
+    )
+    base_meta["submitDuplicateWindowSize"] = int(
+        activity_meta.get("submitDuplicateWindowSize", 0) or 0
+    )
+    base_meta["submitCandidatePossibleCount"] = int(
+        activity_meta.get("submitCandidatePossibleCount", 0) or 0
+    )
+    base_meta["shareHashValidationMode"] = activity_meta.get(
+        "shareHashValidationMode", base_meta.get("shareHashValidationMode")
+    )
+    base_meta["submitClassificationCounts"] = (
+        activity_meta.get("submitClassificationCounts", {})
+        if isinstance(activity_meta.get("submitClassificationCounts", {}), dict)
+        else {}
+    )
+    base_meta["submitRejectReasonCounts"] = (
+        activity_meta.get("submitRejectReasonCounts", {})
+        if isinstance(activity_meta.get("submitRejectReasonCounts", {}), dict)
+        else {}
+    )
+    base_meta["submitTargetValidationCounts"] = (
+        activity_meta.get("submitTargetValidationCounts", {})
+        if isinstance(activity_meta.get("submitTargetValidationCounts", {}), dict)
+        else {}
+    )
+    base_meta["submitShareHashValidationCounts"] = (
+        activity_meta.get("submitShareHashValidationCounts", {})
+        if isinstance(activity_meta.get("submitShareHashValidationCounts", {}), dict)
+        else {}
     )
     if isinstance(activity_miners, dict):
         base_meta["minerLookupImplemented"] = True
