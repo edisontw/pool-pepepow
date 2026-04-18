@@ -2,12 +2,13 @@
 
 ## Purpose
 
-This document defines the deployment strategy for the current PEPEPOW community
-pool stack.
+This document defines the deployment strategy for the PEPEPOW community pool
+stack.
 
 The goal is to deploy a lightweight, maintainable, reproducible stack on a
 small Oracle Cloud ARM64 instance while minimizing operational risk and keeping
-the current daemon-independent share-ingest path available.
+the baseline share-ingest path available while progressively enabling validated
+mining milestones.
 
 ---
 
@@ -23,6 +24,11 @@ The deployment must achieve the following:
 - keep daemon RPC and internal services private
 - remain easy to maintain and rebuild
 - support AI-agent-assisted iteration
+- support staged mining progression:
+  - baseline ingest
+  - validation
+  - candidate dry-run
+  - controlled submission
 
 ---
 
@@ -46,15 +52,17 @@ The current services expected to run on the same VM are:
 - `PEPEPOWd`
 - pool-core snapshot producer
 - Stratum ingress
+- template-backed validation path inside pool core
 - public API
 - frontend
 - nginx
 
-Optional future services:
+Optional later services:
 
-- Redis
+- isolated submission helper if ever needed
 - payout worker
 - notification worker
+- Redis only if clearly justified
 
 This model is chosen because it is simpler, lighter, and easier to manage at
 the current scale.
@@ -86,6 +94,11 @@ Deployments should support small changes, verification, and rollback.
 Polling frequency, service count, and frontend behavior must be chosen
 carefully for a 1-core machine.
 
+### 3.6 Feature Gating
+
+Higher-risk mining features, especially real block submission, must remain
+separately gateable and disabled by default.
+
 ---
 
 ## 4. Proposed Runtime Layout
@@ -102,6 +115,9 @@ carefully for a 1-core machine.
 - PEPEPOWd RPC
 - runtime snapshot producer internals
 - activity snapshot file
+- template-backed validation internals
+- candidate dry-run outputs
+- any real submission tooling
 - any payout tooling
 - any admin-only scripts or maintenance tools
 - optional future Redis
@@ -121,13 +137,16 @@ A possible filesystem layout:
 - `/var/log/pepepow-pool/`
   - service-specific logs if not using journald only
 - `/var/lib/pepepow-pool/`
-  - runtime snapshot, activity snapshot, and share log
+  - runtime snapshot
+  - activity snapshot
+  - share log
+  - candidate-prep / dry-run artifacts where enabled
 - daemon data directory
 
-Optional future paths:
+Optional later paths:
 
-- Redis data/config
 - payout state or reporting data
+- Redis data/config
 
 ---
 
@@ -143,10 +162,11 @@ Before any installation begins, confirm:
 - firewall/public port policy is decided
 - backup approach is defined
 - current round scope is understood:
-  - share ingest first
-  - daemon-independent Stratum ingress
-  - no validated block submission
-  - no payouts
+  - baseline share ingest is working
+  - daemon-template-backed validation is in scope
+  - candidate dry-run is in scope
+  - real block submission is controlled and disabled by default
+  - payouts are not yet in scope
 
 ### Deliverables
 
@@ -154,6 +174,7 @@ Before any installation begins, confirm:
 - service inventory
 - network exposure plan
 - configuration variable list
+- feature-flag plan for higher-risk mining stages
 
 ---
 
@@ -174,7 +195,7 @@ Prepare the server for deployment.
 - install runtime dependencies for the current stack
 - prepare TLS certificate plan
 
-Optional future tasks:
+Optional later tasks:
 
 - install Redis
 
@@ -191,7 +212,7 @@ Optional future tasks:
 ## Phase 2: Daemon Deployment
 
 Deploy `PEPEPOWd` and ensure chain compatibility for the runtime snapshot
-producer.
+producer and template-backed mining path.
 
 ### Tasks
 
@@ -213,14 +234,15 @@ producer.
 
 ### Notes
 
-Current Stratum ingress bring-up does not depend on daemon health. Daemon health
-still matters for the chain snapshot producer.
+Baseline Stratum ingress observability should not fully depend on daemon health.
+Daemon health still matters for runtime chain snapshots and validation
+progression.
 
 ---
 
-## Phase 3: Pool Core Deployment
+## Phase 3: Baseline Pool Core Deployment
 
-Deploy the currently implemented pool-core services.
+Deploy the baseline currently implemented pool-core services.
 
 ### Tasks
 
@@ -233,7 +255,7 @@ Deploy the currently implemented pool-core services.
 - configure queue size
 - configure activity snapshot interval
 - configure `producer.py` runtime snapshot output path
-- configure daemon RPC only for the runtime snapshot producer
+- configure daemon RPC only for runtime snapshot producer and later validation
 - run `pepepow-pool-stratum.service` as a dedicated systemd service
 - run `pepepow-pool-core.service` as a dedicated systemd service when chain
   snapshots are desired
@@ -251,8 +273,71 @@ Deploy the currently implemented pool-core services.
 
 ### Notes
 
-This phase does not require share validation, block templates, vardiff, or
-daemon-dependent mining logic.
+This phase establishes the safe baseline and must remain recoverable even if
+later mining-validation features are not enabled.
+
+---
+
+## Phase 3.5: Validated Mining Bring-Up
+
+Enable the current in-progress mining milestone without yet enabling broad
+production submission behavior.
+
+### Tasks
+
+- configure daemon-template-backed job flow
+- verify template retrieval
+- enable or deploy share validation logic
+- verify pool share vs block candidate split
+- configure candidate artifact output path if needed
+- configure no-send / dry-run behavior
+- ensure real submission flag remains disabled by default
+- verify validation and dry-run logging
+
+### Validation
+
+- block templates are retrieved successfully
+- submitted shares are classified correctly
+- valid pool shares are distinguishable from block candidates
+- ordinary valid shares do not enter candidate-prep path
+- block-target shares do enter candidate-prep path
+- dry-run payload or candidate artifact is produced correctly
+- no real submit occurs while submit flag is off
+- services remain stable under restart
+
+### Notes
+
+This phase is the current operational bridge between baseline ingress and later
+controlled block submission.
+
+---
+
+## Phase 3.6: Controlled Submit Hook Enablement
+
+Enable real submission only as an explicitly operator-controlled milestone.
+
+### Tasks
+
+- introduce or configure explicit submit-enable flag
+- verify default state is disabled
+- verify logging of submission attempt metadata
+- verify logging of daemon response
+- verify rollback / disable path
+- keep scope limited to controlled testing
+
+### Validation
+
+- no real submission occurs when disabled
+- real submission occurs only when explicitly enabled
+- submission results are recorded clearly
+- disable / rollback can be performed quickly
+- daemon RPC remains private
+- feature does not destabilize baseline services
+
+### Notes
+
+This phase is not the same as production-ready full-pool operation. It is a
+controlled milestone for correctness verification.
 
 ---
 
@@ -271,6 +356,7 @@ Deploy the API layer that feeds the frontend.
 - configure runtime snapshot path
 - configure fallback snapshot path
 - configure optional activity snapshot overlay path
+- later optionally expose summarized validation/candidate states where useful
 - route through nginx if public
 
 ### Validation
@@ -309,6 +395,11 @@ Deploy the public website.
 - site remains usable on mobile
 - visual hierarchy is clear
 
+### Notes
+
+Frontend should not depend on raw daemon RPC and should consume only safe,
+summarized API outputs.
+
 ---
 
 ## Phase 6: Reverse Proxy and TLS
@@ -336,26 +427,31 @@ Publish the service through nginx.
 
 ---
 
-## Future Full-Pool Deployment Phase
+## Phase 7: Block State and Round Tracking
 
-The following work remains future full-pool deployment and is not part of the
-current deployable scope:
+Not yet part of the current controlled mining milestone. Enable only after
+submission correctness is credible.
 
-- share validation
-- difficulty policies / vardiff
-- block template retrieval for mining
-- candidate block detection
-- block submission
-- round tracking
-- payouts
-- optional Redis-backed coordination
+### Tasks
+
+- define block lifecycle states
+- track pending / immature / confirmed / orphan transitions
+- associate found candidates with later block outcomes
+- define round boundaries conservatively
+
+### Validation
+
+- block state transitions are coherent
+- orphan handling is correct
+- immature blocks are not treated as payable
+- round tracking is auditable
 
 ---
 
-## Phase 7: Payout Workflow Enablement
+## Phase 8: Payout Workflow Enablement
 
 Not part of the current deployable scope. Enable payment operations only after
-validated mining correctness is confirmed.
+validated mining and block-state correctness are confirmed.
 
 ### Tasks
 
@@ -375,7 +471,7 @@ validated mining correctness is confirmed.
 
 ---
 
-## Phase 8: Operations Hardening
+## Phase 9: Operations Hardening
 
 Add baseline operational safety features.
 
@@ -411,6 +507,8 @@ Add baseline operational safety features.
 
 - daemon RPC
 - internal scripts
+- raw candidate-prep internals
+- real submission admin tooling
 - payout admin tooling
 - raw internal configs
 - optional future Redis
@@ -433,6 +531,7 @@ be:
 - daemon RPC port
 - API bind port if proxied privately
 - any internal app port not meant for public proxying
+- any real submission admin-only path
 - optional future Redis port
 
 ### Notes
@@ -452,17 +551,19 @@ Configuration should be split clearly between:
 - daemon config
 - pool config
 - frontend runtime config
+- mining feature flags
 
-Optional future config groups:
+Optional later config groups:
 
-- Redis config
 - payout config
+- Redis config
 
 ### Rules
 
 - secrets must not be hardcoded into source files
 - config names must be documented
 - defaults should be sane and conservative
+- higher-risk flags must default to disabled
 - comments should be added where helpful
 
 ---
@@ -480,11 +581,12 @@ Current services:
 - `pepepow-pool-api.service`
 - `pepepow-pool-frontend.service`
 
-Optional future services:
+Optional later services:
 
-- Redis
+- isolated submission helper
 - payout worker
 - notification worker
+- Redis
 
 ### Service Rules
 
@@ -499,6 +601,8 @@ Optional future services:
 - `pepepow-pool-core.service` owns `pool-snapshot.json`
 - `pepepow-pool-stratum.service` owns `share-events.jsonl` and
   `activity-snapshot.json`
+- candidate-prep / dry-run artifacts should have clearly documented ownership if
+  stored on disk
 - API reads runtime snapshot first, fallback snapshot second, and applies the
   optional activity snapshot overlay
 
@@ -512,11 +616,15 @@ Logs must support troubleshooting in these categories:
 - runtime snapshot producer failures
 - miner connection/share failures
 - activity snapshot failures
+- template retrieval failures
+- validation failures
+- candidate-prep failures
+- dry-run preparation failures
+- controlled submission failures
 - API failures
 - frontend serving failures
 - nginx proxy/TLS issues
-- future block submission failures
-- future payout failures
+- later payout failures
 
 ### Preferred Approach
 
@@ -536,8 +644,9 @@ The deployment plan must include backup considerations for:
 - environment files
 - nginx configuration
 - custom scripts
+- candidate-prep or dry-run config where relevant
 
-Future full-pool backup considerations:
+Later full-pool backup considerations:
 
 - payment/accounting records if not reconstructable
 
@@ -569,6 +678,7 @@ Every major deployment step should have a rollback path.
 - keep previous app release available
 - keep previous nginx config backup
 - keep previous systemd unit backup
+- keep higher-risk flags disabled until validation passes
 - separate storage/schema changes where possible
 - validate before switching traffic
 
@@ -596,13 +706,29 @@ Every major deployment step should have a rollback path.
 - sync state acceptable
 - not publicly exposed
 
-## Pool Core
+## Baseline Pool Core
 
 - Stratum service starts successfully
 - miner connects
 - share flow works
 - activity snapshot updates
 - API overlay works
+
+## Validated Mining Bring-Up
+
+- template retrieval works
+- share validation works
+- valid pool shares are distinguished from block candidates
+- candidate-prep works
+- dry-run output is correct
+- submit flag remains off by default
+
+## Controlled Submit Hook
+
+- disabled state blocks real submission
+- enabled state allows controlled submission
+- result logging works
+- rollback / disable path works
 
 ## API
 
@@ -624,11 +750,9 @@ Every major deployment step should have a rollback path.
 - public routes correct
 - internal services remain private
 
-## Future Full-Pool Validation
+## Later Full-Pool Validation
 
-- block template retrieval works
-- validated shares are handled correctly
-- valid blocks can be submitted
+- block states are correct
 - payout thresholds are correct
 - payment flow is logged
 - immature/orphan protection works
@@ -641,9 +765,8 @@ Every major deployment step should have a rollback path.
 
 ## Benchmark Guidance
 
-Current stress tests and benchmark examples are documented in:
-
-- [docs/benchmarks/2026-04-13-stratum-ingress.md](/home/ubuntu/pool-pepepow/docs/benchmarks/2026-04-13-stratum-ingress.md)
+Current stress tests and benchmark examples are documented separately and should
+be treated as historical reference for baseline ingress performance.
 
 ---
 
@@ -657,6 +780,9 @@ Because the host has only 1 core / 6 GB RAM:
 - avoid heavy charting backends
 - avoid large databases unless clearly necessary
 - prefer summarized metrics to expensive real-time analytics
+- keep template refresh and validation overhead bounded
+- avoid high-frequency daemon polling when equivalent cached or retained state
+  is sufficient
 
 If the host also runs other PEPEPOW services, resource contention must be
 considered before expanding features.
@@ -667,7 +793,9 @@ considered before expanding features.
 
 Only after stable current deployment, consider:
 
-- validated mining flow
+- richer validated mining flow
+- round / block-state tracking improvements
+- payout accounting and controlled payouts
 - richer miner metrics
 - notifications and status integrations
 - better admin tooling
@@ -688,17 +816,19 @@ The current deployment is successful when:
 - a PEPEPOW miner can connect and submit shares
 - shares are ingested into JSONL
 - activity snapshots are updated
+- template-backed validation path can be brought up
+- candidate dry-run can be performed safely
+- real submission remains operator-controlled
 - the website exposes pool/network/miner information
 - services recover cleanly after restart
 - internal services remain protected
 - documentation is sufficient to reproduce the environment
 
-### Future Full-Pool Goal
+### Later Full-Pool Goal
 
-The future full-pool deployment will be successful when:
+The later full-pool deployment will be successful when:
 
-- the pool retrieves templates
-- validated blocks can be submitted
+- the pool tracks block states correctly
 - payout correctness is demonstrable
 - the system is stable enough for broader controlled community use
 
@@ -720,28 +850,25 @@ When deployment decisions conflict, prioritize:
 
 ## 19. Current Skeleton Deliverables
 
-This repository currently includes:
-
-- `ops/systemd/pepepow-pool-api.service`
-- `ops/systemd/pepepow-pool-frontend.service`
-- `ops/systemd/pepepow-pool-core.service`
-- `ops/systemd/pepepow-pool-stratum.service`
-- `ops/nginx/pepepow-pool.conf.example`
-- `ops/scripts/bootstrap.sh`
-- `ops/scripts/deploy.sh`
-- `ops/scripts/restart-services.sh`
-- `ops/scripts/logs.sh`
-- `ops/scripts/healthcheck.sh`
-
-The implemented public stack is:
+This repository currently includes deployment skeletons and baseline public
+stack support for:
 
 - nginx
 - static frontend service
 - lightweight API service
-- daemon-independent Stratum ingress
+- Stratum ingress
+- daemon-aware runtime snapshot path
+
+The repository should now be understood as supporting progression toward:
+
+- template-backed validation
+- candidate preparation
+- dry-run submission
+- controlled real submission
 
 The current private-only assumptions remain:
 
 - daemon RPC is not proxied publicly
+- real submission must remain controlled
 - payout tooling is not exposed
-- Redis is optional future infrastructure, not a current dependency
+- Redis is optional later infrastructure, not a current dependency

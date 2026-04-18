@@ -387,6 +387,33 @@ class ActivityEngine:
             meta["shareHashValidationMode"] = submit_validation_snapshot.get(
                 "shareHashValidationMode"
             )
+            meta["realSubmitblockEnabled"] = bool(
+                submit_validation_snapshot.get("realSubmitblockEnabled", False)
+            )
+            meta["realSubmitblockSendBudget"] = int(
+                submit_validation_snapshot.get("realSubmitblockSendBudget", 0)
+            )
+            meta["realSubmitblockSendBudgetRemaining"] = int(
+                submit_validation_snapshot.get("realSubmitblockSendBudgetRemaining", 0)
+            )
+            meta["realSubmitblockAttemptCount"] = int(
+                submit_validation_snapshot.get("realSubmitblockAttemptCount", 0)
+            )
+            meta["realSubmitblockSentCount"] = int(
+                submit_validation_snapshot.get("realSubmitblockSentCount", 0)
+            )
+            meta["realSubmitblockErrorCount"] = int(
+                submit_validation_snapshot.get("realSubmitblockErrorCount", 0)
+            )
+            meta["realSubmitblockLastStatus"] = submit_validation_snapshot.get(
+                "realSubmitblockLastStatus"
+            )
+            meta["realSubmitblockLastAttemptAt"] = submit_validation_snapshot.get(
+                "realSubmitblockLastAttemptAt"
+            )
+            meta["realSubmitblockLastError"] = submit_validation_snapshot.get(
+                "realSubmitblockLastError"
+            )
             meta["submitClassificationCounts"] = dict(
                 submit_validation_snapshot.get("classificationCounts", {})
             )

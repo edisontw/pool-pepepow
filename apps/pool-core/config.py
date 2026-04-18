@@ -45,6 +45,8 @@ class PoolCoreConfig:
     template_fetch_interval_seconds: float
     template_job_ttl_seconds: int
     template_job_cache_size: int
+    enable_real_submitblock: bool
+    real_submitblock_max_sends: int
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
 
@@ -186,6 +188,14 @@ def load_config() -> PoolCoreConfig:
                     "64",
                 )
             ),
+        ),
+        enable_real_submitblock=_env_bool(
+            "PEPEPOW_ENABLE_REAL_SUBMITBLOCK",
+            False,
+        ),
+        real_submitblock_max_sends=max(
+            0,
+            int(os.getenv("PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS", "1")),
         ),
         activity_log_rotate_bytes=max(
             1048576,

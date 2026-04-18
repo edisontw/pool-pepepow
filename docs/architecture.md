@@ -37,6 +37,7 @@ The pool is currently positioned as a:
 - community pool
 - learning platform
 - testing-capable public mining endpoint
+- progressively validated single-coin pool stack
 
 It is not currently intended to be:
 
@@ -45,9 +46,13 @@ It is not currently intended to be:
 - an exchange-integrated payout system
 - a complex user-account platform
 
-The immediate objective is a reliable single-coin PEPEPOW stack with real miner
-ingress, lightweight activity accounting, and a public API/frontend that do not
-depend on a healthy daemon for share ingest.
+The immediate objective is a reliable single-coin PEPEPOW stack with:
+
+- real miner ingress
+- lightweight activity accounting
+- daemon-template-backed mining progression
+- controlled candidate preparation and dry-run submission
+- a public API/frontend that do not directly depend on raw daemon RPC paths
 
 ---
 
@@ -62,7 +67,7 @@ The system is designed specifically for PEPEPOW in the initial phase.
 Separate these concerns as much as possible:
 
 - blockchain daemon access
-- Stratum ingress and share ingest
+- Stratum ingress and mining validation
 - activity accounting
 - stats aggregation
 - frontend rendering
@@ -80,6 +85,11 @@ destabilizing the rest of the stack.
 ### 5. Low-Resource Operation
 
 Every component must fit a 1 core / 6 GB RAM host.
+
+### 6. Controlled Submission Safety
+
+Candidate preparation and real block submission must remain distinct. Real
+submission must stay explicitly gated.
 
 ---
 
@@ -106,9 +116,9 @@ Provides direct interaction with the PEPEPOW blockchain.
 - run `PEPEPOWd`
 - expose local RPC
 - provide chain state for runtime snapshots
-- provide future block templates
-- provide future block submission path
-- provide future wallet and payout functionality
+- provide block templates for mining work
+- accept controlled future block submission
+- provide later wallet and payout functionality
 
 ### Requirements
 
@@ -130,23 +140,32 @@ directly depend on raw daemon calls.
 
 Implements pool-side mining behavior.
 
-### Current Responsibilities
+### Baseline Responsibilities
 
 - accept miner connections via Stratum
 - accept `mining.subscribe`
 - accept `mining.authorize`
 - accept `mining.submit`
-- append submitted shares to JSONL
+- append submitted share events to JSONL
 - maintain lightweight in-memory wallet/worker accounting
 - write an additive activity snapshot
 
-### Future Responsibilities
+### Current In-Progress Responsibilities
 
-- validate shares
-- manage difficulty and work distribution
-- build and submit candidate blocks
-- manage rounds and block states
-- provide payout accounting inputs
+- retrieve daemon-backed template work
+- construct and track template-backed jobs
+- validate submitted shares against current work and targets
+- distinguish valid pool shares from block candidates
+- prepare candidate artifacts when block target is met
+- support no-send / dry-run submit preparation
+- keep real block submission behind explicit flags
+
+### Later Responsibilities
+
+- controlled real block submission
+- round and block-state tracking
+- payout accounting inputs
+- later payout workflow integration
 
 ### Current Scope
 
@@ -154,22 +173,26 @@ Implements pool-side mining behavior.
 - hoohash-pepew / hoohashv110-pepew only
 - wallet-address-based miner identity
 - no user account system
-- no Redis requirement
+- no mandatory Redis requirement
 
 ### Current Non-Goals
 
-- share validation against daemon work
-- payout processing
+- multi-coin work routing
 - exchange payouts
 - complex user auth
-- Redis-backed runtime coordination
+- heavy runtime coordination infrastructure without clear need
 
 ### Design Notes
 
-Pool core is currently split into two low-coupling paths:
+Pool core is intentionally split into low-coupling paths:
 
 - daemon-aware runtime snapshot producer
-- daemon-independent Stratum ingress and activity snapshot writer
+- Stratum ingress and activity snapshot writer
+- daemon-template-backed validation / candidate-prep path
+- later controlled submit path
+
+This split is intended to preserve baseline share-ingest observability even when
+daemon-backed mining paths are degraded or unavailable.
 
 ---
 
@@ -211,6 +234,8 @@ Acts as the translation layer between the pool backend and the frontend.
 - expensive queries should be pre-aggregated
 - API should prefer summary snapshots over real-time recalculation
 - activity overlay must be additive and must not change endpoint shapes
+- candidate / validation metadata should be surfaced only through controlled,
+  summarized, frontend-safe fields when exposed at all
 
 ---
 
@@ -236,6 +261,15 @@ Provides the public-facing mining pool interface.
 The frontend must read from the stats/API layer, not directly from the daemon
 or raw pool internals.
 
+### UI Interpretation Policy
+
+The frontend should distinguish where practical between:
+
+- chain-derived information
+- share-derived activity information
+- current pool operational state
+- later validated mining or candidate-related states
+
 ---
 
 ## 5. Ops / Runtime Layer
@@ -253,6 +287,7 @@ Supports deployment, reliability, recoverability, and maintenance.
 - backup and restore procedures
 - process isolation
 - health checks
+- controlled feature flag deployment for mining milestones
 
 ### Operational Principles
 
@@ -260,6 +295,7 @@ Supports deployment, reliability, recoverability, and maintenance.
 - configuration should be explicit and documented
 - rollback should be possible
 - deployments should be reproducible on a fresh host
+- higher-risk mining features should be separately gateable
 
 ---
 
@@ -271,16 +307,18 @@ A practical current stack consists of:
 - pool-core snapshot producer
 - Stratum ingress
 - activity snapshot writer
+- template-backed job / validation path inside pool core
 - stats/API service
 - frontend service
 - `nginx`
 - `systemd`
 
-Optional future components:
+Optional later components:
 
-- `Redis`
+- controlled submission worker or isolated submission path
 - payout worker
 - notification worker
+- Redis only if clearly justified
 
 This should remain a single-host deployment initially.
 
@@ -302,24 +340,37 @@ This should remain a single-host deployment initially.
 ### Service C: Stratum Ingress / Activity Path
 
 - Stratum listener
-- share ingest
+- baseline share ingest
 - in-memory activity accounting
 - writes `share-events.jsonl`
 - writes `activity-snapshot.json`
 
-### Service D: Stats/API
+### Service D: Validation / Candidate Path
+
+This may remain inside pool core initially, but conceptually it is a separate
+responsibility:
+
+- template-backed job handling
+- share validation
+- pool share vs block candidate split
+- candidate artifact preparation
+- no-send dry-run output
+- controlled submit hook
+
+### Service E: Stats/API
 
 - public or reverse-proxied API
 - read-oriented
 - cache-first
 - merges runtime/fallback snapshot with activity snapshot
+- later may expose summarized mining-validation status
 
-### Service E: Frontend
+### Service F: Frontend
 
 - public web interface
 - static or semi-dynamic UI
 
-### Service F: Reverse Proxy
+### Service G: Reverse Proxy
 
 - nginx
 - TLS
@@ -330,13 +381,13 @@ This should remain a single-host deployment initially.
 
 ## Data Flow
 
-### Current Implemented Share Flow
+### Baseline Share Flow
 
 1. miner connects to Stratum endpoint
 2. miner sends `mining.subscribe`
 3. miner sends `mining.authorize`
 4. miner sends `mining.submit`
-5. Stratum ingress accepts the share without validation
+5. Stratum ingress records the share event
 6. share is appended to `share-events.jsonl`
 7. in-memory wallet/worker accounting is updated
 8. `activity-snapshot.json` is written atomically
@@ -344,17 +395,30 @@ This should remain a single-host deployment initially.
 10. API overlays activity fields from `activity-snapshot.json`
 11. frontend displays merged pool/network/miner state
 
-### Future Validated Pool Flow
+### Current Template-Backed Validation Flow
 
-1. miner connects to Stratum endpoint
-2. pool assigns work and difficulty
-3. miner submits share
-4. pool validates share against daemon-backed work
-5. valid candidate block is found
-6. pool submits block to daemon
-7. daemon accepts or rejects block
-8. pool updates round and block state
-9. stats/API layer exposes validated summaries
+1. pool retrieves daemon-backed template work
+2. pool constructs or refreshes template-backed job state
+3. miner connects and receives work context
+4. miner submits share
+5. pool reconstructs the relevant candidate header / job context
+6. pool validates the submitted share against applicable target logic
+7. pool classifies:
+   - invalid share
+   - valid pool share
+   - block candidate
+8. if block candidate conditions are met, pool prepares candidate artifact
+9. if dry-run mode is enabled, submission payload is prepared but not sent
+10. if real submission is disabled, processing stops at recorded candidate state
+
+### Controlled Submission Flow
+
+1. candidate artifact exists
+2. explicit submit-enable flag is on
+3. pool submits the candidate to daemon
+4. daemon accepts or rejects
+5. pool records submission result for audit and follow-up
+6. later block-state tracking consumes this result path
 
 ### User Data Flow
 
@@ -378,6 +442,12 @@ This should remain a single-host deployment initially.
 - recent share summaries
 - rolling windows for `1m`, `5m`, `15m`
 
+Current in-progress mining additions may include:
+
+- valid pool share indicators
+- candidate-prep counters
+- dry-run / submit readiness state
+
 ### Network Domain
 
 - current height
@@ -393,7 +463,8 @@ This should remain a single-host deployment initially.
 - block hash
 - found time
 - confirmations
-- future validated pool block states
+- later validated pool block states
+- later candidate and submission results where summarized appropriately
 
 ### Miner Domain
 
@@ -404,17 +475,31 @@ This should remain a single-host deployment initially.
 - per-worker share count
 - rolling windows
 - last share timestamps
-- future balance / payment data
+- later balance / payment data
 
 ---
 
-## Current Trust Model
+## Trust Model
 
-- pool activity metrics are derived from shares
-- share-derived metrics are not blockchain verified
-- estimated hashrate uses an assumed share difficulty
-- accepted shares at this stage do not imply valid shares
-- chain fields remain owned by the runtime/fallback chain snapshot path
+### Current Trust Boundaries
+
+- chain fields remain owned by the runtime / fallback chain snapshot path
+- share-derived metrics are not automatically equivalent to chain-verified
+  mining success
+- estimated hashrate may still depend on pool-side assumptions
+- valid pool shares do not automatically imply block candidates
+- candidate-prepared state does not automatically imply submitted or accepted
+  block state
+
+### Operational Interpretation
+
+The architecture must keep these distinctions explicit:
+
+- share-ingest success
+- share-validation success
+- candidate-preparation success
+- real submission success
+- confirmed block state
 
 ---
 
@@ -423,6 +508,7 @@ This should remain a single-host deployment initially.
 ### Must Remain Internal
 
 - daemon RPC
+- real submission control flags and tooling
 - future Redis deployments
 - wallet management endpoints
 - administrative tooling not explicitly hardened
@@ -440,6 +526,7 @@ This should remain a single-host deployment initially.
 - avoid exposing raw internals
 - isolate wallet-sensitive operations
 - prefer explicit access paths
+- keep block submission off by default
 
 ---
 
@@ -453,6 +540,8 @@ Given the small server size, the architecture enforces:
 - no expensive repeated wallet scans from public pages
 - in-memory rolling windows for live activity
 - snapshot reads instead of raw log parsing on request paths
+- bounded daemon-template refresh behavior
+- controlled candidate-prep and submit logic
 
 ---
 
@@ -460,10 +549,10 @@ Given the small server size, the architecture enforces:
 
 The architecture should later support:
 
-- validated share handling
-- `mining.notify` and difficulty management
-- block submission
-- richer miner analytics
+- richer validated share handling
+- `mining.notify` and difficulty management improvements
+- round and block-state tracking
+- payout accounting
 - better health reporting
 - notifications
 - optional Redis-backed coordination
@@ -475,57 +564,77 @@ These remain secondary to current correctness and stability.
 
 ## Current Repository Implementation
 
-The current repository intentionally stops below full pool functionality.
+The current repository should be understood as having progressed beyond a pure
+share-ingest-only baseline.
 
-### Implemented Now
+### Implemented / Baseline
 
 - lightweight public API service under `apps/api`
 - static public frontend under `apps/frontend/site`
 - daemon-aware runtime snapshot producer under `apps/pool-core/producer.py`
-- daemon-independent Stratum ingress under `apps/pool-core/stratum_ingress.py`
+- Stratum ingress under `apps/pool-core/stratum_ingress.py`
 - additive activity snapshot overlay in `apps/api/store.py`
 - share-derived accounting contracts under `apps/pool-core/contracts`
 - systemd and nginx deployment skeleton under `ops/`
 
-### Not Yet Implemented
+### Current In Progress
 
-- block template retrieval for mining
-- real share validation
-- candidate block detection and submission
+- daemon-template-backed mining flow
+- share validation progression
+- pool share vs block candidate separation
+- candidate preparation
+- dry-run submission preparation
+- controlled real submission gating
+
+### Not Yet Implemented as Full Pool
+
+- mature round/block lifecycle tracking
 - payout processing
-- Redis-backed runtime coordination
+- long-term accounting layer
+- Redis-backed coordination as a required dependency
 
 ---
 
 ## Success Criteria
 
-### Current Round Success
+### Baseline Success
 
-The current architecture is successful when:
+The current baseline architecture is successful when:
 
 - miners can connect successfully
 - submitted shares are accepted into the ingest pipeline
 - wallet and worker activity is tracked
 - activity snapshots are written atomically
-- API exposes live miner activity without daemon dependence
+- API exposes live miner activity without raw daemon dependency
 - services restart and recover cleanly
 - the stack can be reproduced on a fresh server
 
-### Future Full-Pool Success
+### Current Mining-Milestone Success
+
+The current mining milestone is successful when:
+
+- block templates are retrieved correctly
+- share validation behaves correctly
+- valid pool shares are distinguishable from block candidates
+- candidate preparation is correct
+- dry-run data is correct
+- real submission remains controlled and off by default
+- submission results are logged when enabled
+
+### Later Full-Pool Success
 
 The full architecture will be successful when:
 
-- validated shares are tracked correctly
-- block templates are retrieved correctly
-- valid blocks can be submitted
+- block states are tracked correctly
 - payout correctness is demonstrable
 - pool/network/miner summaries remain accurate under validated mining
+- the system is stable enough for broader controlled public use
 
 ---
 
-## Explicit Non-Goals for Initial Version
+## Explicit Non-Goals for Initial / Current Versions
 
-The initial architecture does not attempt to solve:
+The architecture does not attempt to solve yet:
 
 - multi-region pool deployment
 - distributed Stratum clusters
@@ -545,5 +654,6 @@ When tradeoffs occur, prioritize in this order:
 2. simplicity
 3. maintainability
 4. observability
-5. extensibility
-6. visual polish
+5. correctness
+6. extensibility
+7. visual polish

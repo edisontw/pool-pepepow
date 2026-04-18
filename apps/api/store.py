@@ -323,6 +323,34 @@ def _overlay_activity_snapshot(
     base_meta["shareHashValidationMode"] = activity_meta.get(
         "shareHashValidationMode", base_meta.get("shareHashValidationMode")
     )
+    base_meta["realSubmitblockEnabled"] = bool(
+        activity_meta.get("realSubmitblockEnabled", False)
+    )
+    base_meta["realSubmitblockSendBudget"] = int(
+        activity_meta.get("realSubmitblockSendBudget", 0) or 0
+    )
+    base_meta["realSubmitblockSendBudgetRemaining"] = int(
+        activity_meta.get("realSubmitblockSendBudgetRemaining", 0) or 0
+    )
+    base_meta["realSubmitblockAttemptCount"] = int(
+        activity_meta.get("realSubmitblockAttemptCount", 0) or 0
+    )
+    base_meta["realSubmitblockSentCount"] = int(
+        activity_meta.get("realSubmitblockSentCount", 0) or 0
+    )
+    base_meta["realSubmitblockErrorCount"] = int(
+        activity_meta.get("realSubmitblockErrorCount", 0) or 0
+    )
+    base_meta["realSubmitblockLastStatus"] = activity_meta.get(
+        "realSubmitblockLastStatus", base_meta.get("realSubmitblockLastStatus")
+    )
+    base_meta["realSubmitblockLastAttemptAt"] = activity_meta.get(
+        "realSubmitblockLastAttemptAt",
+        base_meta.get("realSubmitblockLastAttemptAt"),
+    )
+    base_meta["realSubmitblockLastError"] = activity_meta.get(
+        "realSubmitblockLastError", base_meta.get("realSubmitblockLastError")
+    )
     base_meta["submitClassificationCounts"] = (
         activity_meta.get("submitClassificationCounts", {})
         if isinstance(activity_meta.get("submitClassificationCounts", {}), dict)

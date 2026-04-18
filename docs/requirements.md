@@ -2,39 +2,57 @@
 
 ## Purpose
 
-This document defines the current and future requirements for the PEPEPOW
-community mining pool project.
+This document defines the current, in-progress, and later-stage requirements for
+the PEPEPOW community mining pool project.
 
-The repository currently implements a daemon-independent share-ingest-first
-path. It does not yet implement full mining validation, block submission, or
-payout handling. This document separates what is required now from what remains
-future full-pool work.
+The repository no longer should be described only as a daemon-independent
+share-ingest-first path. The current project state includes:
+
+- stable miner ingress
+- wallet / worker share accounting
+- daemon-aware template-backed mining progression
+- share-target vs block-target distinction
+- candidate preparation and no-send dry-run capability
+
+This document separates:
+
+1. implemented baseline requirements
+2. current in-progress mining requirements
+3. later full-pool requirements such as payout accounting and payments
 
 ---
 
 ## 1. Project Scope
 
-### In Scope Now
+### Implemented Baseline Scope
 
 - PEPEPOW-only pool software
-- hoohash-pepew / hoohashv110-pepew presentation and connection metadata
+- hoohash-pepew / hoohashv110-pepew support
 - public-facing mining website
-- minimal Stratum ingress
+- Stratum ingress
 - share accounting by wallet and worker
 - daemon-independent activity snapshots
 - public API backed by runtime/fallback snapshot plus activity overlay
 - deployable on Oracle Cloud ARM64 small instance
 
-### Future Full-Pool Scope
+### Current In-Progress Scope
 
-- share validation against daemon work
-- block template retrieval
-- candidate block detection
-- block submission
+- daemon-backed block template retrieval
+- share validation path
+- distinction between valid pool shares and block candidates
+- candidate preparation for qualifying shares
+- no-send / dry-run block submission preparation
+- controlled block submission path behind explicit enable flags
+
+### Later Full-Pool Scope
+
 - round tracking
+- confirmed block lifecycle handling
 - payout accounting and payments
+- manual or semi-automated payout workflow
+- optional future Redis-backed coordination if ever justified
 
-### Out of Scope for Initial Version
+### Out of Scope for Initial / MVP Versions
 
 - multi-coin support
 - exchange-based payouts
@@ -48,7 +66,7 @@ future full-pool work.
 
 ## 2. Functional Requirements
 
-## 2.1 Current Implemented / Current Required
+## 2.1 Baseline Implemented / Required Now
 
 ### FR-001: Miner Connectivity
 
@@ -57,8 +75,8 @@ connect to.
 
 ### FR-002: Share Ingest
 
-The current system must accept submitted shares into the ingest pipeline even
-when daemon RPC is unavailable.
+The system must accept submitted shares into the ingest pipeline even when
+daemon RPC is unavailable or degraded.
 
 ### FR-003: Share Accounting
 
@@ -190,31 +208,68 @@ Key configuration files and environment variables must be documented.
 
 ---
 
-## 2.2 Future Full-Pool Requirements
+## 2.2 Current In-Progress Mining Requirements
 
-### FR-031: Share Validation
+### FR-031: Block Template Retrieval
 
-A future full-pool version must validate submitted shares and reject invalid
-ones.
+The current mining path must be able to retrieve valid block templates from the
+PEPEPOW daemon for template-backed mining work.
 
-### FR-032: Block Template Retrieval
+### FR-032: Share Validation
 
-A future full-pool version must retrieve valid block templates from the PEPEPOW
-daemon.
+The current mining path must validate submitted shares against the applicable
+mining work and target comparison logic.
 
-### FR-033: Candidate Block Handling
+### FR-033: Share Target vs Block Target Split
 
-A future full-pool version must be able to process valid shares that form a
-candidate block.
+The pool must distinguish between:
 
-### FR-034: Block Submission
+- shares that satisfy pool share difficulty / share target
+- shares that satisfy block target and therefore qualify as block candidates
 
-A future full-pool version must submit valid candidate blocks to the PEPEPOW
-daemon.
+### FR-034: Valid Pool Share Classification
 
-### FR-035: Block State Tracking
+The system must correctly classify valid pool shares independently from whether
+they also qualify as block candidates.
 
-A future full-pool version must track block lifecycle states, including at
+### FR-035: Candidate Block Preparation
+
+When a submitted share satisfies block target conditions, the system must be
+able to prepare a candidate artifact sufficient for verification and dry-run
+inspection.
+
+### FR-036: No-Send Dry-Run
+
+The mining path must support a no-send / dry-run mode that prepares block
+submission data without actually submitting it to the daemon.
+
+### FR-037: Controlled Block Submission
+
+Real block submission must be guarded behind an explicit enable flag and must
+remain disabled by default.
+
+### FR-038: Submission Result Logging
+
+When controlled block submission is enabled, the system must record detailed
+submission results sufficient for audit and rollback-oriented debugging.
+
+### FR-039: Candidate Safety Boundary
+
+Ordinary valid pool shares must not be treated as candidate blocks unless block
+target conditions are met.
+
+### FR-040: Mining Correctness Before Payout
+
+The project must demonstrate mining correctness before payout logic is
+considered in scope for production use.
+
+---
+
+## 2.3 Later Full-Pool Requirements
+
+### FR-041: Block State Tracking
+
+A later full-pool version must track block lifecycle states, including at
 minimum:
 
 - pending
@@ -222,36 +277,36 @@ minimum:
 - confirmed
 - orphan
 
-### FR-036: Round Tracking
+### FR-042: Round Tracking
 
-A future full-pool version must track mining rounds associated with found
+A later full-pool version must track mining rounds associated with found
 blocks.
 
-### FR-037: Payout Scheme
+### FR-043: Payout Scheme
 
-A future full-pool version must support one payout model only, preferably
+A later full-pool version must support one payout model only, preferably
 PPLNS.
 
-### FR-038: Balance Tracking
+### FR-044: Balance Tracking
 
-A future full-pool version must track pending and payable balances by wallet.
+A later full-pool version must track pending and payable balances by wallet.
 
-### FR-039: Minimum Payout Threshold
+### FR-045: Minimum Payout Threshold
 
-A future full-pool version must support a minimum payout threshold.
+A later full-pool version must support a minimum payout threshold.
 
-### FR-040: Payment History
+### FR-046: Payment History
 
-A future full-pool version must track and display payment history by wallet.
+A later full-pool version must track and display payment history by wallet.
 
-### FR-041: Manual or Semi-Automated Payout Support
+### FR-047: Manual or Semi-Automated Payout Support
 
-A future full-pool version may use manual or semi-automated payout flow, but
+A later full-pool version may use manual or semi-automated payout flow, but
 payment actions must be traceable.
 
-### FR-042: Payout Safety
+### FR-048: Payout Safety
 
-A future full-pool version must not treat immature or orphaned blocks as
+A later full-pool version must not treat immature or orphaned blocks as
 eligible for payout.
 
 ---
@@ -282,18 +337,18 @@ The frontend should avoid aggressive high-frequency auto-refresh behavior.
 
 ### NFR-005: Lightweight Stack
 
-The initial implementation should prefer lightweight components over heavy
-infrastructure.
+The implementation should prefer lightweight components over heavy
+infrastructure unless correctness clearly requires otherwise.
 
-### NFR-006: No Daemon Dependency for Share Ingress
+### NFR-006: No Daemon Dependency for Baseline Share Ingest
 
-The current share-ingest path must remain available even when daemon RPC is
+The share-ingest baseline path must remain available even when daemon RPC is
 unsynced, slow, or unavailable.
 
 ### NFR-007: Bounded In-Memory Accounting
 
-The current accounting path must use lightweight in-memory state with bounded
-rolling windows rather than requiring a database or Redis.
+The accounting path must use lightweight in-memory state with bounded rolling
+windows rather than requiring a database or Redis.
 
 ### NFR-008: Atomic Snapshot Writes
 
@@ -302,58 +357,69 @@ files.
 
 ### NFR-009: Stable API Under Ingest Burst
 
-Share ingest bursts must not cause API instability or make the API parse the
-raw JSONL share log on request paths.
+Share ingest bursts must not cause API instability or make the API parse raw
+JSONL share logs on request paths.
+
+### NFR-010: Controlled Validation Overhead
+
+Template-backed validation and candidate preparation must be implemented in a
+way that remains safe for a 1-core machine and does not introduce unnecessary
+high-frequency daemon load.
 
 ---
 
 ## 3.2 Maintainability Requirements
 
-### NFR-010: AI-Agent-Friendly Structure
+### NFR-011: AI-Agent-Friendly Structure
 
 The codebase must be organized so that AI agents can modify subsystems with
 limited blast radius.
 
-### NFR-011: Small-Step Changeability
+### NFR-012: Small-Step Changeability
 
 The system should support incremental feature development and safe refactoring.
 
-### NFR-012: Clear File and Service Boundaries
+### NFR-013: Clear File and Service Boundaries
 
 Service ownership and code boundaries must be understandable.
 
-### NFR-013: Config Clarity
+### NFR-014: Config Clarity
 
 Configurations should be explicit, readable, and commented when practical.
 
-### NFR-014: Reproducibility
+### NFR-015: Reproducibility
 
 A new environment should be able to reproduce the deployment from documentation
 and repository contents.
+
+### NFR-016: Controlled Debug Surface
+
+Diagnostics should be informative but should avoid uncontrolled expansion of
+permanent reason-code trees, debug fields, or probe-only pathways.
 
 ---
 
 ## 3.3 Compatibility Requirements
 
-### NFR-015: ARM64 Compatibility
+### NFR-017: ARM64 Compatibility
 
 All chosen components and dependencies must be reviewed for ARM64 / aarch64
 compatibility.
 
-### NFR-016: Ubuntu / systemd Compatibility
+### NFR-018: Ubuntu / systemd Compatibility
 
 The deployment target should assume Ubuntu with systemd.
 
-### NFR-017: PEPEPOW Compatibility
+### NFR-019: PEPEPOW Compatibility
 
 The system must remain compatible with the current PEPEPOW daemon, chain state,
-and supported miner connection expectations for future validated mining work.
+and supported miner connection expectations.
 
 ---
 
 ## 3.4 Usability Requirements
 
-### NFR-018: Clear Information Hierarchy
+### NFR-020: Clear Information Hierarchy
 
 The website must clearly communicate:
 
@@ -363,58 +429,64 @@ The website must clearly communicate:
 - current pool status
 - block and payment status
 
-### NFR-019: Professional Presentation
+### NFR-021: Professional Presentation
 
 The public site should appear clean, professional, and trustworthy.
 
-### NFR-020: Responsive Design
+### NFR-022: Responsive Design
 
 The public site should remain usable on mobile devices.
 
-### NFR-021: Readable Metrics
+### NFR-023: Readable Metrics
 
 Important metrics must be understandable without requiring expert pool
 knowledge.
 
-### NFR-022: Share-Derived Metric Labeling
+### NFR-024: Share-Derived Metric Labeling
 
-Metrics derived from shares must be clearly labeled as derived from shares and
-not blockchain verified.
+Metrics derived from shares must be clearly labeled as share-derived and not
+blockchain-verified where that distinction still applies.
 
-### NFR-023: Estimated Hashrate Labeling
+### NFR-025: Estimated Hashrate Labeling
 
-Estimated hashrate must be clearly presented as a rough estimate based on an
-assumed share difficulty until real difficulty-based accounting exists.
+Estimated hashrate must be clearly presented as an estimate when it still
+depends on assumed or pool-side share difficulty rather than validated final
+accounting.
 
 ---
 
 ## 3.5 Security Requirements
 
-### NFR-024: No Public Daemon RPC
+### NFR-026: No Public Daemon RPC
 
 PEPEPOWd RPC must not be directly exposed to the public internet.
 
-### NFR-025: No Public Redis Exposure
+### NFR-027: No Public Redis Exposure
 
-If Redis is introduced in a future phase, it must not be directly exposed
+If Redis is introduced in a later phase, it must not be directly exposed
 publicly.
 
-### NFR-026: Minimal Wallet Exposure
+### NFR-028: Minimal Wallet Exposure
 
 Wallet-related operations must be isolated and minimized.
 
-### NFR-027: Public Surface Minimization
+### NFR-029: Public Surface Minimization
 
 Only necessary public ports and services should be exposed.
 
-### NFR-028: Rate Limiting / Basic Hardening
+### NFR-030: Rate Limiting / Basic Hardening
 
 The public web layer should support basic hardening such as rate limiting and
 service isolation.
 
-### NFR-029: Payment Traceability
+### NFR-031: Submission Safety
 
-Future payment actions must be logged or otherwise auditable.
+Real block submission must remain disabled by default and enabled only by
+explicit operator control.
+
+### NFR-032: Payment Traceability
+
+Later payment actions must be logged or otherwise auditable.
 
 ---
 
@@ -422,9 +494,9 @@ Future payment actions must be logged or otherwise auditable.
 
 ## 4.1 Pool Data
 
-The current system should track and/or expose:
+The system should track and/or expose:
 
-- pool hashrate derived from shares
+- pool hashrate derived from shares or pool-side accounting
 - active miners
 - active workers
 - fee
@@ -432,7 +504,13 @@ The current system should track and/or expose:
 - worker distribution
 - rolling windows for `1m`, `5m`, `15m`
 
-Future full-pool work may additionally expose:
+Current in-progress mining work may additionally expose:
+
+- pool-valid share counts
+- candidate-prep counts
+- candidate dry-run indicators
+
+Later full-pool work may additionally expose:
 
 - effort or luck metrics
 - recent rounds summary
@@ -457,9 +535,15 @@ The system should track and/or expose:
 - observed state
 - reward information where applicable
 
+Current in-progress mining work may additionally expose:
+
+- candidate-prepared state
+- dry-run submit metadata
+- controlled submit result metadata where enabled
+
 ## 4.4 Miner Data
 
-The current system should track and/or expose:
+The system should track and/or expose:
 
 - wallet address
 - miner-level estimated hashrate
@@ -470,7 +554,7 @@ The current system should track and/or expose:
 - rolling windows for `1m`, `5m`, `15m`
 - last share time
 
-Future full-pool work may additionally expose:
+Later full-pool work may additionally expose:
 
 - pending balance
 - total paid
@@ -498,10 +582,10 @@ by the current round.
 
 Correct pool behavior is more important than advanced visuals.
 
-### OC-005: Conservative Payout Operations
+### OC-005: Conservative Submission and Payout Operations
 
-Payment automation should be introduced cautiously and only after correctness
-is validated.
+Block submission and payment automation should be introduced cautiously and only
+after correctness is validated.
 
 ---
 
@@ -532,13 +616,19 @@ Working modules should not be broadly rewritten without clear benefit.
 
 Any new dependency, service, configuration, or script must be documented.
 
+### DPR-006: High-Information Probing During Narrowed Debugging
+
+When a bug is already narrowed to one functional layer, changes should prefer
+high-information probes or minimum corrective patches over prolonged diagnostic
+taxonomy expansion.
+
 ---
 
 ## 7. Acceptance Criteria
 
-## 7.1 Current Round Acceptance
+## 7.1 Baseline Acceptance
 
-The current round is acceptable when:
+The current baseline is acceptable when:
 
 - miners can connect to the Stratum endpoint
 - submitted shares are ingested
@@ -549,25 +639,35 @@ The current round is acceptable when:
 - the system remains stable under load
 - deployment and runbook steps are documented
 
-## 7.2 Pre-Full-Pool Acceptance
+## 7.2 Current Mining-Milestone Acceptance
 
-Before broader public use as a validated pool, the system should additionally
+Before broader validated-pool use, the current mining milestone should
 demonstrate:
 
-- share validation correctness
-- block template retrieval
-- valid block submission
-- correct handling of immature/orphan/confirmed states
+- block template retrieval works
+- share validation correctness is demonstrated
+- pool-valid shares are distinguishable from block candidates
+- candidate preparation works
+- no-send dry-run data is correct
+- controlled submit path is gated and disabled by default
+- submission results are logged when enabled
+- logging and rollback paths are available
+
+## 7.3 Later Full-Pool Acceptance
+
+Before broader public use as a payout-capable pool, the system should
+additionally demonstrate:
+
+- correct handling of immature / orphan / confirmed states
 - payout accounting correctness
 - payment workflow traceability
-- logging and rollback paths available
 - basic hardening in place
 
 ---
 
 ## 8. Explicit Avoidances
 
-The current system should avoid:
+The current project should avoid:
 
 - multi-coin pool architecture
 - auto-exchange payout systems
@@ -576,6 +676,7 @@ The current system should avoid:
 - large account/auth systems
 - premature generic abstraction
 - high-cost real-time analytics on small hardware
+- uncontrolled diagnostic taxonomy growth in a single narrowed debug path
 
 ---
 

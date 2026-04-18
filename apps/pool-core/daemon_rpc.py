@@ -6,6 +6,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -60,6 +62,9 @@ class DaemonRpcClient:
                 "getblocktemplate returned an invalid payload type"
             )
         return result
+
+    def submitblock(self, block_hex: str) -> Any:
+        return self.call("submitblock", [block_hex])
 
     def get_block_hash(self, height: int) -> str:
         result = self.call("getblockhash", [height])
@@ -184,3 +189,215 @@ class DaemonRpcClient:
     def _build_auth_header(self) -> str:
         token = f"{self._rpc_user}:{self._rpc_password}".encode("utf-8")
         return f"Basic {base64.b64encode(token).decode('ascii')}"
+
+
+def candidate_followup_defaults() -> dict[str, Any]:
+    return {
+        "followupStatus": "not-checked",
+        "followupCheckedAt": None,
+        "followupObservedHeight": None,
+        "followupObservedBlockHash": None,
+        "followupNote": None,
+    }
+
+
+def candidate_outcome_status(followup_status: Any) -> str:
+    if followup_status == "match-found":
+        return "chain-match-found"
+    if followup_status == "no-match-found":
+        return "chain-match-not-found"
+    if followup_status == "check-error":
+        return "check-error"
+    return "submitted"
+
+
+def build_candidate_outcome_event(
+    candidate_event: dict[str, Any],
+    followup_result: dict[str, Any] | None = None,
+    *,
+    recorded_at: datetime | None = None,
+) -> dict[str, Any]:
+    observed_at = recorded_at or datetime.now(timezone.utc)
+    merged_followup = candidate_followup_defaults()
+    if isinstance(followup_result, dict):
+        merged_followup.update(
+            {
+                "followupStatus": followup_result.get("followupStatus"),
+                "followupCheckedAt": followup_result.get("followupCheckedAt"),
+                "followupObservedHeight": followup_result.get(
+                    "followupObservedHeight"
+                ),
+                "followupObservedBlockHash": followup_result.get(
+                    "followupObservedBlockHash"
+                ),
+                "followupNote": followup_result.get("followupNote"),
+            }
+        )
+
+    return {
+        "timestamp": (
+            observed_at.astimezone(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        ),
+        "candidateTimestamp": candidate_event.get("timestamp"),
+        "jobId": candidate_event.get("jobId"),
+        "templateAnchor": candidate_event.get("templateAnchor"),
+        "wallet": candidate_event.get("wallet"),
+        "worker": candidate_event.get("worker"),
+        "candidateBlockHash": candidate_event.get("candidateBlockHash"),
+        "candidatePrepStatus": candidate_event.get("candidatePrepStatus"),
+        "submitblockRealSubmitStatus": candidate_event.get(
+            "submitblockRealSubmitStatus"
+        ),
+        "submitblockAttempted": candidate_event.get("submitblockAttempted"),
+        "submitblockSent": candidate_event.get("submitblockSent"),
+        "submitblockSubmittedAt": candidate_event.get("submitblockSubmittedAt"),
+        "candidateOutcomeStatus": candidate_outcome_status(
+            merged_followup.get("followupStatus")
+        ),
+        "followupStatus": merged_followup.get("followupStatus"),
+        "followupCheckedAt": merged_followup.get("followupCheckedAt"),
+        "followupObservedHeight": merged_followup.get("followupObservedHeight"),
+        "followupObservedBlockHash": merged_followup.get("followupObservedBlockHash"),
+        "followupNote": merged_followup.get("followupNote"),
+    }
+
+
+def append_candidate_outcome_event(
+    path: Path,
+    candidate_event: dict[str, Any],
+    followup_result: dict[str, Any] | None = None,
+    *,
+    recorded_at: datetime | None = None,
+) -> dict[str, Any]:
+    payload = build_candidate_outcome_event(
+        candidate_event,
+        followup_result,
+        recorded_at=recorded_at,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
+        handle.write("\n")
+    return payload
+
+
+def check_candidate_followup(
+    candidate_block_hash: str | None,
+    *,
+    rpc_client: Any,
+    checked_at: datetime | None = None,
+) -> dict[str, Any]:
+    result = candidate_followup_defaults()
+    observed_at = checked_at or datetime.now(timezone.utc)
+    result["followupCheckedAt"] = (
+        observed_at.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+    if not isinstance(candidate_block_hash, str) or not candidate_block_hash.strip():
+        result["followupStatus"] = "check-error"
+        result["followupNote"] = "candidate-block-hash-missing"
+        return result
+
+    normalized_hash = candidate_block_hash.strip().lower()
+    try:
+        header = rpc_client.get_block_header(normalized_hash)
+    except DaemonRpcResponseError as exc:
+        detail = str(exc).lower()
+        if "block not found" in detail or "code': -5" in detail or '"code": -5' in detail:
+            result["followupStatus"] = "no-match-found"
+            result["followupNote"] = "candidate-block-hash-not-found-on-local-chain"
+            return result
+        result["followupStatus"] = "check-error"
+        result["followupNote"] = str(exc)
+        return result
+    except DaemonRpcError as exc:
+        result["followupStatus"] = "check-error"
+        result["followupNote"] = str(exc)
+        return result
+
+    result["followupStatus"] = "match-found"
+    result["followupObservedHeight"] = header.get("height")
+    result["followupObservedBlockHash"] = (
+        header.get("hash") if isinstance(header.get("hash"), str) else normalized_hash
+    )
+    result["followupNote"] = "candidate-block-hash-found-on-local-chain"
+    return result
+
+
+def build_candidate_followup_event(
+    candidate_event: dict[str, Any],
+    followup_result: dict[str, Any],
+    *,
+    recorded_at: datetime | None = None,
+) -> dict[str, Any]:
+    observed_at = recorded_at or datetime.now(timezone.utc)
+    return {
+        "timestamp": (
+            observed_at.astimezone(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        ),
+        "candidateTimestamp": candidate_event.get("timestamp"),
+        "jobId": candidate_event.get("jobId"),
+        "templateAnchor": candidate_event.get("templateAnchor"),
+        "wallet": candidate_event.get("wallet"),
+        "worker": candidate_event.get("worker"),
+        "candidateBlockHash": candidate_event.get("candidateBlockHash"),
+        "candidatePrepStatus": candidate_event.get("candidatePrepStatus"),
+        "submitblockRealSubmitStatus": candidate_event.get(
+            "submitblockRealSubmitStatus"
+        ),
+        "followupStatus": followup_result.get("followupStatus"),
+        "followupCheckedAt": followup_result.get("followupCheckedAt"),
+        "followupObservedHeight": followup_result.get("followupObservedHeight"),
+        "followupObservedBlockHash": followup_result.get("followupObservedBlockHash"),
+        "followupNote": followup_result.get("followupNote"),
+    }
+
+
+def append_candidate_followup_event(
+    path: Path,
+    candidate_event: dict[str, Any],
+    followup_result: dict[str, Any],
+    *,
+    recorded_at: datetime | None = None,
+    outcome_path: Path | None = None,
+) -> dict[str, Any]:
+    payload = build_candidate_followup_event(
+        candidate_event,
+        followup_result,
+        recorded_at=recorded_at,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
+        handle.write("\n")
+    if outcome_path is not None:
+        append_candidate_outcome_event(
+            outcome_path,
+            candidate_event,
+            followup_result,
+            recorded_at=recorded_at,
+        )
+    return payload

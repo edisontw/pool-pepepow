@@ -69,6 +69,7 @@ class TemplateSnapshot:
     coinb2: str
     merkle_branch: tuple[str, ...]
     preimage_context: dict[str, Any]
+    authoritative_context: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ class JobRecord:
     coinb2: str
     merkle_branch: tuple[str, ...]
     preimage_context: dict[str, Any]
+    authoritative_context: dict[str, Any]
 
     def as_dict(self, *, now: datetime) -> dict[str, Any]:
         return {
@@ -189,6 +191,7 @@ class TemplateJobManager:
             coinb2 = template.coinb2
             merkle_branch = tuple(template.merkle_branch)
             preimage_context = dict(template.preimage_context)
+            authoritative_context = dict(template.authoritative_context)
         else:
             source = TEMPLATE_MODE_SYNTHETIC
             prevhash = SYNTHETIC_PREVHASH
@@ -214,6 +217,7 @@ class TemplateJobManager:
                 "templateTransactionCount": 0,
                 "coinbaseOutputsCount": 0,
             }
+            authoritative_context = {}
 
         expires_at = current_time + timedelta(seconds=self._job_ttl_seconds)
         job = JobRecord(
@@ -232,6 +236,7 @@ class TemplateJobManager:
             coinb2=coinb2,
             merkle_branch=merkle_branch,
             preimage_context=preimage_context,
+            authoritative_context=authoritative_context,
         )
         self._jobs.pop(job_id, None)
         self._jobs[job_id] = job
@@ -369,7 +374,13 @@ def _parse_block_template(
     bits = _as_hex_string(raw_template.get("bits"), field_name="bits")
     version = _as_uint32_hex(raw_template.get("version"), field_name="version")
     current_time = _as_uint32(raw_template.get("curtime"), field_name="curtime")
-    coinb1, coinb2, merkle_branch, preimage_context = _build_template_preimage_material(
+    (
+        coinb1,
+        coinb2,
+        merkle_branch,
+        preimage_context,
+        authoritative_context,
+    ) = _build_template_preimage_material(
         raw_template,
         current_time=current_time,
     )
@@ -407,6 +418,7 @@ def _parse_block_template(
         coinb2=coinb2,
         merkle_branch=tuple(merkle_branch),
         preimage_context=preimage_context,
+        authoritative_context=authoritative_context,
     )
 
 
@@ -414,14 +426,16 @@ def _build_template_preimage_material(
     raw_template: dict[str, Any],
     *,
     current_time: int,
-) -> tuple[str, str, list[str], dict[str, Any]]:
+) -> tuple[str, str, list[str], dict[str, Any], dict[str, Any]]:
     height = _as_uint32(raw_template.get("height"), field_name="height")
     coinbase_value = _as_uint64(
         raw_template.get("coinbasevalue"),
         field_name="coinbasevalue",
     )
     coinbase_flags = _parse_coinbase_flags(raw_template.get("coinbaseaux"))
-    transaction_hashes = _extract_transaction_hashes(raw_template.get("transactions"))
+    transactions = _extract_template_transactions(raw_template.get("transactions"))
+    transaction_hashes = [entry["hash"] for entry in transactions]
+    transaction_data_hexes = tuple(entry.get("data") for entry in transactions)
     payout_outputs = _extract_template_outputs(raw_template)
     payout_total = sum(output["amount"] for output in payout_outputs)
     if payout_total > coinbase_value:
@@ -479,11 +493,76 @@ def _build_template_preimage_material(
         "transactionsDigest": transactions_digest,
         "placeholderPayout": remaining_amount > 0 or not payout_outputs,
     }
+    authoritative_context = {
+        "referenceCaptured": True,
+        "authoritativeCoinbaseAvailable": False,
+        "authoritativeOutputLayoutAvailable": True,
+        "authoritativeNonOutputSegmentsAvailable": True,
+        "coinb1HexLength": len(coinb1_bytes.hex()),
+        "coinb2HexLength": len(coinb2_bytes.hex()),
+        "coinb2Digest": hashlib.sha256(coinb2_bytes).hexdigest()[:24],
+        "outputVectorDigest": outputs_digest,
+        "transactionHashes": tuple(transaction_hashes),
+        "transactionDataHexes": transaction_data_hexes,
+        "transactionDataAvailableAll": all(
+            isinstance(raw_tx, str) and bool(raw_tx) for raw_tx in transaction_data_hexes
+        ),
+        "coinbaseSegmentSummaries": {
+            "coinbasePrefixBytes": {
+                "offset": 0,
+                "hexLength": (4 + 1 + 32 + 4) * 2,
+                "hex": coinb1_bytes[: 4 + 1 + 32 + 4].hex(),
+                "digest": hashlib.sha256(
+                    coinb1_bytes[: 4 + 1 + 32 + 4]
+                ).hexdigest()[:24],
+            },
+            "coinbaseLengthVarint": {
+                "offset": 4 + 1 + 32 + 4,
+                "hex": _encode_varint(script_length).hex(),
+                "declaredScriptSigBytes": script_length,
+            },
+            "scriptSigTemplateBytes": {
+                "offset": (4 + 1 + 32 + 4) + len(_encode_varint(script_length)),
+                "hexLength": len(script_prefix.hex()),
+                "hex": script_prefix.hex(),
+                "digest": hashlib.sha256(script_prefix).hexdigest()[:24],
+            },
+            "extranonceRegion": {
+                "offset": len(coinb1_bytes),
+                "expectedTotalBytes": extranonce_bytes,
+            },
+            "postScriptSigSequence": {
+                "offset": len(coinb1_bytes) + extranonce_bytes,
+                "hex": coinb2_bytes[:4].hex(),
+            },
+            "outputCountVarint": {
+                "offset": len(coinb1_bytes) + extranonce_bytes + 4,
+                "hex": _encode_varint(len(outputs)).hex(),
+                "value": len(outputs),
+            },
+            "coinbaseTail": {
+                "offset": len(coinb1_bytes) + extranonce_bytes + len(coinb2_bytes) - 4,
+                "locktimeHex": coinb2_bytes[-4:].hex(),
+            },
+        },
+        "outputSummaries": [
+            {
+                "index": index,
+                "kind": output["kind"],
+                "amount": output["amount"],
+                "scriptLength": len(output["script"]) // 2,
+                "scriptHex": output["script"],
+                "placeholderScript": output["script"] == PLACEHOLDER_PAYOUT_SCRIPT,
+            }
+            for index, output in enumerate(outputs)
+        ],
+    }
     return (
         coinb1_bytes.hex(),
         coinb2_bytes.hex(),
         merkle_branch,
         preimage_context,
+        authoritative_context,
     )
 
 
@@ -548,31 +627,40 @@ def _parse_coinbase_flags(raw_value: Any) -> bytes:
         raise ValueError("getblocktemplate coinbaseaux.flags must be hex") from exc
 
 
-def _extract_transaction_hashes(raw_value: Any) -> list[str]:
+def _extract_template_transactions(raw_value: Any) -> list[dict[str, str | None]]:
     if raw_value in (None, ""):
         return []
     if not isinstance(raw_value, list):
         raise ValueError("getblocktemplate transactions must be an array")
 
-    transaction_hashes: list[str] = []
+    transactions: list[dict[str, str | None]] = []
     for index, entry in enumerate(raw_value):
         if not isinstance(entry, dict):
             raise ValueError(f"getblocktemplate transaction {index} is invalid")
+        raw_tx = entry.get("data")
+        normalized_data = None
+        if isinstance(raw_tx, str) and raw_tx.strip():
+            normalized_data = raw_tx.strip().lower()
+            _decode_hex(normalized_data, field_name=f"transaction data {index}")
         candidate = entry.get("hash") or entry.get("txid")
         if isinstance(candidate, str) and candidate.strip():
             normalized = candidate.strip().lower()
             _decode_hex(normalized, field_name=f"transaction hash {index}", expected_length=64)
-            transaction_hashes.append(normalized)
+            transactions.append({"hash": normalized, "data": normalized_data})
             continue
-        raw_tx = entry.get("data")
-        if isinstance(raw_tx, str) and raw_tx.strip():
-            tx_bytes = _decode_hex(raw_tx.strip(), field_name=f"transaction data {index}")
-            transaction_hashes.append(hashlib.sha256(hashlib.sha256(tx_bytes).digest()).digest()[::-1].hex())
+        if normalized_data is not None:
+            tx_bytes = bytes.fromhex(normalized_data)
+            transactions.append(
+                {
+                    "hash": hashlib.sha256(hashlib.sha256(tx_bytes).digest()).digest()[::-1].hex(),
+                    "data": normalized_data,
+                }
+            )
             continue
         raise ValueError(
             f"getblocktemplate transaction {index} is missing hash and data"
         )
-    return transaction_hashes
+    return transactions
 
 
 def _extract_template_outputs(raw_template: dict[str, Any]) -> list[dict[str, Any]]:
@@ -580,6 +668,8 @@ def _extract_template_outputs(raw_template: dict[str, Any]) -> list[dict[str, An
     for field_name in ("masternode", "superblock", "foundation"):
         raw_value = raw_template.get(field_name)
         if raw_value in (None, ""):
+            continue
+        if isinstance(raw_value, dict) and not raw_value:
             continue
         entries = raw_value if isinstance(raw_value, list) else [raw_value]
         if not isinstance(entries, list):

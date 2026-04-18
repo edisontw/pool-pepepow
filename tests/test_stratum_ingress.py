@@ -27,21 +27,36 @@ pool_core_config = _load_module("pool_core_config", "config.py")
 sys.modules["config"] = pool_core_config
 stratum_ingress = _load_module("pool_core_stratum_ingress", "stratum_ingress.py")
 pool_core_daemon_rpc = sys.modules["daemon_rpc"]
+template_jobs = sys.modules["template_jobs"]
 
 PoolCoreConfig = pool_core_config.PoolCoreConfig
 StratumIngressService = stratum_ingress.StratumIngressService
 DaemonRpcUnavailableError = pool_core_daemon_rpc.DaemonRpcUnavailableError
+DaemonRpcResponseError = pool_core_daemon_rpc.DaemonRpcResponseError
 SessionStats = stratum_ingress.SessionStats
 SubmitAssessment = stratum_ingress.SubmitAssessment
 
 
 class SuccessfulTemplateRpcClient:
+    def __init__(
+        self,
+        *,
+        allow_submitblock: bool = False,
+        submitblock_result: object = None,
+    ) -> None:
+        self.submitblock_calls: list[tuple[object, ...]] = []
+        self._allow_submitblock = allow_submitblock
+        self._submitblock_result = submitblock_result
+
     def get_block_template(self) -> dict[str, object]:
         return {
             "previousblockhash": "1" * 64,
             "transactions": [
                 {
-                    "hash": "2" * 64,
+                    "data": (
+                        "01000000010000000000000000000000000000000000000000000000000000000000000000"
+                        "00000000ffffffff0100000000000000000000000000"
+                    ),
                 }
             ],
             "coinbaseaux": {"flags": "f00d"},
@@ -53,10 +68,59 @@ class SuccessfulTemplateRpcClient:
             "curtime": 1713225600,
         }
 
+    def submitblock(self, *args: object) -> object:
+        self.submitblock_calls.append(args)
+        if not self._allow_submitblock:
+            raise AssertionError("submitblock must not be called during dry-run prep")
+        return self._submitblock_result
+
+
+class PartialTemplateRpcClient(SuccessfulTemplateRpcClient):
+    def get_block_template(self) -> dict[str, object]:
+        payload = super().get_block_template()
+        payload["transactions"] = [{"hash": "2" * 64}]
+        return payload
+
+
+class ErroringSubmitblockRpcClient(SuccessfulTemplateRpcClient):
+    def submitblock(self, *args: object) -> object:
+        self.submitblock_calls.append(args)
+        raise RuntimeError("submitblock failed")
+
+
+class FollowupFoundRpcClient:
+    def get_block_header(self, block_hash: str) -> dict[str, object]:
+        return {"hash": block_hash, "height": 123456}
+
+
+class FollowupNotFoundRpcClient:
+    def get_block_header(self, block_hash: str) -> dict[str, object]:
+        raise DaemonRpcResponseError(
+            "RPC getblockheader error: {'code': -5, 'message': 'Block not found'}"
+        )
+
+
+class FollowupErrorRpcClient:
+    def get_block_header(self, block_hash: str) -> dict[str, object]:
+        raise DaemonRpcUnavailableError("RPC getblockheader failed: connection refused")
+
 
 class FailingTemplateRpcClient:
     def get_block_template(self) -> dict[str, object]:
         raise DaemonRpcUnavailableError("template RPC unavailable")
+
+
+class EmptyMasternodeTemplateRpcClient(SuccessfulTemplateRpcClient):
+    def get_block_template(self) -> dict[str, object]:
+        payload = super().get_block_template()
+        payload["masternode"] = {}
+        payload["foundation"] = [
+            {
+                "script": "76a9143ec00d0d0e9a538b564d0bae64e1076d7ddd286688ac",
+                "amount": 0,
+            }
+        ]
+        return payload
 
 
 class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
@@ -73,6 +137,225 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             bytes.fromhex(header_hex)
         )
         self.assertEqual(share_hash.hex(), expected_hash)
+
+    def test_candidate_followup_defaults(self):
+        result = pool_core_daemon_rpc.candidate_followup_defaults()
+        self.assertEqual(result["followupStatus"], "not-checked")
+        self.assertIsNone(result["followupCheckedAt"])
+        self.assertIsNone(result["followupObservedHeight"])
+        self.assertIsNone(result["followupObservedBlockHash"])
+        self.assertIsNone(result["followupNote"])
+
+    def test_candidate_followup_check_found(self):
+        result = pool_core_daemon_rpc.check_candidate_followup(
+            "ab" * 32,
+            rpc_client=FollowupFoundRpcClient(),
+        )
+        self.assertEqual(result["followupStatus"], "match-found")
+        self.assertEqual(result["followupObservedHeight"], 123456)
+        self.assertEqual(result["followupObservedBlockHash"], "ab" * 32)
+        self.assertEqual(
+            result["followupNote"], "candidate-block-hash-found-on-local-chain"
+        )
+        self.assertIsInstance(result["followupCheckedAt"], str)
+
+    def test_candidate_followup_check_not_found(self):
+        result = pool_core_daemon_rpc.check_candidate_followup(
+            "cd" * 32,
+            rpc_client=FollowupNotFoundRpcClient(),
+        )
+        self.assertEqual(result["followupStatus"], "no-match-found")
+        self.assertIsNone(result["followupObservedHeight"])
+        self.assertIsNone(result["followupObservedBlockHash"])
+        self.assertEqual(
+            result["followupNote"], "candidate-block-hash-not-found-on-local-chain"
+        )
+
+    def test_candidate_followup_check_error(self):
+        result = pool_core_daemon_rpc.check_candidate_followup(
+            "ef" * 32,
+            rpc_client=FollowupErrorRpcClient(),
+        )
+        self.assertEqual(result["followupStatus"], "check-error")
+        self.assertIsNone(result["followupObservedHeight"])
+        self.assertIsNone(result["followupObservedBlockHash"])
+        self.assertIn("connection refused", result["followupNote"])
+
+    def test_build_candidate_outcome_event_defaults_to_submitted(self):
+        candidate_event = {
+            "timestamp": "2026-04-18T06:30:00Z",
+            "jobId": "job-0000000000000000",
+            "candidateBlockHash": "aa" * 32,
+            "candidatePrepStatus": "candidate-prepared-complete",
+            "submitblockRealSubmitStatus": "submit-sent",
+            "submitblockAttempted": True,
+            "submitblockSent": True,
+            "submitblockSubmittedAt": "2026-04-18T06:31:00Z",
+        }
+
+        payload = pool_core_daemon_rpc.build_candidate_outcome_event(candidate_event)
+
+        self.assertEqual(payload["candidateOutcomeStatus"], "submitted")
+        self.assertEqual(payload["followupStatus"], "not-checked")
+        self.assertEqual(payload["candidateBlockHash"], "aa" * 32)
+        self.assertEqual(payload["submitblockRealSubmitStatus"], "submit-sent")
+        self.assertTrue(payload["submitblockAttempted"])
+        self.assertTrue(payload["submitblockSent"])
+        self.assertEqual(payload["submitblockSubmittedAt"], "2026-04-18T06:31:00Z")
+
+    def test_build_candidate_outcome_event_maps_recorded_followup_states(self):
+        candidate_event = {
+            "timestamp": "2026-04-18T06:30:00Z",
+            "jobId": "job-0000000000000000",
+            "candidateBlockHash": "aa" * 32,
+            "candidatePrepStatus": "candidate-prepared-complete",
+            "submitblockRealSubmitStatus": "submit-sent",
+        }
+        expected_states = {
+            "match-found": "chain-match-found",
+            "no-match-found": "chain-match-not-found",
+            "check-error": "check-error",
+        }
+
+        for followup_status, expected_outcome_status in expected_states.items():
+            with self.subTest(followup_status=followup_status):
+                payload = pool_core_daemon_rpc.build_candidate_outcome_event(
+                    candidate_event,
+                    {
+                        "followupStatus": followup_status,
+                        "followupCheckedAt": "2026-04-18T06:32:00Z",
+                        "followupObservedHeight": 123456,
+                        "followupObservedBlockHash": "bb" * 32,
+                        "followupNote": "test-note",
+                    },
+                )
+
+                self.assertEqual(
+                    payload["candidateOutcomeStatus"], expected_outcome_status
+                )
+                self.assertEqual(payload["followupStatus"], followup_status)
+
+    def test_extract_template_outputs_ignores_empty_object(self):
+        outputs = template_jobs._extract_template_outputs(
+            {
+                "masternode": {},
+                "foundation": [
+                    {
+                        "script": "76a9143ec00d0d0e9a538b564d0bae64e1076d7ddd286688ac",
+                        "amount": 0,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(
+            outputs,
+            [
+                {
+                    "amount": 0,
+                    "script": "76a9143ec00d0d0e9a538b564d0bae64e1076d7ddd286688ac",
+                    "kind": "foundation",
+                }
+            ],
+        )
+
+    def test_append_candidate_followup_event_records_match_found(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            followup_path = tmp_path / "candidate-followup-events.jsonl"
+            outcome_path = tmp_path / "candidate-outcome-events.jsonl"
+            candidate_event = {
+                "timestamp": "2026-04-18T06:30:00Z",
+                "jobId": "job-0000000000000001",
+                "templateAnchor": "anchor-1",
+                "wallet": "wallet1",
+                "worker": "rig01",
+                "candidateBlockHash": "ab" * 32,
+                "candidatePrepStatus": "candidate-prepared-complete",
+                "submitblockRealSubmitStatus": "submit-sent",
+            }
+            followup = pool_core_daemon_rpc.check_candidate_followup(
+                candidate_event["candidateBlockHash"],
+                rpc_client=FollowupFoundRpcClient(),
+            )
+            payload = pool_core_daemon_rpc.append_candidate_followup_event(
+                followup_path,
+                candidate_event,
+                followup,
+                outcome_path=outcome_path,
+            )
+
+            self.assertEqual(payload["followupStatus"], "match-found")
+            lines = followup_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            recorded = json.loads(lines[0])
+            self.assertEqual(recorded["candidateBlockHash"], "ab" * 32)
+            self.assertEqual(recorded["followupStatus"], "match-found")
+            self.assertEqual(recorded["followupObservedHeight"], 123456)
+            self.assertEqual(recorded["followupObservedBlockHash"], "ab" * 32)
+            outcome_recorded = json.loads(
+                outcome_path.read_text(encoding="utf-8").splitlines()[0]
+            )
+            self.assertEqual(
+                outcome_recorded["candidateOutcomeStatus"], "chain-match-found"
+            )
+            self.assertEqual(outcome_recorded["followupStatus"], "match-found")
+
+    def test_append_candidate_followup_event_records_no_match_found(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            followup_path = tmp_path / "candidate-followup-events.jsonl"
+            candidate_event = {
+                "timestamp": "2026-04-18T06:30:00Z",
+                "jobId": "job-0000000000000002",
+                "candidateBlockHash": "cd" * 32,
+                "candidatePrepStatus": "candidate-prepared-complete",
+                "submitblockRealSubmitStatus": "submit-disabled-flag-off",
+            }
+            followup = pool_core_daemon_rpc.check_candidate_followup(
+                candidate_event["candidateBlockHash"],
+                rpc_client=FollowupNotFoundRpcClient(),
+            )
+            payload = pool_core_daemon_rpc.append_candidate_followup_event(
+                followup_path,
+                candidate_event,
+                followup,
+            )
+
+            self.assertEqual(payload["followupStatus"], "no-match-found")
+            recorded = json.loads(followup_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(recorded["followupStatus"], "no-match-found")
+            self.assertIsNone(recorded["followupObservedHeight"])
+            self.assertIsNone(recorded["followupObservedBlockHash"])
+            self.assertEqual(
+                recorded["followupNote"],
+                "candidate-block-hash-not-found-on-local-chain",
+            )
+
+    def test_append_candidate_followup_event_records_check_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            followup_path = tmp_path / "candidate-followup-events.jsonl"
+            candidate_event = {
+                "timestamp": "2026-04-18T06:30:00Z",
+                "jobId": "job-0000000000000003",
+                "candidateBlockHash": "ef" * 32,
+                "candidatePrepStatus": "candidate-prepared-complete",
+                "submitblockRealSubmitStatus": "submit-error",
+            }
+            followup = pool_core_daemon_rpc.check_candidate_followup(
+                candidate_event["candidateBlockHash"],
+                rpc_client=FollowupErrorRpcClient(),
+            )
+            payload = pool_core_daemon_rpc.append_candidate_followup_event(
+                followup_path,
+                candidate_event,
+                followup,
+            )
+
+            self.assertEqual(payload["followupStatus"], "check-error")
+            recorded = json.loads(followup_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(recorded["followupStatus"], "check-error")
+            self.assertIn("connection refused", recorded["followupNote"])
 
     async def test_authorize_pushes_synthetic_difficulty_and_notify(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -212,6 +495,27 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_real_submitblock_enabled_logs_startup_warning(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                enable_real_submitblock=True,
+            )
+            service = StratumIngressService(config)
+            with self.assertLogs("pepepow.stratum_ingress", level="WARNING") as captured:
+                await service.start()
+            try:
+                self.assertTrue(
+                    any(
+                        "REAL submitblock ENABLED via PEPEPOW_ENABLE_REAL_SUBMITBLOCK=true"
+                        in entry
+                        for entry in captured.output
+                    )
+                )
+            finally:
+                await service.stop()
+
     async def test_authorized_connection_receives_periodic_notify_refresh(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -225,7 +529,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             reader = writer = None
             try:
                 reader, writer = await self._open_client(service)
-                await self._rpc_call(
+                subscribe_response = await self._rpc_call(
                     reader,
                     writer,
                     {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
@@ -287,7 +591,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 reader, writer = await self._open_client(service)
-                await self._rpc_call(
+                subscribe_response = await self._rpc_call(
                     reader,
                     writer,
                     {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
@@ -307,6 +611,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 await self._read_json(reader)
                 await self._read_json(reader)
                 notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "0" * 63 + "1"
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
 
                 self.assertEqual(notify_message["method"], "mining.notify")
                 self.assertEqual(notify_message["params"][1], "1" * 64)
@@ -357,6 +670,599 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     share_event["shareHashValidationStatus"], "share-hash-invalid"
                 )
                 self.assertFalse(share_event["shareHashValid"])
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["meetsShareTarget"]
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["meetsBlockTarget"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["blockTargetUsed"],
+                    "0" * 63 + "1",
+                )
+                self.assertIsInstance(
+                    share_event["shareHashDiagnostic"]["shareTargetUsed"], str
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["comparisonStage"],
+                    "share-hash-compare",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["reasonCode"],
+                    "header80-mismatch",
+                )
+                self.assertIsInstance(
+                    share_event["shareHashDiagnostic"]["localComputedHash"], str
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["inputSummary"]["ntime"],
+                    notify_message["params"][7],
+                )
+                self.assertNotEqual(
+                    share_event["shareHashDiagnostic"]["refinedReasonCode"],
+                    "unknown-header80-mismatch",
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["observedHeaderAvailable"]
+                )
+                self.assertIsNone(
+                    share_event["shareHashDiagnostic"]["header80ObservedHex"]
+                )
+                self.assertEqual(
+                    len(share_event["shareHashDiagnostic"]["header80ExpectedHex"]),
+                    160,
+                )
+                self.assertEqual(
+                    sorted(
+                        share_event["shareHashDiagnostic"]["header80FieldSummary"].keys()
+                    ),
+                    ["bits", "merkleRoot", "nonce", "ntime", "prevHash", "version"],
+                )
+                self.assertEqual(
+                    sorted(
+                        share_event["shareHashDiagnostic"][
+                            "header80VariantTargetMatches"
+                        ].keys()
+                    ),
+                    [
+                        "allFieldsSourceOrder",
+                        "bitsSourceOrder",
+                        "merkleRootByteReversed",
+                        "nonceSourceOrder",
+                        "ntimeSourceOrder",
+                        "prevHashSourceOrder",
+                        "versionSourceOrder",
+                    ],
+                )
+                self.assertIn(
+                    share_event["shareHashDiagnostic"]["refinedMerkleReasonCode"],
+                    {
+                        "coinbase-input-mismatch",
+                        "extranonce-assembly-mismatch",
+                        "scriptSig-assembly-mismatch",
+                        "transaction-list-or-branch-mismatch",
+                        "merkle-assembly-mismatch",
+                        "unknown-upstream-merkle-mismatch",
+                    },
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["merkleRootExpected"],
+                    share_event["shareHashDiagnostic"]["merkleRootLocal"],
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["jobContextIdentifiers"][
+                        "jobId"
+                    ],
+                    notify_message["params"][0],
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["contextAgeOrSequenceHints"][
+                        "localCoinbaseExtranonceBytesAssumed"
+                    ],
+                    8,
+                )
+                self.assertEqual(
+                    sorted(
+                        share_event["shareHashDiagnostic"][
+                            "alternateCoinbaseVariantTargetMatches"
+                        ].keys()
+                    ),
+                    [
+                        "currentAssembly",
+                        "dropExtranonce1",
+                        "dropExtranonce2",
+                        "swapExtranonces",
+                        "zeroExtranonce1",
+                        "zeroExtranonce2",
+                    ],
+                )
+                if (
+                    share_event["shareHashDiagnostic"]["refinedMerkleReasonCode"]
+                    == "merkle-assembly-mismatch"
+                ):
+                    self.assertIn(
+                        share_event["shareHashDiagnostic"][
+                            "refinedMerkleAssemblyStage"
+                        ],
+                        {
+                            "coinbase-hash-stage",
+                            "merkle-branch-fold-stage",
+                            "ambiguous-merkle-assembly-stage",
+                            "unknown-merkle-assembly-stage",
+                        },
+                    )
+                    self.assertEqual(
+                        sorted(
+                            share_event["shareHashDiagnostic"][
+                                "alternateCoinbaseHashVariants"
+                            ].keys()
+                        ),
+                        [
+                            "currentAssembly",
+                            "dropExtranonce1",
+                            "dropExtranonce2",
+                            "swapExtranonces",
+                            "zeroExtranonce1",
+                            "zeroExtranonce2",
+                        ],
+                    )
+                    self.assertIn(
+                        "currentRule",
+                        share_event["shareHashDiagnostic"]["branchFoldTargetMatches"],
+                    )
+                    self.assertEqual(
+                        share_event["shareHashDiagnostic"]["branchCount"],
+                        share_event["shareHashDiagnostic"]["merkleBranchSummary"][
+                            "branchLength"
+                        ],
+                    )
+                    if (
+                        share_event["shareHashDiagnostic"][
+                            "refinedMerkleAssemblyStage"
+                        ]
+                        == "coinbase-hash-stage"
+                    ):
+                        self.assertIn(
+                            share_event["shareHashDiagnostic"][
+                                "refinedCoinbaseReasonCode"
+                            ],
+                            {
+                                "extranonce-placement-mismatch",
+                                "coinbase-prefix-boundary-mismatch",
+                                "coinbase-suffix-boundary-mismatch",
+                                "output-layout-mismatch",
+                                "placeholder-payout-output-suspected",
+                                "varint-or-length-encoding-mismatch",
+                                "ambiguous-coinbase-assembly-stage",
+                                "unknown-coinbase-assembly-stage",
+                            },
+                        )
+                        self.assertIsInstance(
+                            share_event["shareHashDiagnostic"]["coinbaseLocalHex"], str
+                        )
+                        self.assertEqual(
+                            sorted(
+                                share_event["shareHashDiagnostic"][
+                                    "alternateCoinbaseAssemblyVariants"
+                                ].keys()
+                            ),
+                            [
+                                "appendCombinedExtranonce",
+                                "currentAssembly",
+                                "prependCombinedExtranonce",
+                                "scriptLengthMinusExtranonce",
+                                "scriptLengthPlusExtranonce",
+                                "swapExtranonces",
+                            ],
+                        )
+                        self.assertEqual(
+                            sorted(
+                                share_event["shareHashDiagnostic"][
+                                    "alternateCoinbaseAssemblyHashMatches"
+                                ].keys()
+                            ),
+                            [
+                                "appendCombinedExtranonce",
+                                "currentAssembly",
+                                "prependCombinedExtranonce",
+                                "scriptLengthMinusExtranonce",
+                                "scriptLengthPlusExtranonce",
+                                "swapExtranonces",
+                            ],
+                        )
+                        if (
+                            share_event["shareHashDiagnostic"][
+                                "refinedCoinbaseReasonCode"
+                            ]
+                            == "placeholder-payout-output-suspected"
+                        ):
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "correctedPlaceholderPayoutVariantTested"
+                                ]
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "correctedOutputLayoutHash"
+                                ],
+                                str,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "correctedOutputLayoutMerkleRoot"
+                                ],
+                                str,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "correctedOutputLayoutHeader80"
+                                ],
+                                str,
+                            )
+                            self.assertIn(
+                                share_event["shareHashDiagnostic"][
+                                    "correctedOutputLayoutComparisonResult"
+                                ],
+                                {"share-hash-valid", "share-hash-invalid"},
+                            )
+                            self.assertIn(
+                                share_event["shareHashDiagnostic"][
+                                    "placeholderPayoutVariantEffect"
+                                ],
+                                {
+                                    "would-remove-mismatch",
+                                    "mismatch-unchanged",
+                                },
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "outputLayoutVariantDeltaSummary"
+                                ]["variantName"],
+                                "drop-placeholder-payout-output",
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "comparisonAgainstCurrentBaseline"
+                                ]["baselinePath"],
+                                "current-placeholder-payout-output",
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "comparisonAgainstCurrentBaseline"
+                                ]["experimentalPath"],
+                                "drop-placeholder-payout-output",
+                            )
+                            self.assertIn(
+                                share_event["shareHashDiagnostic"][
+                                    "refinedOutputLayoutReasonCode"
+                                ],
+                                {
+                                    "output-count-varint-mismatch",
+                                    "output-order-mismatch",
+                                    "non-placeholder-output-mismatch",
+                                    "coinb2-segmentation-boundary-mismatch",
+                                    "ambiguous-output-layout-mismatch",
+                                    "unknown-output-layout-mismatch",
+                                },
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "baselineOutputSummaries"
+                                ],
+                                list,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "correctedOutputSummaries"
+                                ],
+                                list,
+                            )
+                            self.assertIn(
+                                "variantTargetMatches",
+                                share_event["shareHashDiagnostic"][
+                                    "outputsComparisonSummary"
+                                ],
+                            )
+                            self.assertIn(
+                                "decrementOutputCountOnly",
+                                share_event["shareHashDiagnostic"][
+                                    "outputsComparisonSummary"
+                                ]["variantTargetMatches"],
+                            )
+                            self.assertIn(
+                                "movePlaceholderToEnd",
+                                share_event["shareHashDiagnostic"][
+                                    "outputsComparisonSummary"
+                                ]["variantTargetMatches"],
+                            )
+                            self.assertIn(
+                                "outputCount",
+                                share_event["shareHashDiagnostic"][
+                                    "outputMismatchFieldNames"
+                                ],
+                            )
+                            self.assertIn(
+                                "scriptPubKeyBytes",
+                                share_event["shareHashDiagnostic"][
+                                    "outputMismatchFieldNames"
+                                ],
+                            )
+                            self.assertIn(
+                                "baselineOutputCount",
+                                share_event["shareHashDiagnostic"][
+                                    "coinb2SegmentationSummary"
+                                ],
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "coinb2BoundarySuspected"
+                                ],
+                                bool,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "nonPlaceholderOutputMismatchSuspected"
+                                ],
+                                bool,
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeReferenceCaptured"
+                                ]
+                            )
+                            self.assertFalse(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeCoinbaseAvailable"
+                                ]
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeOutputLayoutAvailable"
+                                ]
+                            )
+                            self.assertIn(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeComparisonResult"
+                                ],
+                                {"equal", "mismatch"},
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeOutputSummaries"
+                                ],
+                                list,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeMismatchFieldNames"
+                                ],
+                                list,
+                            )
+                            self.assertIn(
+                                "coinb2Digest",
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeCoinbaseSummary"
+                                ],
+                            )
+                            self.assertIsNone(
+                                share_event["shareHashDiagnostic"][
+                                    "localVsAuthoritativeCoinbaseHashEqual"
+                                ]
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "localVsAuthoritativeOutputLayoutEqual"
+                                ],
+                                bool,
+                            )
+                            self.assertIn(
+                                share_event["shareHashDiagnostic"][
+                                    "refinedCoinbaseSegmentReasonCode"
+                                ],
+                                {
+                                    "coinbase-prefix-mismatch",
+                                    "scriptSig-bytes-mismatch",
+                                    "extranonce-region-mismatch",
+                                    "coinbase-length-encoding-mismatch",
+                                    "coinbase-tail-mismatch",
+                                    "coinbase-to-merkle-handoff-ambiguity",
+                                    "ambiguous-nonoutput-coinbase-mismatch",
+                                    "unknown-non-output-coinbase-mismatch",
+                                },
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "localCoinbaseSegmentSummaries"
+                                ],
+                                dict,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeCoinbaseSegmentSummaries"
+                                ],
+                                dict,
+                            )
+                            self.assertIn(
+                                "coinbasePrefixBytes",
+                                share_event["shareHashDiagnostic"][
+                                    "matchingCoinbaseSegments"
+                                ],
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "mismatchingCoinbaseSegments"
+                                ],
+                                [],
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "coinbaseSegmentMismatchFieldNames"
+                                ],
+                                [],
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "outputVectorConfirmedEqual"
+                                ]
+                            )
+                            self.assertFalse(
+                                share_event["shareHashDiagnostic"][
+                                    "nonOutputCoinbaseMismatchSuspected"
+                                ]
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "scriptSigAuthoritativeAvailable"
+                                ]
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "localVsAuthoritativeNonOutputSegmentsEqual"
+                                ]
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeFullCoinbaseAvailable"
+                                ]
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "localFullCoinbaseAvailable"
+                                ]
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeFullCoinbaseHexSummary"
+                                ],
+                                dict,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "localFullCoinbaseHexSummary"
+                                ],
+                                dict,
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "fullCoinbaseBytesEqual"
+                                ]
+                            )
+                            self.assertIsNone(
+                                share_event["shareHashDiagnostic"][
+                                    "firstFullCoinbaseMismatchOffset"
+                                ]
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeCoinbaseLeafHash"
+                                ],
+                                share_event["shareHashDiagnostic"][
+                                    "localCoinbaseLeafHash"
+                                ],
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "coinbaseLeafHashEqual"
+                                ]
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeMerkleLeafInputSummary"
+                                ],
+                                dict,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "localMerkleLeafInputSummary"
+                                ],
+                                dict,
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "merkleLeafNormalizationEqual"
+                                ]
+                            )
+                            self.assertIn(
+                                share_event["shareHashDiagnostic"][
+                                    "refinedHandoffReasonCode"
+                                ],
+                                {
+                                    "full-coinbase-serialization-mismatch",
+                                    "coinbase-leaf-hash-mismatch",
+                                    "merkle-leaf-normalization-mismatch",
+                                    "single-leaf-merkle-handoff-mismatch",
+                                    "unknown-handoff-mismatch",
+                                },
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeHeader80Available"
+                                ]
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"][
+                                    "localHeader80Available"
+                                ]
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "authoritativeHeader80HexSummary"
+                                ],
+                                dict,
+                            )
+                            self.assertIsInstance(
+                                share_event["shareHashDiagnostic"][
+                                    "localHeader80HexSummary"
+                                ],
+                                dict,
+                            )
+                            self.assertTrue(
+                                share_event["shareHashDiagnostic"]["header80BytesEqual"]
+                            )
+                            self.assertIsNone(
+                                share_event["shareHashDiagnostic"][
+                                    "firstHeader80MismatchOffset"
+                                ]
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "headerFieldEquality"
+                                ],
+                                {
+                                    "version": True,
+                                    "prevhash": True,
+                                    "merkleRoot": True,
+                                    "ntime": True,
+                                    "bits": True,
+                                    "nonce": True,
+                                },
+                            )
+                            self.assertFalse(
+                                share_event["shareHashDiagnostic"][
+                                    "prevhashByteOrderSuspected"
+                                ]
+                            )
+                            self.assertFalse(
+                                share_event["shareHashDiagnostic"][
+                                    "ntimeFieldMappingSuspected"
+                                ]
+                            )
+                            self.assertFalse(
+                                share_event["shareHashDiagnostic"][
+                                    "bitsFieldMappingSuspected"
+                                ]
+                            )
+                            self.assertFalse(
+                                share_event["shareHashDiagnostic"][
+                                    "nonceFieldMappingSuspected"
+                                ]
+                            )
+                            self.assertEqual(
+                                share_event["shareHashDiagnostic"][
+                                    "refinedHeaderAssemblyReasonCode"
+                                ],
+                                "unknown-header-assembly-mismatch",
+                            )
 
                 activity_snapshot = self._load_json(config.activity_snapshot_output_path)
                 self.assertEqual(
@@ -410,6 +1316,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_with_share_hash_valid_is_classified_without_rejection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
+            rpc_client = SuccessfulTemplateRpcClient()
             config = self._make_config(
                 tmp_path,
                 template_mode="daemon-template",
@@ -417,7 +1324,274 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             )
             service = StratumIngressService(
                 config,
-                rpc_client=SuccessfulTemplateRpcClient(),
+                rpc_client=rpc_client,
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                self.assertEqual(
+                    share_event["shareHashValidationStatus"], "share-hash-valid"
+                )
+                self.assertTrue(share_event["shareHashValid"])
+                self.assertTrue(
+                    share_event["shareHashDiagnostic"]["meetsShareTarget"]
+                )
+                self.assertTrue(
+                    share_event["shareHashDiagnostic"]["meetsBlockTarget"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["candidatePrepStatus"],
+                    "candidate-prepared-complete",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["shareTargetUsed"],
+                    "f" * 64,
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["blockTargetUsed"],
+                    "f" * 64,
+                )
+                self.assertIsInstance(
+                    share_event["shareHashDiagnostic"]["candidateArtifact"][
+                        "candidateBlockHex"
+                    ],
+                    str,
+                )
+                self.assertTrue(
+                    share_event["shareHashDiagnostic"]["candidateArtifact"][
+                        "completeEnoughForFutureSubmitblock"
+                    ]
+                )
+                self.assertTrue(
+                    share_event["shareHashDiagnostic"]["submitblockDryRunReady"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockDryRunStatus"],
+                    "dry-run-prepared-complete",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockRpcMethod"],
+                    "submitblock",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockPayloadHex"],
+                    share_event["shareHashDiagnostic"]["candidateArtifact"][
+                        "candidateBlockHex"
+                    ],
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockPayloadHash"],
+                    share_event["shareHashDiagnostic"]["candidateArtifact"][
+                        "candidateBlockHash"
+                    ],
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockPayloadBytes"],
+                    len(
+                        bytes.fromhex(
+                            share_event["shareHashDiagnostic"]["candidateArtifact"][
+                                "candidateBlockHex"
+                            ]
+                        )
+                    ),
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockRpcParams"],
+                    [
+                        share_event["shareHashDiagnostic"]["candidateArtifact"][
+                            "candidateBlockHex"
+                        ]
+                    ],
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["missingData"],
+                    [],
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["submitblockAttempted"]
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["submitblockSent"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockRealSubmitStatus"],
+                    "submit-disabled-flag-off",
+                )
+                self.assertIsNone(
+                    share_event["shareHashDiagnostic"]["submitblockSubmittedAt"]
+                )
+                self.assertIsNone(
+                    share_event["shareHashDiagnostic"]["submitblockDaemonResult"]
+                )
+                self.assertIsNone(
+                    share_event["shareHashDiagnostic"]["submitblockException"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["candidateArtifact"][
+                        "nonCoinbaseTransactionCount"
+                    ],
+                    1,
+                )
+                self.assertEqual(rpc_client.submitblock_calls, [])
+                await self._wait_for(
+                    lambda: len(self._read_candidate_events(config)) == 1
+                )
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertEqual(candidate_event["jobId"], job_id)
+                self.assertEqual(
+                    candidate_event["wallet"], "PEPEPOW1KnownWalletAddress000000"
+                )
+                self.assertEqual(candidate_event["worker"], "rig01")
+                self.assertEqual(
+                    candidate_event["candidatePrepStatus"],
+                    "candidate-prepared-complete",
+                )
+                self.assertTrue(candidate_event["submitblockDryRunReady"])
+                self.assertEqual(
+                    candidate_event["submitblockDryRunStatus"],
+                    "dry-run-prepared-complete",
+                )
+                self.assertFalse(candidate_event["realSubmitblockEnabled"])
+                self.assertFalse(candidate_event["submitblockAttempted"])
+                self.assertFalse(candidate_event["submitblockSent"])
+                self.assertEqual(
+                    candidate_event["submitblockRealSubmitStatus"],
+                    "submit-disabled-flag-off",
+                )
+                self.assertEqual(
+                    candidate_event["submitblockPayloadHash"],
+                    share_event["shareHashDiagnostic"]["submitblockPayloadHash"],
+                )
+                self.assertEqual(
+                    candidate_event["submitblockPayloadBytes"],
+                    share_event["shareHashDiagnostic"]["submitblockPayloadBytes"],
+                )
+                self.assertEqual(candidate_event["followupStatus"], "not-checked")
+                self.assertIsNone(candidate_event["followupCheckedAt"])
+                self.assertIsNone(candidate_event["followupObservedHeight"])
+                self.assertIsNone(candidate_event["followupObservedBlockHash"])
+                self.assertIsNone(candidate_event["followupNote"])
+                await self._wait_for(
+                    lambda: len(self._read_candidate_outcome_events(config)) == 1
+                )
+                candidate_outcome_event = json.loads(
+                    self._read_candidate_outcome_events(config)[0]
+                )
+                self.assertEqual(
+                    candidate_outcome_event["candidateBlockHash"],
+                    candidate_event["candidateBlockHash"],
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockRealSubmitStatus"],
+                    "submit-disabled-flag-off",
+                )
+                self.assertEqual(
+                    candidate_outcome_event["candidateOutcomeStatus"],
+                    "submitted",
+                )
+                self.assertEqual(
+                    candidate_outcome_event["followupStatus"],
+                    "not-checked",
+                )
+                await self._wait_for(
+                    lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                        "realSubmitblockLastStatus"
+                    )
+                    == "submit-disabled-flag-off"
+                )
+                snapshot_meta = self._load_json(config.activity_snapshot_output_path)["meta"]
+                self.assertFalse(snapshot_meta["realSubmitblockEnabled"])
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudget"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudgetRemaining"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockAttemptCount"], 0)
+                self.assertEqual(snapshot_meta["realSubmitblockSentCount"], 0)
+                self.assertEqual(
+                    snapshot_meta["realSubmitblockLastStatus"],
+                    "submit-disabled-flag-off",
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_real_submit_enabled_calls_submitblock_once(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = SuccessfulTemplateRpcClient(
+                allow_submitblock=True,
+                submitblock_result="inconclusive",
+            )
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
             )
             await service.start()
 
@@ -483,10 +1657,431 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     lambda: len(self._read_share_events(config.activity_log_path)) == 1
                 )
                 share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                diag = share_event["shareHashDiagnostic"]
                 self.assertEqual(
-                    share_event["shareHashValidationStatus"], "share-hash-valid"
+                    diag["candidatePrepStatus"],
+                    "candidate-prepared-complete",
                 )
-                self.assertTrue(share_event["shareHashValid"])
+                self.assertTrue(diag["submitblockDryRunReady"])
+                self.assertTrue(diag["submitblockAttempted"])
+                self.assertTrue(diag["submitblockSent"])
+                self.assertEqual(diag["submitblockRealSubmitStatus"], "submit-sent")
+                self.assertEqual(diag["submitblockRpcMethod"], "submitblock")
+                self.assertEqual(diag["submitblockDaemonResult"], "inconclusive")
+                self.assertIsInstance(diag["submitblockSubmittedAt"], str)
+                self.assertEqual(
+                    rpc_client.submitblock_calls,
+                    [(diag["candidateArtifact"]["candidateBlockHex"],)],
+                )
+                await self._wait_for(
+                    lambda: len(self._read_candidate_events(config)) == 1
+                )
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertTrue(candidate_event["realSubmitblockEnabled"])
+                self.assertTrue(candidate_event["submitblockAttempted"])
+                self.assertTrue(candidate_event["submitblockSent"])
+                self.assertEqual(
+                    candidate_event["submitblockRealSubmitStatus"], "submit-sent"
+                )
+                self.assertEqual(
+                    candidate_event["submitblockDaemonResult"], "inconclusive"
+                )
+                self.assertEqual(
+                    candidate_event["submitblockPayloadHash"],
+                    diag["submitblockPayloadHash"],
+                )
+                await self._wait_for(
+                    lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                        "realSubmitblockSentCount"
+                    )
+                    == 1
+                )
+                snapshot_meta = self._load_json(config.activity_snapshot_output_path)["meta"]
+                self.assertTrue(snapshot_meta["realSubmitblockEnabled"])
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudget"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudgetRemaining"], 0)
+                self.assertEqual(snapshot_meta["realSubmitblockAttemptCount"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSentCount"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockErrorCount"], 0)
+                self.assertEqual(
+                    snapshot_meta["realSubmitblockLastStatus"],
+                    "submit-sent",
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_real_submit_enabled_one_shot_budget_stops_second_send(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = SuccessfulTemplateRpcClient(
+                allow_submitblock=True,
+                submitblock_result="first-send-ok",
+            )
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+                real_submitblock_max_sends=1,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                first_submit = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                            extranonce2="00000001",
+                            nonce="00000001",
+                        ),
+                    },
+                )
+                self.assertTrue(first_submit["result"])
+
+                second_submit = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 4,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                            extranonce2="00000002",
+                            nonce="00000002",
+                        ),
+                    },
+                )
+                self.assertTrue(second_submit["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 2
+                )
+                share_events = [
+                    json.loads(line)
+                    for line in self._read_share_events(config.activity_log_path)
+                ]
+                first_diag = share_events[0]["shareHashDiagnostic"]
+                second_diag = share_events[1]["shareHashDiagnostic"]
+                self.assertEqual(first_diag["submitblockRealSubmitStatus"], "submit-sent")
+                self.assertEqual(
+                    second_diag["submitblockRealSubmitStatus"],
+                    "submit-skipped-send-budget-exhausted",
+                )
+                self.assertFalse(second_diag["submitblockAttempted"])
+                self.assertFalse(second_diag["submitblockSent"])
+                self.assertEqual(len(rpc_client.submitblock_calls), 1)
+
+                await self._wait_for(
+                    lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                        "realSubmitblockLastStatus"
+                    )
+                    == "submit-skipped-send-budget-exhausted"
+                )
+                snapshot_meta = self._load_json(config.activity_snapshot_output_path)["meta"]
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudget"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudgetRemaining"], 0)
+                self.assertEqual(snapshot_meta["realSubmitblockAttemptCount"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSentCount"], 1)
+                self.assertEqual(
+                    snapshot_meta["realSubmitblockLastStatus"],
+                    "submit-skipped-send-budget-exhausted",
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_real_submit_enabled_records_submit_error_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = ErroringSubmitblockRpcClient(allow_submitblock=True)
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                diag = share_event["shareHashDiagnostic"]
+                self.assertTrue(diag["submitblockAttempted"])
+                self.assertFalse(diag["submitblockSent"])
+                self.assertEqual(diag["submitblockRealSubmitStatus"], "submit-error")
+                self.assertEqual(diag["submitblockException"], "submitblock failed")
+                self.assertEqual(len(rpc_client.submitblock_calls), 1)
+
+                await self._wait_for(
+                    lambda: len(self._read_candidate_events(config)) == 1
+                )
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertTrue(candidate_event["submitblockAttempted"])
+                self.assertFalse(candidate_event["submitblockSent"])
+                self.assertEqual(
+                    candidate_event["submitblockRealSubmitStatus"], "submit-error"
+                )
+                self.assertEqual(
+                    candidate_event["submitblockException"], "submitblock failed"
+                )
+                self.assertEqual(
+                    candidate_event["submitblockPayloadHash"],
+                    diag["submitblockPayloadHash"],
+                )
+
+                await self._wait_for(
+                    lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                        "realSubmitblockErrorCount"
+                    )
+                    == 1
+                )
+                snapshot_meta = self._load_json(config.activity_snapshot_output_path)["meta"]
+                self.assertEqual(snapshot_meta["realSubmitblockAttemptCount"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSentCount"], 0)
+                self.assertEqual(snapshot_meta["realSubmitblockErrorCount"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockLastStatus"], "submit-error")
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_real_submit_enabled_skips_incomplete_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = PartialTemplateRpcClient()
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                diag = share_event["shareHashDiagnostic"]
+                self.assertEqual(
+                    diag["candidatePrepStatus"],
+                    "candidate-prepared-partial",
+                )
+                self.assertFalse(diag["submitblockDryRunReady"])
+                self.assertEqual(
+                    diag["submitblockDryRunStatus"],
+                    "dry-run-prepared-partial",
+                )
+                self.assertFalse(diag["submitblockAttempted"])
+                self.assertFalse(diag["submitblockSent"])
+                self.assertEqual(
+                    diag["submitblockRealSubmitStatus"],
+                    "submit-skipped-incomplete-candidate",
+                )
+                self.assertIn("non-coinbase-transaction-data", diag["missingData"])
+                self.assertEqual(rpc_client.submitblock_calls, [])
+                await self._wait_for(
+                    lambda: len(self._read_candidate_events(config)) == 1
+                )
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertEqual(
+                    candidate_event["candidatePrepStatus"],
+                    "candidate-prepared-partial",
+                )
+                self.assertFalse(candidate_event["submitblockDryRunReady"])
+                self.assertFalse(candidate_event["submitblockAttempted"])
+                self.assertFalse(candidate_event["submitblockSent"])
+                self.assertEqual(
+                    candidate_event["submitblockRealSubmitStatus"],
+                    "submit-skipped-incomplete-candidate",
+                )
+                self.assertIn(
+                    "non-coinbase-transaction-data", candidate_event["missingData"]
+                )
             finally:
                 if writer is not None:
                     writer.close()
@@ -520,7 +2115,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 reader, writer = await self._open_client(service)
-                await self._rpc_call(
+                subscribe_response = await self._rpc_call(
                     reader,
                     writer,
                     {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
@@ -584,6 +2179,164 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     activity_snapshot["jobs"]["active"][0]["source"],
                     "synthetic",
                 )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_daemon_template_share_hash_uses_pool_difficulty_target(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = replace(
+                self._make_config(
+                    tmp_path,
+                    template_mode="daemon-template",
+                    template_fetch_interval_seconds=5.0,
+                ),
+                hashrate_assumed_share_difficulty=0.00000001,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=SuccessfulTemplateRpcClient(),
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                difficulty_message = await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
+                self.assertEqual(difficulty_message["params"], [0.00000001])
+
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "0" * 63 + "1"
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+                extranonce1 = subscribe_response["result"][1]
+                extranonce2 = "00000001"
+                share_target_int = stratum_ingress._share_target_from_difficulty(
+                    config.hashrate_assumed_share_difficulty
+                )
+                self.assertIsNotNone(share_target_int)
+                submit_nonce = None
+                for nonce_int in range(10000):
+                    candidate_nonce = f"{nonce_int:08x}"
+                    preimage = stratum_ingress._build_share_header_preimage(
+                        cached_job,
+                        extranonce1=extranonce1,
+                        extranonce2=extranonce2,
+                        ntime=notify_message["params"][7],
+                        nonce=candidate_nonce,
+                    )
+                    self.assertEqual(preimage.status, "preimage-ready")
+                    assert preimage.header is not None
+                    share_hash = stratum_ingress._calculate_pepepow_share_hash(
+                        preimage.header
+                    )
+                    if (
+                        int.from_bytes(share_hash, byteorder="big", signed=False)
+                        <= share_target_int
+                    ):
+                        submit_nonce = candidate_nonce
+                        break
+                self.assertIsNotNone(submit_nonce)
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                            extranonce2=extranonce2,
+                            nonce=submit_nonce,
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                self.assertEqual(
+                    share_event["shareHashValidationStatus"], "share-hash-valid"
+                )
+                self.assertTrue(share_event["shareHashValid"])
+                self.assertTrue(
+                    share_event["shareHashDiagnostic"]["meetsShareTarget"]
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["meetsBlockTarget"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["candidatePrepStatus"],
+                    "candidate-not-triggered",
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["submitblockDryRunReady"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockDryRunStatus"],
+                    "dry-run-not-triggered",
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["submitblockAttempted"]
+                )
+                self.assertFalse(
+                    share_event["shareHashDiagnostic"]["submitblockSent"]
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["submitblockRealSubmitStatus"],
+                    "submit-not-triggered",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["blockTargetUsed"],
+                    "0" * 63 + "1",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["shareHashComparisonMode"],
+                    "effective-pool-share-target-and-block-target",
+                )
+                self.assertFalse(self._candidate_event_log_path(config).exists())
             finally:
                 if writer is not None:
                     writer.close()
@@ -839,6 +2592,14 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     share_event["shareHashValidationStatus"], "preimage-missing"
                 )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["comparisonStage"],
+                    "template-context",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["reasonCode"],
+                    "template-context-mismatch",
+                )
             finally:
                 if writer is not None:
                     writer.close()
@@ -919,6 +2680,14 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(share_event["rejectReason"], "preimage-mismatch")
                 self.assertEqual(
                     share_event["shareHashValidationStatus"], "preimage-mismatch"
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["comparisonStage"],
+                    "ntime-normalization",
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["reasonCode"],
+                    "ntime-normalization-mismatch",
                 )
             finally:
                 if writer is not None:
@@ -1662,6 +3431,24 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             return []
         return path.read_text(encoding="utf-8").splitlines()
 
+    def _candidate_event_log_path(self, config: PoolCoreConfig) -> Path:
+        return config.activity_log_path.with_name("candidate-events.jsonl")
+
+    def _read_candidate_events(self, config: PoolCoreConfig) -> list[str]:
+        path = self._candidate_event_log_path(config)
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
+    def _candidate_outcome_event_log_path(self, config: PoolCoreConfig) -> Path:
+        return config.activity_log_path.with_name("candidate-outcome-events.jsonl")
+
+    def _read_candidate_outcome_events(self, config: PoolCoreConfig) -> list[str]:
+        path = self._candidate_outcome_event_log_path(config)
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
     def _make_config(
         self,
         tmp_path: Path,
@@ -1670,6 +3457,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         template_mode: str = "synthetic",
         template_fetch_interval_seconds: float = 15.0,
         template_job_ttl_seconds: int = 180,
+        enable_real_submitblock: bool = False,
+        real_submitblock_max_sends: int = 1,
         activity_log_rotate_bytes: int = 32 * 1024 * 1024,
         activity_log_retention_files: int = 8,
     ) -> PoolCoreConfig:
@@ -1705,6 +3494,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             template_fetch_interval_seconds=template_fetch_interval_seconds,
             template_job_ttl_seconds=template_job_ttl_seconds,
             template_job_cache_size=64,
+            enable_real_submitblock=enable_real_submitblock,
+            real_submitblock_max_sends=real_submitblock_max_sends,
             activity_log_rotate_bytes=activity_log_rotate_bytes,
             activity_log_retention_files=activity_log_retention_files,
         )

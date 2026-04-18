@@ -116,6 +116,33 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "shareHashValidationMode": record.meta.get(
                     "shareHashValidationMode"
                 ),
+                "realSubmitblockEnabled": record.meta.get(
+                    "realSubmitblockEnabled"
+                ),
+                "realSubmitblockSendBudget": record.meta.get(
+                    "realSubmitblockSendBudget"
+                ),
+                "realSubmitblockSendBudgetRemaining": record.meta.get(
+                    "realSubmitblockSendBudgetRemaining"
+                ),
+                "realSubmitblockAttemptCount": record.meta.get(
+                    "realSubmitblockAttemptCount"
+                ),
+                "realSubmitblockSentCount": record.meta.get(
+                    "realSubmitblockSentCount"
+                ),
+                "realSubmitblockErrorCount": record.meta.get(
+                    "realSubmitblockErrorCount"
+                ),
+                "realSubmitblockLastStatus": record.meta.get(
+                    "realSubmitblockLastStatus"
+                ),
+                "realSubmitblockLastAttemptAt": record.meta.get(
+                    "realSubmitblockLastAttemptAt"
+                ),
+                "realSubmitblockLastError": record.meta.get(
+                    "realSubmitblockLastError"
+                ),
                 "submitClassificationCounts": record.meta.get(
                     "submitClassificationCounts"
                 ),
