@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -36,6 +36,12 @@ class ConnectionState:
     current_difficulty: float | None = None
     current_job_id: str | None = None
     previous_job_id: str | None = None
+    submits_received: int = 0
+    shares_valid: int = 0
+    shares_rejected: int = 0
+    reject_reason_counts: dict[str, int] = field(default_factory=dict)
+    last_share_at: Any | None = None  # Use Any to avoid datetime import dependency here if preferred, but datetime is fine
+    clean_jobs_legacy: bool = False
 
 
 def new_connection_state() -> ConnectionState:
@@ -105,6 +111,7 @@ def notify_notification(
     nbits: str,
     ntime: str,
     clean_jobs: bool,
+    legacy_clean_jobs: bool = False,
 ) -> dict[str, Any]:
     return {
         "id": None,
@@ -118,7 +125,7 @@ def notify_notification(
             version,
             nbits,
             ntime,
-            clean_jobs,
+            1 if (clean_jobs and legacy_clean_jobs) else clean_jobs,
         ],
     }
 

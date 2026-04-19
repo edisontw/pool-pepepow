@@ -10,7 +10,9 @@ LOG_FILE="${RUNTIME_DIR}/stratum.log"
 SHARE_LOG="${RUNTIME_DIR}/share-events.jsonl"
 CANDIDATE_EVENT_LOG="${RUNTIME_DIR}/candidate-events.jsonl"
 CANDIDATE_OUTCOME_EVENT_LOG="${RUNTIME_DIR}/candidate-outcome-events.jsonl"
+# shellcheck disable=SC2034
 FOLLOWUP_EVENT_LOG="${RUNTIME_DIR}/candidate-followup-events.jsonl"
+SUBMIT_EVIDENCE_LOG="${RUNTIME_DIR}/submit-evidence.jsonl"
 ACTIVITY_SNAPSHOT="${RUNTIME_DIR}/activity-snapshot.json"
 LAUNCH_ENV_FILE="${RUNTIME_DIR}/launch.env"
 
@@ -58,7 +60,7 @@ set_effective_defaults() {
   PORT="${PEPEPOW_POOL_CORE_STRATUM_BIND_PORT:-39333}"
   PUBLIC_HOST="${PEPEPOW_POOL_CORE_STRATUM_HOST:-$(detect_default_host)}"
   BIND_HOST="${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST:-0.0.0.0}"
-  SHARE_DIFFICULTY="${PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY:-0.00000001}"
+  SHARE_DIFFICULTY="${PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY:-1.0}"
   JOB_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS:-5}"
   SNAPSHOT_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_ACTIVITY_SNAPSHOT_INTERVAL_SECONDS:-1}"
   LOG_ROTATE_BYTES="${PEPEPOW_LIVE_STRATUM_LOG_ROTATE_BYTES:-33554432}"
@@ -68,6 +70,7 @@ set_effective_defaults() {
   TEMPLATE_JOB_CACHE_SIZE="${PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE:-64}"
   REAL_SUBMITBLOCK_ENABLED="${PEPEPOW_ENABLE_REAL_SUBMITBLOCK:-false}"
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
+  CLEAN_JOBS_LEGACY="${PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY:-false}"
   RPC_HOST="${detected_rpc_host}"
   RPC_PORT="${detected_rpc_port}"
   RPC_URL="${PEPEPOWD_RPC_URL:-http://${detected_rpc_host}:${detected_rpc_port}}"
@@ -201,6 +204,7 @@ rpc_url: ${RPC_URL}
 rpc_user: ${RPC_USER:-unset}
 rpc_password: $(masked_rpc_password)
 rpc_timeout_seconds: ${RPC_TIMEOUT_SECONDS}
+stratum_notify_clean_jobs_legacy: ${CLEAN_JOBS_LEGACY}
 runtime_dir: ${RUNTIME_DIR}
 pid_file: ${PID_FILE}
 log_file: ${LOG_FILE}
@@ -208,6 +212,7 @@ share_log: ${SHARE_LOG}
 candidate_event_log: ${CANDIDATE_EVENT_LOG}
 candidate_outcome_event_log: ${CANDIDATE_OUTCOME_EVENT_LOG}
 candidate_followup_event_log: ${FOLLOWUP_EVENT_LOG}
+submit_evidence_log: ${SUBMIT_EVIDENCE_LOG}
 activity_snapshot: ${ACTIVITY_SNAPSHOT}
 launch_env: ${LAUNCH_ENV_FILE}
 EOF
@@ -297,6 +302,7 @@ PEPEPOWD_RPC_URL=${RPC_URL}
 PEPEPOWD_RPC_USER=${RPC_USER}
 PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
 PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
+PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY=${CLEAN_JOBS_LEGACY}
 PYTHONUNBUFFERED=1
 EOF
   chmod 600 "${LAUNCH_ENV_FILE}"
@@ -337,9 +343,23 @@ print(f"real_submit_send_budget: {meta.get('realSubmitblockSendBudget')}")
 print(f"real_submit_send_budget_remaining: {meta.get('realSubmitblockSendBudgetRemaining')}")
 print(f"real_submit_last_status: {meta.get('realSubmitblockLastStatus')}")
 print(f"real_submit_attempt_count: {meta.get('realSubmitblockAttemptCount')}")
-print(f"real_submit_sent_count: {meta.get('realSubmitblockSentCount')}")
-print(f"real_submit_error_count: {meta.get('realSubmitblockErrorCount')}")
+print(f"real_submit_sent_count: {meta.get('real_submit_sent_count')}")
+print(f"real_submit_error_count: {meta.get('real_submit_error_count')}")
 print(f"active_job_count: {meta.get('activeJobCount')}")
+
+active_sessions = payload.get("activeSessions", {})
+print(f"active_sessions_count: {len(active_sessions)}")
+for sid, session in active_sessions.items():
+    print(f"--- session:{sid} ---")
+    print(f"  remote: {session.get('remoteAddress')}")
+    print(f"  worker: {session.get('wallet')}.{session.get('worker')}")
+    print(f"  submits: {session.get('submitsReceived')} (ok:{session.get('acceptedShares')} / rej:{session.get('rejectedShares')})")
+    print(f"  diff: {session.get('advertisedDifficulty')}")
+    print(f"  legacy_notify: {session.get('cleanJobsLegacy')}")
+    print(f"  last_share: {session.get('lastShareAt')}")
+    if session.get("rejectReasonCounts"):
+        rejections = ", ".join(f"{k}:{v}" for k, v in session["rejectReasonCounts"].items())
+        print(f"  rejections: {rejections}")
 PY
 }
 
@@ -378,7 +398,7 @@ PY
 }
 
 print_runtime_sizes() {
-  for path in "${LOG_FILE}" "${SHARE_LOG}" "${CANDIDATE_EVENT_LOG}" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${FOLLOWUP_EVENT_LOG}" "${ACTIVITY_SNAPSHOT}"; do
+  for path in "${LOG_FILE}" "${SHARE_LOG}" "${CANDIDATE_EVENT_LOG}" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${FOLLOWUP_EVENT_LOG}" "${SUBMIT_EVIDENCE_LOG}" "${ACTIVITY_SNAPSHOT}"; do
     if [[ -f "${path}" ]]; then
       printf 'size_bytes[%s]: %s\n' "$(basename "${path}")" "$(stat -c '%s' "${path}")"
     fi
@@ -603,6 +623,177 @@ for raw_line in selected:
 PY
 }
 
+latest_reject_service() {
+  ensure_runtime_dir
+
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "latest_reject: none (log not found)"
+    return 0
+  fi
+
+  python3 - "${SUBMIT_EVIDENCE_LOG}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+except Exception as exc:
+    print(f"latest_reject: error reading log: {exc}")
+    sys.exit(0)
+
+reject_record = None
+for line in reversed(lines):
+    try:
+        rec = json.loads(line)
+        if rec.get("rejectReason") is not None:
+            reject_record = rec
+            break
+    except Exception:
+        continue
+
+if reject_record is None:
+    print("latest_reject: none (no rejected daemon-template submissions found)")
+    sys.exit(0)
+
+r = reject_record
+print("latest_reject: found")
+print(f"timestamp:             {r.get('timestamp')}")
+print(f"remote:                {r.get('remoteAddress')}")
+print(f"wallet:                {r.get('wallet')}")
+print(f"worker:                {r.get('worker')}")
+print(f"job_id:                {r.get('jobId')}")
+print(f"job_status:            {r.get('jobStatus')}")
+print(f"reject_reason:         {r.get('rejectReason')}")
+print(f"reject_detail:         {r.get('rejectDetail')}")
+print(f"clean_jobs_legacy:     {r.get('cleanJobsLegacy')}")
+print(f"hash_validation_mode:  {r.get('shareHashValidationMode')}")
+print("--- submit fields ---")
+print(f"extranonce1:           {r.get('extranonce1')}")
+print(f"extranonce2:           {r.get('extranonce2')}")
+print(f"ntime:                 {r.get('ntime')}")
+print(f"nonce:                 {r.get('nonce')}")
+print("--- preimage source ---")
+print(f"preimage_version:      {r.get('preimageVersion')}")
+print(f"preimage_prevhash:     {r.get('preimagePrevhash')}")
+print(f"preimage_nbits:        {r.get('preimageNbits')}")
+print(f"preimage_job_ntime:    {r.get('preimageJobNtime')}")
+print("--- hashing ---")
+print(f"header80:              {r.get('header80Hex')}")
+print(f"computed_hash:         {r.get('localComputedHash')}")
+print(f"share_target:          {r.get('shareTarget')}")
+print(f"meets_share_target:    {r.get('meetsShareTarget')}")
+print(f"refined_reason_code:   {r.get('refinedReasonCode')}")
+print("--- bounded variant comparison ---")
+variants = r.get("variantTargetMatches")
+if isinstance(variants, dict):
+    for vname, vresult in variants.items():
+        print(f"  variant[{vname}]: {'PASS' if vresult is True else ('FAIL' if vresult is False else 'ERR')}")
+else:
+    print("  variants: not available (preimage may have failed earlier)")
+PY
+}
+
+submit_evidence_service() {
+  ensure_runtime_dir
+
+  local count
+  count="${2:-5}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo "submit-evidence count must be an integer" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "submit_evidence: none"
+    return 0
+  fi
+
+  python3 - "${SUBMIT_EVIDENCE_LOG}" "${count}" <<'PY'
+import json
+import sys
+from pathlib import Path
+from collections import Counter
+
+path = Path(sys.argv[1])
+count = int(sys.argv[2])
+try:
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+except Exception as exc:
+    print(f"submit_evidence: error_reading_log: {exc}")
+    sys.exit(0)
+
+if not lines:
+    print("submit_evidence: empty")
+    sys.exit(0)
+
+selected = lines[-count:]
+
+# Summary counts
+all_records = []
+for line in lines:
+    try:
+        all_records.append(json.loads(line))
+    except Exception:
+        continue
+
+summary = {
+    "total": len(all_records),
+    "shareHashValidationStatus": Counter(r.get("shareHashValidationStatus", "none") for r in all_records),
+    "targetValidationStatus": Counter(r.get("targetValidationStatus", "none") for r in all_records),
+}
+
+last_seen = {}
+if all_records:
+    last = all_records[-1]
+    last_seen = {
+        "remote": last.get("remoteAddress"),
+        "job": last.get("jobId"),
+        "wallet": last.get("wallet"),
+    }
+
+print(f"submit_evidence_total: {summary['total']}")
+print("counts_by_share_hash_status:")
+for k, v in sorted(summary['shareHashValidationStatus'].items()):
+    print(f"  {k}: {v}")
+print("counts_by_target_status:")
+for k, v in sorted(summary['targetValidationStatus'].items()):
+    print(f"  {k}: {v}")
+print(f"last_seen_remote: {last_seen.get('remote')}")
+print(f"last_seen_job: {last_seen.get('job')}")
+print(f"last_seen_wallet: {last_seen.get('wallet')}")
+
+print(f"\nlatest_evidence_entries: {len(selected)}")
+for raw_line in selected:
+    try:
+        payload = json.loads(raw_line)
+    except Exception:
+        continue
+    print("---")
+    for k, v in payload.items():
+        if k in ("coinbaseLocalHex", "header80Hex") and isinstance(v, str) and len(v) > 128:
+            print(f"{k}: {v[:64]}...{v[-64:]} ({len(v)//2} bytes)")
+        else:
+            print(f"{k}: {v}")
+PY
+}
+
+replay_evidence_service() {
+  ensure_runtime_dir
+  local count
+  count="${2:-1}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo "replay-evidence count must be an integer" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "replay-evidence: error: ${SUBMIT_EVIDENCE_LOG} not found" >&2
+    return 1
+  fi
+
+  python3 "${POOL_CORE_DIR}/tools/replay_submit_evidence.py" "${SUBMIT_EVIDENCE_LOG}" --latest "${count}"
+}
+
 start_service() {
   set_effective_defaults
   ensure_runtime_dir
@@ -652,6 +843,7 @@ start_service() {
     export PEPEPOWD_RPC_USER="${RPC_USER}"
     export PEPEPOWD_RPC_PASSWORD="${RPC_PASSWORD}"
     export PEPEPOWD_RPC_TIMEOUT_SECONDS="${RPC_TIMEOUT_SECONDS}"
+    export PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY="${CLEAN_JOBS_LEGACY}"
     setsid python3 stratum_ingress.py </dev/null >>"${LOG_FILE}" 2>&1 &
     echo "$!" >"${PID_FILE}"
   )
@@ -791,6 +983,15 @@ case "${SUBCOMMAND}" in
   candidate-followup-events)
     candidate_followup_events_service "$@"
     ;;
+  latest-reject)
+    latest_reject_service
+    ;;
+  submit-evidence)
+    submit_evidence_service "$@"
+    ;;
+  replay-evidence)
+    replay_evidence_service "$@"
+    ;;
   logs)
     logs_service
     ;;
@@ -801,7 +1002,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|drill-status|candidate-events [count]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|logs|paths}" >&2
     exit 1
     ;;
 esac

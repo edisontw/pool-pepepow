@@ -79,6 +79,16 @@ int pepepow_blake3_hash(
     return 0;
 }
 
+extern void generateHoohashMatrix(
+    const uint8_t seed[32],
+    double out[64][64]
+);
+
+extern void generateHoohashMatrixV110(
+    const uint8_t seed[32],
+    double out[64][64]
+);
+
 int pepepow_hoohash_v110(
     const uint8_t seed[32],
     const uint8_t input_hash[32],
@@ -87,6 +97,31 @@ int pepepow_hoohash_v110(
 ) {
     double mat[64][64];
     generate_hoohash_matrix_v110(seed, mat);
+    HoohashMatrixMultiplication(mat, input_hash, output, nonce);
+    return 0;
+}
+
+int pepepow_hoohash_variant(
+    const uint8_t seed[32],
+    const uint8_t input_hash[32],
+    uint64_t nonce,
+    int variant,
+    uint8_t output[32]
+) {
+    double mat[64][64];
+    // Variant mapping:
+    // 0: local-v110 (default)
+    // 1: lib-generic (generateHoohashMatrix)
+    // 2: lib-v110 (generateHoohashMatrixV110)
+    
+    if (variant == 1) {
+        generateHoohashMatrix(seed, mat);
+    } else if (variant == 2) {
+        generateHoohashMatrixV110(seed, mat);
+    } else {
+        generate_hoohash_matrix_v110(seed, mat);
+    }
+    
     HoohashMatrixMultiplication(mat, input_hash, output, nonce);
     return 0;
 }

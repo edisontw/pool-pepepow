@@ -135,7 +135,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         ):
             config = pool_core_config.load_config()
 
-        self.assertEqual(config.hashrate_assumed_share_difficulty, 0.01)
+        self.assertEqual(config.hashrate_assumed_share_difficulty, 1.0)
 
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
@@ -604,6 +604,50 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_legacy_clean_jobs_encoding_honors_toggle(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                stratum_notify_clean_jobs_legacy=True,
+            )
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)  # authorize response
+                await self._read_json(reader)  # set_difficulty
+                notify_message = await self._read_json(reader)
+
+                self.assertEqual(notify_message["method"], "mining.notify")
+                # When legacy toggle is ON, clean_jobs (params[8]) should be 1, not True
+                self.assertIsInstance(notify_message["params"][8], int)
+                self.assertEqual(notify_message["params"][8], 1)
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
     async def test_daemon_template_mode_populates_job_cache_and_status(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -686,14 +730,14 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         ),
                     },
                 )
-                self.assertTrue(submit_response["result"])
+                self.assertFalse(submit_response["result"])
 
                 await self._wait_for(
                     lambda: len(self._read_share_events(config.activity_log_path)) == 1
                 )
                 share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
-                self.assertTrue(share_event["accepted"])
-                self.assertEqual(share_event["status"], "accepted")
+                self.assertFalse(share_event["accepted"])
+                self.assertEqual(share_event["status"], "rejected")
                 self.assertEqual(share_event["jobSource"], "daemon-template")
                 self.assertFalse(share_event["syntheticWork"])
                 self.assertIsNotNone(share_event["templateAnchor"])
@@ -815,7 +859,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(share_hash_probe["jobStatus"], "current")
                 self.assertEqual(
                     share_hash_probe["status"],
-                    "accepted",
+                    "rejected",
                 )
                 self.assertEqual(
                     share_hash_probe["shareHashValidationStatus"],
@@ -1474,15 +1518,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     .get("miners", {})
                     .get("PEPEPOW1KnownWalletAddress000000", {})
                     .get("summary", {})
-                    .get("acceptedShares")
+                    .get("rejectedShares")
                     == 1
                 )
                 activity_snapshot = self._load_json(config.activity_snapshot_output_path)
                 wallet_summary = activity_snapshot["miners"][
                     "PEPEPOW1KnownWalletAddress000000"
                 ]["summary"]
-                self.assertEqual(wallet_summary["acceptedShares"], 1)
-                self.assertEqual(wallet_summary["rejectedShares"], 0)
+                self.assertEqual(wallet_summary["acceptedShares"], 0)
+                self.assertEqual(wallet_summary["rejectedShares"], 1)
             finally:
                 if writer is not None:
                     writer.close()
@@ -1559,7 +1603,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         ),
                     },
                 )
-                self.assertTrue(submit_response["result"])
+                self.assertFalse(submit_response["result"])
 
                 await self._wait_for(
                     lambda: len(self._read_share_events(config.activity_log_path)) == 1
@@ -3752,6 +3796,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         real_submitblock_max_sends: int = 1,
         activity_log_rotate_bytes: int = 32 * 1024 * 1024,
         activity_log_retention_files: int = 8,
+        stratum_notify_clean_jobs_legacy: bool = False,
     ) -> PoolCoreConfig:
         return PoolCoreConfig(
             coin_name="PEPEPOW",
@@ -3789,8 +3834,187 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             real_submitblock_max_sends=real_submitblock_max_sends,
             activity_log_rotate_bytes=activity_log_rotate_bytes,
             activity_log_retention_files=activity_log_retention_files,
+            stratum_notify_clean_jobs_legacy=stratum_notify_clean_jobs_legacy,
         )
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RejectEvidenceArtifactTests(unittest.TestCase):
+    """Unit tests for _append_submit_evidence new reject-evidence fields."""
+
+    def _make_state(self, *, clean_jobs_legacy=False):
+        from stratum_protocol import ConnectionState
+        state = ConnectionState(session_id="sid-test", extranonce1="aabbccdd")
+        state.authorized_wallet = "wallet1"
+        state.authorized_worker = "rig01"
+        state.clean_jobs_legacy = clean_jobs_legacy
+        state.current_difficulty = 1.0
+        return state
+
+    def _make_daemon_job(self, *, source="daemon-template"):
+        class _Job:
+            pass
+        job = _Job()
+        job.source = source
+        job.version = "20000000"
+        job.prevhash = "a" * 64
+        job.nbits = "1d00ffff"
+        job.ntime = "01020304"
+        job.coinb1 = "01"
+        job.coinb2 = "ff"
+        job.merkle_branch = ()
+        job.target_context = {
+            "bits": "1d00ffff",
+            "version": "20000000",
+            "curtime": 0x01020304,
+            "target": "00000000ffff" + "00" * 26,
+        }
+        job.preimage_context = {"source": "template-derived"}
+        job.template_anchor = "anchor-abc"
+        job.authoritative_context = None
+        return job
+
+    def _make_rejected_assessment(self, job):
+        return SubmitAssessment(
+            job_status="current",
+            submit_job_id="job-0011223344556677",
+            cached_job=job,
+            accepted=False,
+            reject_reason="low-difficulty-share",
+            detail="local share hash exceeded effective share target",
+            share_hash_validation_status="share-hash-invalid",
+            share_hash_valid=False,
+            share_hash_diagnostic={
+                "comparisonStage": "share-hash-compare",
+                "reasonCode": "header80-mismatch",
+                "refinedReasonCode": "ntime-mismatch",
+                "header80Hex": "aa" * 80,
+                "localComputedHash": "bb" * 32,
+                "shareTargetUsed": "cc" * 32,
+                "meetsShareTarget": False,
+                "meetsBlockTarget": False,
+                "header80VariantTargetMatches": {
+                    "versionSourceOrder": False,
+                    "ntimeSourceOrder": True,
+                    "allFieldsSourceOrder": False,
+                },
+            },
+        )
+
+    def test_reject_evidence_captures_new_fields(self):
+        """Rejected daemon-template submit captures cleanJobsLegacy, shareHashValidationMode,
+        preimage source fields, refinedReasonCode, and variantTargetMatches."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job()
+            state = self._make_state(clean_jobs_legacy=True)
+            assessment = self._make_rejected_assessment(job)
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            self.assertTrue(evidence_path.exists())
+            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(len(records), 1)
+            rec = records[0]
+
+            self.assertEqual(rec["cleanJobsLegacy"], True)
+            self.assertEqual(rec["shareHashValidationMode"], "hoohashv110-pepew-header80")
+            self.assertEqual(rec["preimageVersion"], "20000000")
+            self.assertEqual(rec["preimagePrevhash"], "a" * 64)
+            self.assertEqual(rec["preimageNbits"], "1d00ffff")
+            self.assertEqual(rec["preimageJobNtime"], "01020304")
+            self.assertEqual(rec["refinedReasonCode"], "ntime-mismatch")
+            self.assertIn("variantTargetMatches", rec)
+            variants = rec["variantTargetMatches"]
+            self.assertIsInstance(variants, dict)
+            self.assertTrue(variants.get("ntimeSourceOrder"))
+            self.assertFalse(variants.get("versionSourceOrder"))
+            self.assertEqual(rec["rejectReason"], "low-difficulty-share")
+
+    def test_reject_evidence_skipped_for_synthetic_source(self):
+        """No record is written for synthetic-source jobs."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job(source="synthetic")
+            state = self._make_state()
+            assessment = self._make_rejected_assessment(job)
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            self.assertFalse(evidence_path.exists())
+
+    def test_reject_evidence_clean_jobs_legacy_false_recorded(self):
+        """cleanJobsLegacy=False is faithfully recorded."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job()
+            state = self._make_state(clean_jobs_legacy=False)
+            assessment = self._make_rejected_assessment(job)
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(records[0]["cleanJobsLegacy"], False)
+
+    def test_reject_evidence_variant_matches_absent_when_not_in_diagnostic(self):
+        """variantTargetMatches key is absent when diagnostic has no header80VariantTargetMatches."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job()
+            state = self._make_state()
+            assessment = SubmitAssessment(
+                job_status="current",
+                submit_job_id="job-0011223344556677",
+                cached_job=job,
+                accepted=False,
+                reject_reason="preimage-missing",
+                detail="header preimage is missing extranonce1",
+                share_hash_validation_status="preimage-missing",
+                share_hash_valid=None,
+                share_hash_diagnostic={
+                    "comparisonStage": "preimage-validation",
+                    "reasonCode": "preimage-missing",
+                },
+            )
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(len(records), 1)
+            self.assertNotIn("variantTargetMatches", records[0])
+            self.assertEqual(records[0]["rejectReason"], "preimage-missing")

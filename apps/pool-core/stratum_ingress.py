@@ -97,6 +97,8 @@ class DispatchResult:
 class SessionStats:
     accepted_share_count: int = 0
     rejected_share_count: int = 0
+    submits_received: int = 0
+    reject_reason_counts: dict[str, int] = field(default_factory=dict)
     first_share_at: datetime | None = None
     last_share_at: datetime | None = None
     last_submitted_job_id: str | None = None
@@ -223,6 +225,7 @@ class StratumIngressService:
         self._active_log_first_sequence: int | None = None
         self._active_log_last_sequence: int | None = None
         self._client_writers: set[asyncio.StreamWriter] = set()
+        self._active_sessions: dict[str, tuple[ConnectionState, SessionStats]] = {}
         self._duplicate_submit_cache_size = max(
             512, config.template_job_cache_size * 64
         )
@@ -235,6 +238,9 @@ class StratumIngressService:
         )
         self._share_hash_probe_log_path = config.activity_log_path.with_name(
             "share-hash-probe.jsonl"
+        )
+        self._submit_evidence_path = config.activity_log_path.with_name(
+            "submit-evidence.jsonl"
         )
         self._share_hash_probe_captured = False
         self._submit_validation_counts: dict[str, Any] = {
@@ -431,6 +437,7 @@ class StratumIngressService:
         send_lock = asyncio.Lock()
         notify_task: asyncio.Task[None] | None = None
         self._client_writers.add(writer)
+        self._active_sessions[state.session_id] = (state, session_stats, remote_address)
         LOGGER.info(
             "Miner connected: remote=%s session=%s",
             remote_address,
@@ -478,6 +485,7 @@ class StratumIngressService:
             with suppress(ConnectionError):
                 await writer.wait_closed()
             self._client_writers.discard(writer)
+            self._active_sessions.pop(state.session_id, None)
             LOGGER.info(
                 "Miner disconnected: remote=%s session=%s acceptedShares=%s rejectedShares=%s firstShareAt=%s lastShareAt=%s lastJobId=%s",
                 remote_address,
@@ -518,12 +526,14 @@ class StratumIngressService:
             state.authorized_login = normalized_login
             state.authorized_wallet = wallet
             state.authorized_worker = worker
+            state.clean_jobs_legacy = self._config.stratum_notify_clean_jobs_legacy
             LOGGER.info(
-                "Miner authorized: session=%s wallet=%s worker=%s login=%s",
+                "Miner authorized: session=%s wallet=%s worker=%s login=%s legacyNotify=%s",
                 state.session_id,
                 wallet,
                 worker,
                 normalized_login,
+                state.clean_jobs_legacy,
             )
 
             notifications: list[dict[str, Any]] = []
@@ -562,6 +572,7 @@ class StratumIngressService:
                 login=login,
                 observed_at=observed_at,
             )
+            session_stats.submits_received += 1
             accepted_share = assessment.counts_as_accepted_share
             accepted_submit = assessment.accepted
             submit_job_id = assessment.submit_job_id
@@ -583,6 +594,10 @@ class StratumIngressService:
                     )
             else:
                 session_stats.rejected_share_count += 1
+                reason = assessment.reject_reason or "unknown"
+                session_stats.reject_reason_counts[reason] = (
+                    session_stats.reject_reason_counts.get(reason, 0) + 1
+                )
 
             self._record_submit_validation(assessment)
             self._log_submit_outcome(
@@ -672,6 +687,13 @@ class StratumIngressService:
                 observed_at=observed_at,
                 remote_address=remote_address,
                 submit_params=request.params,
+            )
+            self._append_submit_evidence(
+                assessment=assessment,
+                state=state,
+                remote_address=remote_address,
+                params=request.params,
+                observed_at=observed_at,
             )
             envelope = ShareEnvelope(
                 sequence=sequence,
@@ -893,6 +915,78 @@ class StratumIngressService:
             assessment.reject_reason,
             assessment.detail,
         )
+
+    def _append_submit_evidence(
+        self,
+        assessment: SubmitAssessment,
+        state: ConnectionState,
+        remote_address: str,
+        params: list[Any],
+        observed_at: datetime,
+    ) -> None:
+        cached_job = assessment.cached_job
+        job_source = getattr(cached_job, "source", None)
+        if job_source != "daemon-template":
+            return
+
+        diag = assessment.share_hash_diagnostic or {}
+        coinbase_sum = diag.get("coinbaseAssemblySummary") or {}
+        merkle_sum = diag.get("merkleSummary") or {}
+        
+        is_interesting = (
+            assessment.share_hash_validation_status in ("share-hash-invalid", "share-hash-valid")
+            or diag.get("meetsBlockTarget") is True
+            or assessment.reject_reason not in (None, "unknown-job", "stale-job", "duplicate-submit")
+        )
+        if not is_interesting:
+            return
+
+        record = {
+            "timestamp": observed_at.replace(microsecond=0).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "sessionId": state.session_id,
+            "remoteAddress": remote_address,
+            "wallet": state.authorized_wallet,
+            "worker": state.authorized_worker,
+            "jobId": assessment.submit_job_id,
+            "jobSource": job_source,
+            "jobStatus": assessment.job_status,
+            "cleanJobsLegacy": state.clean_jobs_legacy,
+            "shareHashValidationMode": SHARE_HASH_VALIDATION_MODE,
+            "extranonce1": state.extranonce1,
+            "extranonce2": params[2] if len(params) > 2 else None,
+            "ntime": params[3] if len(params) > 3 else None,
+            "nonce": params[4] if len(params) > 4 else None,
+            "preimageVersion": getattr(cached_job, "version", None),
+            "preimagePrevhash": getattr(cached_job, "prevhash", None),
+            "preimageNbits": getattr(cached_job, "nbits", None),
+            "preimageJobNtime": getattr(cached_job, "ntime", None),
+            "coinbaseHashLocal": coinbase_sum.get("coinbaseHash"),
+            "coinbaseLocalHex": coinbase_sum.get("coinbaseLocalHex"),
+            "merkleRoot": merkle_sum.get("merkleRoot"),
+            "header80Hex": diag.get("header80Hex"),
+            "matrixSeed": diag.get("matrixSeed") or diag.get("matrixSeedBlake3"),
+            "headerHashBlake3": diag.get("headerHashBlake3"),
+            "localComputedHash": diag.get("localComputedHash"),
+            "independentAuthoritativeShareHash": diag.get("independentAuthoritativeShareHash"),
+            "shareTarget": diag.get("shareTarget") or diag.get("shareTargetUsed"),
+            "blockTarget": diag.get("blockTarget") or diag.get("blockTargetUsed"),
+            "meetsShareTarget": diag.get("meetsShareTarget"),
+            "meetsBlockTarget": diag.get("meetsBlockTarget"),
+            "refinedReasonCode": diag.get("refinedReasonCode"),
+            "variantTargetMatches": diag.get("header80VariantTargetMatches"),
+            "shareHashValidationStatus": assessment.share_hash_validation_status,
+            "targetValidationStatus": assessment.target_validation_status,
+            "candidatePossible": assessment.candidate_possible,
+            "rejectReason": assessment.reject_reason,
+            "rejectDetail": assessment.detail,
+            "jobContext": assessment.job_status,
+        }
+        record = {k: v for k, v in record.items() if v is not None}
+        try:
+            with open(self._submit_evidence_path, "a") as f:
+                f.write(json.dumps(record, separators=(",", ":")) + "\n")
+        except Exception as exc:
+            LOGGER.error("Failed to append submit evidence: %s", exc)
 
     def _assess_target_context(
         self,
@@ -1141,7 +1235,7 @@ class StratumIngressService:
 
         return ShareHashCheck(
             status="share-hash-invalid",
-            reject_reason=None,
+            reject_reason="low-difficulty-share",
             valid=False,
             diagnostic=_build_share_hash_diagnostic(
                 cached_job,
@@ -1343,7 +1437,7 @@ class StratumIngressService:
     ) -> None:
         if self._share_hash_probe_captured:
             return
-        if not assessment.accepted or assessment.job_status not in {"current", "previous"}:
+        if (not assessment.accepted and assessment.reject_reason != "low-difficulty-share") or assessment.job_status not in {"current", "previous"}:
             return
         if assessment.share_hash_valid is not False:
             return
@@ -1386,7 +1480,7 @@ class StratumIngressService:
             "wallet": wallet,
             "worker": worker,
             "accepted": assessment.accepted,
-            "status": "accepted",
+            "status": "accepted" if assessment.accepted else "rejected",
             "shareHashValidationStatus": assessment.share_hash_validation_status,
             "targetValidationStatus": assessment.target_validation_status,
             "submit": {
@@ -1701,6 +1795,24 @@ class StratumIngressService:
                 job_cache_snapshot=job_cache_snapshot,
                 submit_validation_snapshot=self._submit_validation_counts,
             )
+
+            active_sessions_payload = {}
+            for session_id, (state, stats, remote_addr) in self._active_sessions.items():
+                active_sessions_payload[session_id] = {
+                    "remoteAddress": remote_addr,
+                    "authorizedLogin": state.authorized_login,
+                    "wallet": state.authorized_wallet,
+                    "worker": state.authorized_worker,
+                    "submitsReceived": stats.submits_received,
+                    "acceptedShares": stats.accepted_share_count,
+                    "rejectedShares": stats.rejected_share_count,
+                    "rejectReasonCounts": stats.reject_reason_counts,
+                    "advertisedDifficulty": state.current_difficulty,
+                    "cleanJobsLegacy": state.clean_jobs_legacy,
+                    "lastShareAt": _isoformat_or_none(stats.last_share_at),
+                    "currentJobId": state.current_job_id,
+                }
+            snapshot["activeSessions"] = active_sessions_payload
             snapshot_sequence = _safe_int(snapshot["meta"].get("sequence"))
             snapshot_offset = _safe_int(snapshot["meta"].get("logOffset"))
 
@@ -1738,6 +1850,7 @@ class StratumIngressService:
             nbits=job.nbits,
             ntime=job.ntime,
             clean_jobs=True,
+            legacy_clean_jobs=state.clean_jobs_legacy,
         )
 
     def _select_replay_segments(self, segments: list[Any], sequence_floor: int) -> list[Any]:
@@ -2267,6 +2380,7 @@ def _build_share_hash_diagnostic(
             "coinbaseValue": preimage_context.get("coinbaseValue"),
             "coinbaseHexLength": coinbase_hex_length,
             "coinbaseHash": coinbase_hash,
+            "coinbaseLocalHex": f"{coinb1_value}{extranonce1_value}{extranonce2_value}{coinb2_value}" if coinbase_hex_length is not None else None,
         },
         "merkleSummary": {
             "branchLength": preimage_context.get("merkleBranchLength"),
@@ -2284,6 +2398,7 @@ def _build_share_hash_diagnostic(
             if header_hex is not None
             else None
         ),
+        "header80Hex": header_hex,
         "localComputedHash": share_hash.hex() if share_hash is not None else None,
         "comparedTarget": normalized_target,
         "matrixSeedBlake3": matrix_seed_blake3,
@@ -4864,7 +4979,7 @@ def _build_share_header_preimage(
 
     coinbase_hash = _double_sha256(coinbase)
     merkle_root = _apply_merkle_branch(coinbase_hash, merkle_branch)
-    header = version_le + prevhash_le + merkle_root + ntime_le + nbits_le + nonce_le
+    header = version_le + prevhash_le + merkle_root[::-1] + ntime_le + nbits_le + nonce_le
     if len(header) != 80:
         return ShareHeaderPreimage(
             status="preimage-mismatch",

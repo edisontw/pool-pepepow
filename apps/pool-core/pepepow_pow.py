@@ -50,12 +50,23 @@ class _PepepowPowLibrary:
             ctypes.c_void_p,
         ]
         self._lib.pepepow_hoohash_v110.restype = ctypes.c_int
+        self._lib.pepepow_hoohash_variant.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        ]
+        self._lib.pepepow_hoohash_variant.restype = ctypes.c_int
 
     def blake3_hash(self, payload: bytes) -> bytes:
         return _call_bytes3(self._lib.pepepow_blake3_hash, payload)
 
     def hoohash_v110(self, seed: bytes, input_hash: bytes, nonce: int) -> bytes:
         return _call_pow(self._lib.pepepow_hoohash_v110, seed, input_hash, nonce)
+
+    def hoohash_variant(self, seed: bytes, input_hash: bytes, nonce: int, variant: int) -> bytes:
+        return _call_pow_variant(self._lib.pepepow_hoohash_variant, seed, input_hash, nonce, variant)
 
 
 def _call_bytes3(func: ctypes._CFuncPtr, payload: bytes) -> bytes:
@@ -82,6 +93,22 @@ def _call_pow(
     if rc != 0:
         raise PepepowPowError(f"native helper returned {rc}")
     return output.raw
+def _call_pow_variant(
+    func: ctypes._CFuncPtr,
+    seed: bytes,
+    input_hash: bytes,
+    nonce: int,
+    variant: int,
+) -> bytes:
+    if len(seed) != 32 or len(input_hash) != 32:
+        raise PepepowPowError("seed and input hash must be 32 bytes")
+    output = ctypes.create_string_buffer(32)
+    seed_buffer = ctypes.create_string_buffer(seed, 32)
+    input_buffer = ctypes.create_string_buffer(input_hash, 32)
+    rc = func(seed_buffer, input_buffer, nonce, variant, output)
+    if rc != 0:
+        raise PepepowPowError(f"native helper returned {rc}")
+    return output.raw
 
 
 _LIBRARY: _PepepowPowLibrary | None = None
@@ -93,6 +120,10 @@ def blake3_hash(payload: bytes) -> bytes:
 
 def hoohash_v110(seed: bytes, input_hash: bytes, nonce: int) -> bytes:
     return _get_library().hoohash_v110(seed, input_hash, nonce)
+
+
+def hoohash_variant(seed: bytes, input_hash: bytes, nonce: int, variant: int) -> bytes:
+    return _get_library().hoohash_variant(seed, input_hash, nonce, variant)
 
 
 def _get_library() -> _PepepowPowLibrary:

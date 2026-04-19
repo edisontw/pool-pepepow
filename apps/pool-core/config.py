@@ -49,6 +49,7 @@ class PoolCoreConfig:
     real_submitblock_max_sends: int
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
+    stratum_notify_clean_jobs_legacy: bool
 
 
 def load_config() -> PoolCoreConfig:
@@ -141,7 +142,7 @@ def load_config() -> PoolCoreConfig:
             100, int(os.getenv("PEPEPOW_POOL_CORE_STRATUM_QUEUE_MAXSIZE", "50000"))
         ),
         hashrate_assumed_share_difficulty=max(
-            0.01,
+            1e-12,
             float(
                 os.getenv(
                     "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
@@ -214,5 +215,8 @@ def load_config() -> PoolCoreConfig:
                     "8",
                 )
             ),
+        ),
+        stratum_notify_clean_jobs_legacy=_env_bool(
+            "PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY", False
         ),
     )
