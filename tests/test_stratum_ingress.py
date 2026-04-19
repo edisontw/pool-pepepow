@@ -705,9 +705,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     share_event["preimageContext"]["merkleBranchLength"], 1
                 )
                 self.assertEqual(
-                    share_event["targetValidationStatus"], "candidate-possible"
+                    share_event["targetValidationStatus"], "context-valid"
                 )
-                self.assertTrue(share_event["candidatePossible"])
+                self.assertFalse(share_event["candidatePossible"])
                 self.assertEqual(
                     share_event["shareHashValidationStatus"], "share-hash-invalid"
                 )
@@ -803,6 +803,76 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         "localCoinbaseExtranonceBytesAssumed"
                     ],
                     8,
+                )
+                await self._wait_for(
+                    lambda: len(self._read_share_hash_probe_events(config)) == 1
+                )
+                share_hash_probe = json.loads(
+                    self._read_share_hash_probe_events(config)[0]
+                )
+                self.assertEqual(share_hash_probe["jobId"], notify_message["params"][0])
+                self.assertEqual(share_hash_probe["jobSource"], "daemon-template")
+                self.assertEqual(share_hash_probe["jobStatus"], "current")
+                self.assertEqual(
+                    share_hash_probe["status"],
+                    "accepted",
+                )
+                self.assertEqual(
+                    share_hash_probe["shareHashValidationStatus"],
+                    "share-hash-invalid",
+                )
+                self.assertEqual(
+                    share_hash_probe["targetValidationStatus"],
+                    "context-valid",
+                )
+                self.assertEqual(
+                    share_hash_probe["submit"]["extranonce2"],
+                    share_event["submit"][2],
+                )
+                self.assertEqual(
+                    share_hash_probe["submit"]["ntime"],
+                    share_event["submit"][3],
+                )
+                self.assertEqual(
+                    share_hash_probe["submit"]["nonce"],
+                    share_event["submit"][4],
+                )
+                self.assertIsNone(share_hash_probe["submit"]["solution"])
+                self.assertEqual(
+                    share_hash_probe["submit"]["difficulty"],
+                    share_event["difficulty"],
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"]["prevhash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"]["nbits"],
+                    "1c0ffff0",
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"]["reconstructedHeader80Hex"],
+                    share_event["shareHashDiagnostic"]["header80ExpectedHex"],
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"]["matrixSeedBlake3"],
+                    share_event["shareHashDiagnostic"]["matrixSeedBlake3"],
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"]["headerHashBlake3"],
+                    share_event["shareHashDiagnostic"]["headerHashBlake3"],
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"]["localComputedHash"],
+                    share_event["shareHashDiagnostic"]["localComputedHash"],
+                )
+                self.assertEqual(
+                    share_hash_probe["poolReconstruction"][
+                        "independentAuthoritativeShareHash"
+                    ],
+                    share_event["shareHashDiagnostic"][
+                        "independentAuthoritativeShareHash"
+                    ],
                 )
                 self.assertEqual(
                     sorted(
@@ -1373,16 +1443,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertGreaterEqual(activity_snapshot["meta"]["activeJobCount"], 1)
                 self.assertEqual(
-                    activity_snapshot["meta"]["submitCandidatePossibleCount"], 1
+                    activity_snapshot["meta"]["submitCandidatePossibleCount"], 0
                 )
-                self.assertEqual(activity_snapshot["meta"]["submitHashValidCount"], 0)
-                self.assertEqual(activity_snapshot["meta"]["submitHashInvalidCount"], 1)
                 self.assertEqual(
                     activity_snapshot["meta"]["submitTargetValidationCounts"][
-                        "candidate-possible"
+                        "context-valid"
                     ],
                     1,
                 )
+                self.assertEqual(activity_snapshot["meta"]["submitHashValidCount"], 0)
+                self.assertEqual(activity_snapshot["meta"]["submitHashInvalidCount"], 1)
                 self.assertEqual(
                     activity_snapshot["meta"]["submitShareHashValidationCounts"][
                         "share-hash-invalid"
@@ -1404,15 +1474,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     .get("miners", {})
                     .get("PEPEPOW1KnownWalletAddress000000", {})
                     .get("summary", {})
-                    .get("rejectedShares")
+                    .get("acceptedShares")
                     == 1
                 )
                 activity_snapshot = self._load_json(config.activity_snapshot_output_path)
                 wallet_summary = activity_snapshot["miners"][
                     "PEPEPOW1KnownWalletAddress000000"
                 ]["summary"]
-                self.assertEqual(wallet_summary["acceptedShares"], 0)
-                self.assertEqual(wallet_summary["rejectedShares"], 1)
+                self.assertEqual(wallet_summary["acceptedShares"], 1)
+                self.assertEqual(wallet_summary["rejectedShares"], 0)
             finally:
                 if writer is not None:
                     writer.close()
@@ -3568,6 +3638,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
     def _read_candidate_outcome_events(self, config: PoolCoreConfig) -> list[str]:
         path = self._candidate_outcome_event_log_path(config)
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
+    def _share_hash_probe_log_path(self, config: PoolCoreConfig) -> Path:
+        return config.activity_log_path.with_name("share-hash-probe.jsonl")
+
+    def _read_share_hash_probe_events(self, config: PoolCoreConfig) -> list[str]:
+        path = self._share_hash_probe_log_path(config)
         if not path.exists():
             return []
         return path.read_text(encoding="utf-8").splitlines()

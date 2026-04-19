@@ -233,6 +233,10 @@ class StratumIngressService:
         self._candidate_outcome_event_log_path = config.activity_log_path.with_name(
             "candidate-outcome-events.jsonl"
         )
+        self._share_hash_probe_log_path = config.activity_log_path.with_name(
+            "share-hash-probe.jsonl"
+        )
+        self._share_hash_probe_captured = False
         self._submit_validation_counts: dict[str, Any] = {
             "mode": "structural-skeleton",
             "accepted": 0,
@@ -258,6 +262,7 @@ class StratumIngressService:
             },
             "rejectReasonCounts": {},
             "targetValidationCounts": {
+                "context-valid": 0,
                 "candidate-possible": 0,
                 "target-context-missing": 0,
                 "target-context-mismatch": 0,
@@ -652,6 +657,15 @@ class StratumIngressService:
                         },
                     )
                 payload["shareHashDiagnostic"] = assessment.share_hash_diagnostic
+            self._maybe_append_share_hash_probe(
+                assessment=assessment,
+                state=state,
+                wallet=wallet,
+                worker=worker,
+                observed_at=observed_at,
+                remote_address=remote_address,
+                submit_params=request.params,
+            )
             envelope = ShareEnvelope(
                 sequence=sequence,
                 event=event,
@@ -746,6 +760,13 @@ class StratumIngressService:
             worker=state.authorized_worker,
             login=login,
         )
+        resolved_target_validation_status, resolved_candidate_possible = (
+            _resolve_target_validation_outcome(
+                target_context_status=target_context_check.status,
+                target_context_candidate_possible=target_context_check.candidate_possible,
+                share_hash_diagnostic=share_hash_check.diagnostic,
+            )
+        )
         if share_hash_check.reject_reason is not None:
             return SubmitAssessment(
                 job_status=job_status,
@@ -754,8 +775,8 @@ class StratumIngressService:
                 accepted=False,
                 reject_reason=share_hash_check.reject_reason,
                 detail=share_hash_check.detail,
-                target_validation_status=target_context_check.status,
-                candidate_possible=target_context_check.candidate_possible,
+                target_validation_status=resolved_target_validation_status,
+                candidate_possible=resolved_candidate_possible,
                 share_hash_validation_status=share_hash_check.status,
                 share_hash_valid=share_hash_check.valid,
                 share_hash_diagnostic=share_hash_check.diagnostic,
@@ -770,8 +791,8 @@ class StratumIngressService:
                 accepted=False,
                 reject_reason="duplicate-submit",
                 duplicate_submit=True,
-                target_validation_status=target_context_check.status,
-                candidate_possible=target_context_check.candidate_possible,
+                target_validation_status=resolved_target_validation_status,
+                candidate_possible=resolved_candidate_possible,
                 share_hash_validation_status=share_hash_check.status,
                 share_hash_valid=share_hash_check.valid,
                 share_hash_diagnostic=share_hash_check.diagnostic,
@@ -783,8 +804,8 @@ class StratumIngressService:
             submit_job_id=submit_job_id,
             cached_job=cached_job,
             accepted=True,
-            target_validation_status=target_context_check.status,
-            candidate_possible=target_context_check.candidate_possible,
+            target_validation_status=resolved_target_validation_status,
+            candidate_possible=resolved_candidate_possible,
             share_hash_validation_status=share_hash_check.status,
             share_hash_valid=share_hash_check.valid,
             share_hash_diagnostic=share_hash_check.diagnostic,
@@ -1300,6 +1321,118 @@ class StratumIngressService:
             LOGGER.exception(
                 "Failed to append candidate evidence or outcome evidence near %s",
                 self._candidate_event_log_path,
+            )
+
+    def _maybe_append_share_hash_probe(
+        self,
+        *,
+        assessment: SubmitAssessment,
+        state: ConnectionState,
+        wallet: str | None,
+        worker: str | None,
+        observed_at: datetime,
+        remote_address: str,
+        submit_params: list[Any],
+    ) -> None:
+        if self._share_hash_probe_captured:
+            return
+        if not assessment.accepted or assessment.job_status not in {"current", "previous"}:
+            return
+        if assessment.share_hash_valid is not False:
+            return
+        if assessment.share_hash_validation_status != "share-hash-invalid":
+            return
+        if assessment.target_validation_status not in {
+            "candidate-possible",
+            "context-valid",
+        }:
+            return
+
+        cached_job = assessment.cached_job
+        if cached_job is None or getattr(cached_job, "source", None) != "daemon-template":
+            return
+
+        diagnostic = (
+            assessment.share_hash_diagnostic
+            if isinstance(assessment.share_hash_diagnostic, dict)
+            else {}
+        )
+        input_summary = diagnostic.get("inputSummary")
+        if not isinstance(input_summary, dict):
+            input_summary = {}
+        coinbase_summary = diagnostic.get("coinbaseAssemblySummary")
+        if not isinstance(coinbase_summary, dict):
+            coinbase_summary = {}
+        merkle_summary = diagnostic.get("merkleSummary")
+        if not isinstance(merkle_summary, dict):
+            merkle_summary = {}
+
+        payload = {
+            "timestamp": observed_at.replace(microsecond=0)
+            .astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "jobId": assessment.submit_job_id,
+            "jobSource": getattr(cached_job, "source", None),
+            "jobStatus": assessment.job_status,
+            "remoteAddress": remote_address,
+            "wallet": wallet,
+            "worker": worker,
+            "accepted": assessment.accepted,
+            "status": "accepted",
+            "shareHashValidationStatus": assessment.share_hash_validation_status,
+            "targetValidationStatus": assessment.target_validation_status,
+            "submit": {
+                "extranonce1": input_summary.get("extranonce1") or state.extranonce1,
+                "extranonce2": input_summary.get("extranonce2") or _optional_submit_param(submit_params, 2),
+                "ntime": input_summary.get("ntime") or _optional_submit_param(submit_params, 3),
+                "nonce": input_summary.get("nonce") or _optional_submit_param(submit_params, 4),
+                "solution": _optional_submit_param(submit_params, 5),
+                "difficulty": state.current_difficulty or self._synthetic_difficulty(),
+                "shareTarget": diagnostic.get("shareTargetUsed"),
+                "blockTarget": diagnostic.get("blockTargetUsed"),
+            },
+            "poolReconstruction": {
+                "prevhash": _normalize_optional_hex(getattr(cached_job, "prevhash", None)),
+                "version": _normalize_optional_hex(getattr(cached_job, "version", None)),
+                "nbits": _normalize_optional_hex(getattr(cached_job, "nbits", None)),
+                "ntime": input_summary.get("ntime") or _optional_submit_param(submit_params, 3),
+                "coinbase1Digest": _hex_digest(getattr(cached_job, "coinb1", None)),
+                "coinbase2Digest": _hex_digest(getattr(cached_job, "coinb2", None)),
+                "extranonce1": input_summary.get("extranonce1") or state.extranonce1,
+                "extranonce2": input_summary.get("extranonce2") or _optional_submit_param(submit_params, 2),
+                "reconstructedCoinbaseHash": coinbase_summary.get("coinbaseHash"),
+                "reconstructedMerkleRoot": merkle_summary.get("merkleRoot"),
+                "reconstructedHeader80Hex": diagnostic.get("header80ExpectedHex"),
+                "matrixSeedBlake3": diagnostic.get("matrixSeedBlake3"),
+                "headerHashBlake3": diagnostic.get("headerHashBlake3"),
+                "localComputedHash": diagnostic.get("localComputedHash"),
+                "independentAuthoritativeShareHash": diagnostic.get(
+                    "independentAuthoritativeShareHash"
+                ),
+                "comparedTarget": diagnostic.get("comparedTarget"),
+                "shareHashUsed": diagnostic.get("shareHashUsed"),
+                "shareTargetUsed": diagnostic.get("shareTargetUsed"),
+                "blockTargetUsed": diagnostic.get("blockTargetUsed"),
+            },
+        }
+        try:
+            self._share_hash_probe_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._share_hash_probe_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                )
+                handle.write("\n")
+            self._share_hash_probe_captured = True
+        except OSError:
+            LOGGER.exception(
+                "Failed to append share-hash probe artifact near %s",
+                self._share_hash_probe_log_path,
             )
 
     def _should_suppress_reject_log(self, assessment: SubmitAssessment) -> bool:
@@ -1911,12 +2044,47 @@ def _normalize_optional_hex(raw_value: Any) -> str | None:
     return value or None
 
 
+def _optional_submit_param(params: list[Any], index: int) -> Any | None:
+    if index < 0 or index >= len(params):
+        return None
+    return params[index]
+
+
+def _hex_digest(raw_hex: Any) -> str | None:
+    normalized = _normalize_optional_hex(raw_hex)
+    if normalized is None or not _is_hex_string(normalized):
+        return None
+    try:
+        return blake3_hash(bytes.fromhex(normalized)).hex()
+    except ValueError:
+        return None
+
+
 def _isoformat_optional(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
+
+
+def _resolve_target_validation_outcome(
+    *,
+    target_context_status: str | None,
+    target_context_candidate_possible: bool,
+    share_hash_diagnostic: dict[str, Any] | None,
+) -> tuple[str | None, bool]:
+    if target_context_status != "candidate-possible":
+        return target_context_status, target_context_candidate_possible
+
+    meets_block_target = False
+    if isinstance(share_hash_diagnostic, dict):
+        meets_block_target = share_hash_diagnostic.get("meetsBlockTarget") is True
+
+    if meets_block_target:
+        return "candidate-possible", True
+
+    return "context-valid", False
 
 
 def _classify_preimage_reason_code(cached_job: Any, *, detail: str | None) -> str:
