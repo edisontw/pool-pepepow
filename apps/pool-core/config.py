@@ -141,7 +141,7 @@ def load_config() -> PoolCoreConfig:
             100, int(os.getenv("PEPEPOW_POOL_CORE_STRATUM_QUEUE_MAXSIZE", "50000"))
         ),
         hashrate_assumed_share_difficulty=max(
-            0.00000001,
+            0.01,
             float(
                 os.getenv(
                     "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",

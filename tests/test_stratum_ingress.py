@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import importlib.util
 import json
 import re
 import sys
 import tempfile
 import unittest
+import urllib.error
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 POOL_CORE_DIR = Path(__file__).resolve().parents[1] / "apps" / "pool-core"
 sys.path.insert(0, str(POOL_CORE_DIR))
@@ -124,6 +127,16 @@ class EmptyMasternodeTemplateRpcClient(SuccessfulTemplateRpcClient):
 
 
 class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
+    def test_load_config_clamps_hashrate_assumed_share_difficulty_to_pool_floor(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY": "1e-08"},
+            clear=False,
+        ):
+            config = pool_core_config.load_config()
+
+        self.assertEqual(config.hashrate_assumed_share_difficulty, 0.01)
+
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
             "0040002038e31388c54124146478ff691985eecd02610db91efbc9cd7aabca4900000000"
@@ -180,6 +193,33 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["followupObservedHeight"])
         self.assertIsNone(result["followupObservedBlockHash"])
         self.assertIn("connection refused", result["followupNote"])
+
+    def test_daemon_rpc_http_json_error_surfaces_as_response_error(self):
+        client = pool_core_daemon_rpc.DaemonRpcClient(
+            rpc_url="http://127.0.0.1:8834",
+            rpc_user="user",
+            rpc_password="pass",
+            timeout_seconds=5,
+        )
+        http_error = urllib.error.HTTPError(
+            url="http://127.0.0.1:8834",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(
+                b'{"result":null,"error":{"code":-5,"message":"Block not found"},"id":1}'
+            ),
+        )
+
+        with mock.patch.object(
+            pool_core_daemon_rpc.urllib.request,
+            "urlopen",
+            side_effect=http_error,
+        ):
+            with self.assertRaises(DaemonRpcResponseError) as ctx:
+                client.get_block_header("ab" * 32)
+
+        self.assertIn("Block not found", str(ctx.exception))
 
     def test_build_candidate_outcome_event_defaults_to_submitted(self):
         candidate_event = {
