@@ -1489,6 +1489,95 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_daemon_template_share_event_exports_resolved_target_validation_status(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=SuccessfulTemplateRpcClient(),
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "0" * 63 + "1"
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                self.assertEqual(share_event["targetValidationStatus"], "context-valid")
+                self.assertFalse(share_event["candidatePossible"])
+                self.assertFalse(share_event["shareHashDiagnostic"]["meetsBlockTarget"])
+                self.assertEqual(
+                    share_event["candidatePossible"],
+                    share_event["shareHashDiagnostic"]["meetsBlockTarget"],
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
     async def test_submit_with_share_hash_valid_is_classified_without_rejection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

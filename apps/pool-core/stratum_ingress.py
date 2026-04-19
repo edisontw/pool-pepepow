@@ -605,6 +605,13 @@ class StratumIngressService:
                 occurred_at=observed_at,
                 accepted=accepted_submit,
             )
+            share_event_candidate_possible = assessment.candidate_possible
+            if (
+                isinstance(assessment.share_hash_diagnostic, dict)
+                and assessment.share_hash_diagnostic.get("meetsBlockTarget") is not True
+            ):
+                share_event_candidate_possible = False
+            # Export the final post-resolution assessment values verbatim.
             payload = {
                 "timestamp": observed_at.replace(microsecond=0)
                 .astimezone(timezone.utc)
@@ -629,7 +636,7 @@ class StratumIngressService:
                 "rejectDetail": assessment.detail,
                 "duplicateSubmit": assessment.duplicate_submit,
                 "targetValidationStatus": assessment.target_validation_status,
-                "candidatePossible": assessment.candidate_possible,
+                "candidatePossible": share_event_candidate_possible,
                 "shareHashValidationStatus": assessment.share_hash_validation_status,
                 "shareHashValid": assessment.share_hash_valid,
                 "countsAsAcceptedShare": accepted_share,
