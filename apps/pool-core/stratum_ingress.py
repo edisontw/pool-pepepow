@@ -120,6 +120,14 @@ class SubmitAssessment:
     share_hash_valid: bool | None = None
     share_hash_diagnostic: dict[str, Any] | None = None
 
+    @property
+    def counts_as_accepted_share(self) -> bool:
+        if not self.accepted:
+            return False
+        if self.share_hash_validation_status is None:
+            return True
+        return self.share_hash_valid is True
+
 
 @dataclass(frozen=True)
 class TargetContextCheck:
@@ -549,6 +557,8 @@ class StratumIngressService:
                 login=login,
                 observed_at=observed_at,
             )
+            accepted_share = assessment.counts_as_accepted_share
+            accepted_submit = assessment.accepted
             submit_job_id = assessment.submit_job_id
             cached_job = assessment.cached_job
             session_stats.last_submitted_job_id = submit_job_id
@@ -588,7 +598,7 @@ class StratumIngressService:
                 wallet=wallet,
                 worker=worker,
                 occurred_at=observed_at,
-                accepted=assessment.accepted,
+                accepted=accepted_submit,
             )
             payload = {
                 "timestamp": observed_at.replace(microsecond=0)
@@ -598,8 +608,8 @@ class StratumIngressService:
                 "wallet": wallet,
                 "worker": worker,
                 "login": login,
-                "accepted": assessment.accepted,
-                "status": "accepted" if assessment.accepted else "rejected",
+                "accepted": accepted_submit,
+                "status": "accepted" if accepted_submit else "rejected",
                 "source": "stratum",
                 "remoteAddress": remote_address,
                 "sessionId": state.session_id,
@@ -617,6 +627,7 @@ class StratumIngressService:
                 "candidatePossible": assessment.candidate_possible,
                 "shareHashValidationStatus": assessment.share_hash_validation_status,
                 "shareHashValid": assessment.share_hash_valid,
+                "countsAsAcceptedShare": accepted_share,
                 "jobSource": cached_job.source if cached_job is not None else None,
                 "templateAnchor": (
                     cached_job.template_anchor if cached_job is not None else None
@@ -1324,7 +1335,7 @@ class StratumIngressService:
         session_stats.reject_log_context = None
 
     def _record_submit_validation(self, assessment: SubmitAssessment) -> None:
-        if assessment.accepted:
+        if assessment.counts_as_accepted_share:
             self._submit_validation_counts["accepted"] += 1
         else:
             self._submit_validation_counts["rejected"] += 1
@@ -2046,6 +2057,13 @@ def _build_share_hash_diagnostic(
 
     header_hex = header.hex() if header is not None else None
     normalized_target = _normalize_optional_hex(target_value)
+    matrix_seed_blake3 = None
+    header_hash_blake3 = None
+    nonce_uint32 = None
+    if header is not None and len(header) == 80:
+        matrix_seed_blake3 = blake3_hash(header[:76] + (b"\x00" * 4)).hex()
+        header_hash_blake3 = blake3_hash(header).hex()
+        nonce_uint32 = int.from_bytes(header[76:80], byteorder="little", signed=False)
 
     diagnostic = {
         "comparisonStage": comparison_stage,
@@ -2093,6 +2111,9 @@ def _build_share_hash_diagnostic(
         ),
         "localComputedHash": share_hash.hex() if share_hash is not None else None,
         "comparedTarget": normalized_target,
+        "matrixSeedBlake3": matrix_seed_blake3,
+        "headerHashBlake3": header_hash_blake3,
+        "nonceUint32": nonce_uint32,
     }
     if detail:
         diagnostic["detail"] = detail
@@ -2132,7 +2153,142 @@ def _build_share_hash_diagnostic(
 
 
 def _assemble_header80_from_field_bytes(field_bytes: dict[str, bytes]) -> bytes:
-    return b"".join(field_bytes[field_name] for field_name, _offset, _size in HEADER80_FIELD_LAYOUT)
+    return b"".join(
+        field_bytes[field_name] for field_name, _offset, _size in HEADER80_FIELD_LAYOUT
+    )
+
+
+def _build_merkle_root_from_transaction_hashes(
+    coinbase_hash: bytes, transaction_hashes: list[str] | tuple[str, ...]
+) -> bytes:
+    layer = [coinbase_hash]
+    normalized_hashes = [
+        _normalize_optional_hex(transaction_hash)
+        for transaction_hash in transaction_hashes
+        if isinstance(transaction_hash, str)
+    ]
+    if len(normalized_hashes) != len(transaction_hashes) or any(
+        tx_hash is None or len(tx_hash) != 64 for tx_hash in normalized_hashes
+    ):
+        raise ValueError("authoritative transaction hashes are unavailable")
+    layer.extend(
+        bytes.fromhex(tx_hash)[::-1]
+        for tx_hash in normalized_hashes
+        if tx_hash is not None
+    )
+    while len(layer) > 1:
+        if len(layer) % 2 == 1:
+            layer.append(layer[-1])
+        layer = [
+            _double_sha256(layer[index] + layer[index + 1])
+            for index in range(0, len(layer), 2)
+        ]
+    return layer[0]
+
+
+def _build_independent_authoritative_header80_reference(
+    cached_job: Any,
+    *,
+    extranonce1_hex: str,
+    extranonce2_hex: str,
+    ntime_hex: str,
+    nonce_hex: str,
+) -> dict[str, Any] | None:
+    authoritative_context = getattr(cached_job, "authoritative_context", None)
+    if not isinstance(authoritative_context, dict):
+        return None
+
+    authoritative_segments = authoritative_context.get("coinbaseSegmentSummaries")
+    authoritative_outputs = authoritative_context.get("outputSummaries")
+    transaction_hashes = authoritative_context.get("transactionHashes")
+    version_hex = _normalize_optional_hex(getattr(cached_job, "version", None))
+    prevhash_hex = _normalize_optional_hex(getattr(cached_job, "prevhash", None))
+    bits_hex = _normalize_optional_hex(getattr(cached_job, "nbits", None))
+    if (
+        not isinstance(authoritative_segments, dict)
+        or not isinstance(authoritative_outputs, list)
+        or not isinstance(transaction_hashes, (list, tuple))
+        or version_hex is None
+        or prevhash_hex is None
+        or bits_hex is None
+    ):
+        return None
+
+    try:
+        prefix_bytes = bytes.fromhex(
+            authoritative_segments["coinbasePrefixBytes"]["hex"]
+        )
+        length_varint_bytes = bytes.fromhex(
+            authoritative_segments["coinbaseLengthVarint"]["hex"]
+        )
+        script_sig_template_bytes = bytes.fromhex(
+            authoritative_segments["scriptSigTemplateBytes"]["hex"]
+        )
+        extranonce_bytes = bytes.fromhex(extranonce1_hex) + bytes.fromhex(
+            extranonce2_hex
+        )
+        sequence_bytes = bytes.fromhex(
+            authoritative_segments["postScriptSigSequence"]["hex"]
+        )
+        output_count_bytes = bytes.fromhex(
+            authoritative_segments["outputCountVarint"]["hex"]
+        )
+        locktime_bytes = bytes.fromhex(
+            authoritative_segments["coinbaseTail"]["locktimeHex"]
+        )
+        output_bytes = b""
+        for output_summary in authoritative_outputs:
+            amount = output_summary.get("amount")
+            script_hex = _normalize_optional_hex(output_summary.get("scriptHex"))
+            script_length = output_summary.get("scriptLength")
+            if (
+                not isinstance(amount, int)
+                or amount < 0
+                or not isinstance(script_length, int)
+                or script_length < 0
+                or script_hex is None
+                or len(script_hex) != script_length * 2
+            ):
+                return None
+            output_bytes += (
+                amount.to_bytes(8, byteorder="little", signed=False)
+                + _encode_varint_local(script_length)
+                + bytes.fromhex(script_hex)
+            )
+
+        authoritative_coinbase = (
+            prefix_bytes
+            + length_varint_bytes
+            + script_sig_template_bytes
+            + extranonce_bytes
+            + sequence_bytes
+            + output_count_bytes
+            + output_bytes
+            + locktime_bytes
+        )
+        authoritative_merkle_root = _build_merkle_root_from_transaction_hashes(
+            _double_sha256(authoritative_coinbase), transaction_hashes
+        )
+        authoritative_field_bytes = {
+            "version": bytes.fromhex(version_hex)[::-1],
+            "prevHash": bytes.fromhex(prevhash_hex)[::-1],
+            "merkleRoot": authoritative_merkle_root,
+            "ntime": bytes.fromhex(ntime_hex)[::-1],
+            "bits": bytes.fromhex(bits_hex)[::-1],
+            "nonce": bytes.fromhex(nonce_hex)[::-1],
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    header80 = _assemble_header80_from_field_bytes(authoritative_field_bytes)
+    try:
+        share_hash_hex = _calculate_pepepow_share_hash(header80).hex()
+    except PepepowPowError:
+        return None
+    return {
+        "header80": header80,
+        "shareHash": share_hash_hex,
+    }
 
 
 def _build_header80_variant_target_matches(
@@ -3268,6 +3424,8 @@ def _build_final_header80_probe_diagnostic(
     cached_job: Any,
     *,
     header: bytes,
+    extranonce1_hex: str,
+    extranonce2_hex: str,
     ntime_hex: str,
     nonce_hex: str,
     coinbase_hash_hex: str | None,
@@ -3286,6 +3444,9 @@ def _build_final_header80_probe_diagnostic(
             "authoritativeHeader80Available": False,
             "localHeader80Available": len(header) == 80,
             "authoritativeHeader80HexSummary": None,
+            "independentAuthoritativeHeader80Available": False,
+            "independentAuthoritativeHeader80HexSummary": None,
+            "independentAuthoritativeShareHash": None,
             "localHeader80HexSummary": (
                 {
                     "hexLength": len(header) * 2,
@@ -3296,6 +3457,8 @@ def _build_final_header80_probe_diagnostic(
                 else None
             ),
             "header80BytesEqual": None,
+            "localVsIndependentAuthoritativeHeader80Equal": None,
+            "normalizedVsIndependentAuthoritativeHeader80Equal": None,
             "firstHeader80MismatchOffset": None,
             "headerFieldComparisonSummary": None,
             "headerFieldEquality": None,
@@ -3329,12 +3492,17 @@ def _build_final_header80_probe_diagnostic(
             "authoritativeHeader80Available": False,
             "localHeader80Available": True,
             "authoritativeHeader80HexSummary": None,
+            "independentAuthoritativeHeader80Available": False,
+            "independentAuthoritativeHeader80HexSummary": None,
+            "independentAuthoritativeShareHash": None,
             "localHeader80HexSummary": {
                 "hexLength": len(header) * 2,
                 "hexPrefix": header[:16].hex(),
                 "hexSuffix": header[-16:].hex(),
             },
             "header80BytesEqual": None,
+            "localVsIndependentAuthoritativeHeader80Equal": None,
+            "normalizedVsIndependentAuthoritativeHeader80Equal": None,
             "firstHeader80MismatchOffset": None,
             "headerFieldComparisonSummary": None,
             "headerFieldEquality": None,
@@ -3345,7 +3513,23 @@ def _build_final_header80_probe_diagnostic(
             "refinedHeaderAssemblyReasonCode": "unknown-header-assembly-mismatch",
         }
 
-    authoritative_header = _assemble_header80_from_field_bytes(authoritative_field_bytes)
+    authoritative_header = _assemble_header80_from_field_bytes(
+        authoritative_field_bytes
+    )
+    independent_authoritative_reference = (
+        _build_independent_authoritative_header80_reference(
+            cached_job,
+            extranonce1_hex=extranonce1_hex,
+            extranonce2_hex=extranonce2_hex,
+            ntime_hex=ntime_hex,
+            nonce_hex=nonce_hex,
+        )
+    )
+    independent_authoritative_header = (
+        independent_authoritative_reference.get("header80")
+        if isinstance(independent_authoritative_reference, dict)
+        else None
+    )
     header_field_equality = {
         field_name: authoritative_field_bytes[field_name] == local_field_bytes[field_name]
         for field_name, _offset, _size in HEADER80_FIELD_LAYOUT
@@ -3400,12 +3584,39 @@ def _build_final_header80_probe_diagnostic(
             "hexPrefix": authoritative_header[:16].hex(),
             "hexSuffix": authoritative_header[-16:].hex(),
         },
+        "independentAuthoritativeHeader80Available": isinstance(
+            independent_authoritative_header, bytes
+        ),
+        "independentAuthoritativeHeader80HexSummary": (
+            {
+                "hexLength": len(independent_authoritative_header) * 2,
+                "hexPrefix": independent_authoritative_header[:16].hex(),
+                "hexSuffix": independent_authoritative_header[-16:].hex(),
+            }
+            if isinstance(independent_authoritative_header, bytes)
+            else None
+        ),
+        "independentAuthoritativeShareHash": (
+            independent_authoritative_reference.get("shareHash")
+            if isinstance(independent_authoritative_reference, dict)
+            else None
+        ),
         "localHeader80HexSummary": {
             "hexLength": len(header) * 2,
             "hexPrefix": header[:16].hex(),
             "hexSuffix": header[-16:].hex(),
         },
         "header80BytesEqual": header80_bytes_equal,
+        "localVsIndependentAuthoritativeHeader80Equal": (
+            independent_authoritative_header == header
+            if isinstance(independent_authoritative_header, bytes)
+            else None
+        ),
+        "normalizedVsIndependentAuthoritativeHeader80Equal": (
+            independent_authoritative_header == authoritative_header
+            if isinstance(independent_authoritative_header, bytes)
+            else None
+        ),
         "firstHeader80MismatchOffset": first_mismatch_offset,
         "headerFieldComparisonSummary": {
             field_name: {
@@ -4213,6 +4424,8 @@ def _build_merkle_provenance_diagnostic(
         _build_final_header80_probe_diagnostic(
             cached_job,
             header=header,
+            extranonce1_hex=extranonce1,
+            extranonce2_hex=extranonce2,
             ntime_hex=ntime,
             nonce_hex=nonce,
             coinbase_hash_hex=coinbase_hash,

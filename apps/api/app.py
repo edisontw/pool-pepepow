@@ -105,8 +105,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "assumedShareDifficulty": record.meta.get("assumedShareDifficulty"),
                 "hashratePolicy": record.meta.get("hashratePolicy"),
                 "submitValidationMode": record.meta.get("submitValidationMode"),
-                "submitAcceptedCount": record.meta.get("submitAcceptedCount"),
-                "submitRejectedCount": record.meta.get("submitRejectedCount"),
+                "submitHashValidCount": record.meta.get("submitHashValidCount"),
+                "submitHashInvalidCount": record.meta.get("submitHashInvalidCount"),
                 "submitDuplicateWindowSize": record.meta.get(
                     "submitDuplicateWindowSize"
                 ),

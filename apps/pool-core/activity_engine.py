@@ -372,10 +372,10 @@ class ActivityEngine:
             meta["activeJobCount"] = int(job_cache_snapshot.get("activeJobCount", 0))
         if isinstance(submit_validation_snapshot, dict):
             meta["submitValidationMode"] = submit_validation_snapshot.get("mode")
-            meta["submitAcceptedCount"] = int(
+            meta["submitHashValidCount"] = int(
                 submit_validation_snapshot.get("accepted", 0)
             )
-            meta["submitRejectedCount"] = int(
+            meta["submitHashInvalidCount"] = int(
                 submit_validation_snapshot.get("rejected", 0)
             )
             meta["submitDuplicateWindowSize"] = int(

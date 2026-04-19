@@ -308,11 +308,11 @@ def _overlay_activity_snapshot(
     base_meta["submitValidationMode"] = activity_meta.get(
         "submitValidationMode", base_meta.get("submitValidationMode")
     )
-    base_meta["submitAcceptedCount"] = int(
-        activity_meta.get("submitAcceptedCount", 0) or 0
+    base_meta["submitHashValidCount"] = int(
+        activity_meta.get("submitHashValidCount", 0) or 0
     )
-    base_meta["submitRejectedCount"] = int(
-        activity_meta.get("submitRejectedCount", 0) or 0
+    base_meta["submitHashInvalidCount"] = int(
+        activity_meta.get("submitHashInvalidCount", 0) or 0
     )
     base_meta["submitDuplicateWindowSize"] = int(
         activity_meta.get("submitDuplicateWindowSize", 0) or 0

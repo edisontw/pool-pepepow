@@ -197,8 +197,8 @@ def make_activity_snapshot() -> dict:
             "hashratePolicy": "share-rate-assumed-diff",
             "assumedShareDifficulty": 1.0,
             "submitValidationMode": "structural-skeleton",
-            "submitAcceptedCount": 5,
-            "submitRejectedCount": 2,
+            "submitHashValidCount": 5,
+            "submitHashInvalidCount": 2,
             "submitDuplicateWindowSize": 512,
             "submitCandidatePossibleCount": 3,
             "shareHashValidationMode": "hoohashv110-pepew-header80",
@@ -538,8 +538,8 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(
                 health_payload["submitValidationMode"], "structural-skeleton"
             )
-            self.assertEqual(health_payload["submitAcceptedCount"], 5)
-            self.assertEqual(health_payload["submitRejectedCount"], 2)
+            self.assertEqual(health_payload["submitHashValidCount"], 5)
+            self.assertEqual(health_payload["submitHashInvalidCount"], 2)
             self.assertEqual(health_payload["submitCandidatePossibleCount"], 3)
             self.assertEqual(
                 health_payload["shareHashValidationMode"],
