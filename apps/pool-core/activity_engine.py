@@ -16,7 +16,7 @@ WINDOW_SECONDS = {label: seconds for label, seconds in WINDOW_DEFINITIONS}
 MAX_WINDOW_SECONDS = max(WINDOW_SECONDS.values())
 HEADLINE_WINDOW_LABEL = "5m"
 DEFAULT_ASSUMED_SHARE_DIFFICULTY = 1.0
-HASHES_PER_SHARE = float(2**32)
+HASHES_PER_SHARE = float(2**32) / 1000.0
 
 
 def utc_now() -> datetime:

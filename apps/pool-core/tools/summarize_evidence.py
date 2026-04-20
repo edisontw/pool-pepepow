@@ -30,8 +30,8 @@ def get_summary(log_path, window_minutes=None):
         
     summary = {
         "total": len(records),
-        "accepted": sum(1 for r in records if r.get("shareHashValidationStatus") == "share-hash-valid"),
-        "rejected": sum(1 for r in records if r.get("shareHashValidationStatus") == "share-hash-invalid"),
+        "accepted": sum(1 for r in records if r.get("shareHashValidationStatus") in ("share-hash-valid", "block-candidate")),
+        "rejected": sum(1 for r in records if r.get("shareHashValidationStatus") in ("share-hash-invalid", "low-difficulty-share")),
         "shareHashStatus": Counter(r.get("shareHashValidationStatus", "none") for r in records),
         "targetStatus": Counter(r.get("targetValidationStatus", "none") for r in records),
         "rejectReasons": Counter(r.get("rejectReason") for r in records if r.get("rejectReason")),
@@ -103,8 +103,8 @@ if __name__ == "__main__":
 
     summary = {
         "total": len(records),
-        "accepted": sum(1 for r in records if r.get("shareHashValidationStatus") == "share-hash-valid"),
-        "rejected": sum(1 for r in records if r.get("shareHashValidationStatus") == "share-hash-invalid"),
+        "accepted": sum(1 for r in records if r.get("shareHashValidationStatus") in ("share-hash-valid", "block-candidate")),
+        "rejected": sum(1 for r in records if r.get("shareHashValidationStatus") in ("share-hash-invalid", "low-difficulty-share")),
         "shareHashStatus": Counter(r.get("shareHashValidationStatus", "none") for r in records),
         "targetStatus": Counter(r.get("targetValidationStatus", "none") for r in records),
         "rejectReasons": Counter(r.get("rejectReason") for r in records if r.get("rejectReason")),

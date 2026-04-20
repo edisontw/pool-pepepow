@@ -99,6 +99,14 @@ int pepepow_hoohash_v110(
     double mat[64][64];
     generate_hoohash_matrix_v110(seed, mat);
     HoohashMatrixMultiplication(mat, input_hash, output, nonce);
+
+    // Swap to expected LE order before returning
+    uint8_t reversed[32];
+    for (int i = 0; i < 32; i++) {
+        reversed[i] = output[31 - i];
+    }
+    memcpy(output, reversed, 32);
+
     return 0;
 }
 
@@ -124,6 +132,14 @@ int pepepow_hoohash_variant(
     }
     
     HoohashMatrixMultiplication(mat, input_hash, output, nonce);
+
+    // Swap to expected LE order before returning
+    uint8_t reversed[32];
+    for (int i = 0; i < 32; i++) {
+        reversed[i] = output[31 - i];
+    }
+    memcpy(output, reversed, 32);
+
     return 0;
 }
 

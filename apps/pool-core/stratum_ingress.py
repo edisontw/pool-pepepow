@@ -64,9 +64,12 @@ HEADER80_FIELD_LAYOUT = (
 HEADER80_FIELD_OFFSET_MAP = {
     field_name: offset for field_name, offset, _size in HEADER80_FIELD_LAYOUT
 }
-STRATUM_DIFF1_TARGET = int(
+STRATUM_DIFF1_TARGET_BITCOIN = int(
     "00000000ffff0000000000000000000000000000000000000000000000000000", 16
 )
+# Use the standard Bitcoin Diff-1 target. The pool difficulty values are expressed
+# in Bitcoin-compatible units, as used by pools like Foztor (e.g. 0.1, 76, 327).
+STRATUM_DIFF1_TARGET = STRATUM_DIFF1_TARGET_BITCOIN
 MAX_UINT256_TARGET = (1 << 256) - 1
 
 
@@ -934,7 +937,7 @@ class StratumIngressService:
         merkle_sum = diag.get("merkleSummary") or {}
         
         is_interesting = (
-            assessment.share_hash_validation_status in ("share-hash-invalid", "share-hash-valid")
+            assessment.share_hash_validation_status in ("share-hash-invalid", "share-hash-valid", "block-candidate", "low-difficulty-share")
             or diag.get("meetsBlockTarget") is True
             or assessment.reject_reason not in (None, "unknown-job", "stale-job", "duplicate-submit")
         )
@@ -1222,20 +1225,31 @@ class StratumIngressService:
                     login=login,
                     threshold_summary=threshold_summary,
                 )
+                return ShareHashCheck(
+                    status="block-candidate",
+                    reject_reason=None,
+                    valid=True,
+                    diagnostic={
+                        "comparisonStage": "share-hash-compare",
+                        "reasonCode": "block-candidate",
+                        "localComputedHash": share_hash.hex(),
+                        **threshold_summary,
+                    },
+                )
             return ShareHashCheck(
                 status="share-hash-valid",
                 reject_reason=None,
                 valid=True,
                 diagnostic={
                     "comparisonStage": "share-hash-compare",
-                    "reasonCode": None,
+                    "reasonCode": "pool-share",
                     "localComputedHash": share_hash.hex(),
                     **threshold_summary,
                 },
             )
 
         return ShareHashCheck(
-            status="share-hash-invalid",
+            status="low-difficulty-share",
             reject_reason="low-difficulty-share",
             valid=False,
             diagnostic=_build_share_hash_diagnostic(
@@ -1245,7 +1259,7 @@ class StratumIngressService:
                 ntime=params[3],
                 nonce=params[4],
                 comparison_stage="share-hash-compare",
-                reason_code=_classify_invalid_share_hash_reason_code(cached_job),
+                reason_code="low-difficulty-share",
                 detail="local share hash exceeded effective share target",
                 header=preimage.header,
                 share_hash=share_hash,
@@ -4986,7 +5000,7 @@ def _build_share_header_preimage(
 
     coinbase_hash = _double_sha256(coinbase)
     merkle_root = _apply_merkle_branch(coinbase_hash, merkle_branch)
-    header = version_le + prevhash_le + merkle_root[::-1] + ntime_le + nbits_le + nonce_le
+    header = version_le + prevhash_le + merkle_root + ntime_le + nbits_le + nonce_le
     if len(header) != 80:
         return ShareHeaderPreimage(
             status="preimage-mismatch",
