@@ -76,6 +76,7 @@ class TemplateSnapshot:
 class JobRecord:
     job_id: str
     template_anchor: str
+    assigned_difficulty: float | None
     target_context: dict[str, Any]
     created_at: datetime
     expires_at: datetime
@@ -180,7 +181,13 @@ class TemplateJobManager:
     def clear_dirty_updates(self) -> None:
         self._dirty = False
 
-    def issue_job(self, job_id: str, *, now: datetime | None = None) -> JobRecord:
+    def issue_job(
+        self,
+        job_id: str,
+        *,
+        now: datetime | None = None,
+        assigned_difficulty: float | None = None,
+    ) -> JobRecord:
         current_time = now or utc_now()
         self._prune_jobs(current_time)
         self._prune_retired_jobs(current_time)
@@ -229,6 +236,7 @@ class TemplateJobManager:
         job = JobRecord(
             job_id=job_id,
             template_anchor=template_anchor,
+            assigned_difficulty=assigned_difficulty,
             target_context=target_context,
             created_at=current_time,
             expires_at=expires_at,

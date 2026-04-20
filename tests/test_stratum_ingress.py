@@ -162,6 +162,65 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(summary["meetsShareTarget"])
 
+    def test_assess_share_hash_uses_job_assigned_difficulty_for_previous_job(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        config = self._make_config(tmp_path)
+        service = StratumIngressService(config)
+        state = stratum_ingress.new_connection_state()
+        state.extranonce1 = "aabbccdd"
+        state.current_difficulty = 2.0
+
+        class _Job:
+            source = "daemon-template"
+            assigned_difficulty = 1.0
+            target_context = {"target": "00" * 31 + "01"}
+            authoritative_context = {}
+            template_anchor = "anchor"
+            version = "20000000"
+            prevhash = "00" * 32
+            nbits = "1d00ffff"
+            ntime = "01020304"
+            coinb1 = "01"
+            coinb2 = "ff"
+            merkle_branch = ()
+            preimage_context = {"source": "template-derived"}
+
+        # hash is below diff=1 target but above diff=2 target
+        share_hash = (
+            stratum_ingress._share_target_from_difficulty(1.0) - 1
+        ).to_bytes(32, "big")
+        self.assertGreater(
+            int.from_bytes(share_hash, "big"),
+            stratum_ingress._share_target_from_difficulty(2.0),
+        )
+
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ):
+            assessment = service._assess_share_hash(
+                ["wallet.rig", "job-1", "00000001", "01020304", "00000000"],
+                state=state,
+                cached_job=_Job(),
+                target_context_check=stratum_ingress.TargetContextCheck(
+                    status="candidate-possible",
+                    reject_reason=None,
+                    candidate_possible=True,
+                ),
+            )
+
+        self.assertEqual(assessment.status, "share-hash-valid")
+        self.assertEqual(assessment.diagnostic["shareDifficultyUsed"], 1.0)
+
     def test_candidate_followup_defaults(self):
         result = pool_core_daemon_rpc.candidate_followup_defaults()
         self.assertEqual(result["followupStatus"], "not-checked")
@@ -854,6 +913,70 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     writer.close()
                     await writer.wait_closed()
                 await service.stop()
+
+    def test_daemon_template_notify_context_matches_submit_time_reconstruction(self):
+        raw_template = SuccessfulTemplateRpcClient().get_block_template()
+        fetched_at = stratum_ingress.utc_now()
+        snapshot = template_jobs._parse_block_template(
+            raw_template,
+            fetched_at=fetched_at,
+        )
+        job = template_jobs.JobRecord(
+            job_id="job-0000000000000001",
+            template_anchor=snapshot.template_anchor,
+            assigned_difficulty=1e-08,
+            target_context=snapshot.target_context,
+            created_at=fetched_at,
+            expires_at=fetched_at,
+            stale_basis="test",
+            source="daemon-template",
+            prevhash=snapshot.prevhash,
+            version=snapshot.version,
+            nbits=snapshot.nbits,
+            ntime=snapshot.ntime,
+            coinb1=snapshot.coinb1,
+            coinb2=snapshot.coinb2,
+            merkle_branch=snapshot.merkle_branch,
+            preimage_context=snapshot.preimage_context,
+            authoritative_context=snapshot.authoritative_context,
+        )
+
+        extranonce1 = "aabbccdd"
+        extranonce2 = "00000001"
+        nonce = "11223344"
+        preimage = stratum_ingress._build_share_header_preimage(
+            job,
+            extranonce1=extranonce1,
+            extranonce2=extranonce2,
+            ntime=job.ntime,
+            nonce=nonce,
+        )
+
+        self.assertEqual(preimage.status, "preimage-ready")
+        assert preimage.header is not None
+        coinbase_hex = f"{job.coinb1}{extranonce1}{extranonce2}{job.coinb2}"
+        coinbase_hash = stratum_ingress._double_sha256(bytes.fromhex(coinbase_hex))
+        self.assertEqual(
+            preimage.header[36:68],
+            stratum_ingress._apply_merkle_branch(coinbase_hash, job.merkle_branch),
+        )
+
+        authoritative_reference = (
+            stratum_ingress._build_independent_authoritative_header80_reference(
+                job,
+                extranonce1_hex=extranonce1,
+                extranonce2_hex=extranonce2,
+                ntime_hex=job.ntime,
+                nonce_hex=nonce,
+            )
+        )
+        self.assertIsNotNone(authoritative_reference)
+        assert authoritative_reference is not None
+        self.assertEqual(preimage.header.hex(), authoritative_reference["header80"].hex())
+        self.assertEqual(
+            stratum_ingress._calculate_pepepow_share_hash(preimage.header).hex(),
+            authoritative_reference["shareHash"],
+        )
 
     async def test_daemon_template_share_event_exports_resolved_target_validation_status(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2507,6 +2630,139 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_submit_with_wrong_extranonce2_width_is_rejected_as_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                subscribe_response = None
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+
+                self.assertEqual(subscribe_response["result"][2], 4)
+
+                response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            extranonce2="000001",
+                        ),
+                    },
+                )
+                self.assertFalse(response["result"])
+
+                await self._wait_for(
+                    lambda: self._read_share_events(config.activity_log_path)
+                )
+                share_event = json.loads(
+                    self._read_share_events(config.activity_log_path)[0]
+                )
+                self.assertEqual(share_event["jobStatus"], "malformed")
+                self.assertEqual(share_event["rejectReason"], "malformed-submit")
+                self.assertEqual(
+                    share_event["rejectDetail"],
+                    "submit extranonce2 must be 8-char hex",
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_non_hex_nonce_is_rejected_as_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+
+                response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            nonce="zzzzzzzz",
+                        ),
+                    },
+                )
+                self.assertFalse(response["result"])
+
+                await self._wait_for(
+                    lambda: self._read_share_events(config.activity_log_path)
+                )
+                share_event = json.loads(
+                    self._read_share_events(config.activity_log_path)[0]
+                )
+                self.assertEqual(share_event["jobStatus"], "malformed")
+                self.assertEqual(share_event["rejectReason"], "malformed-submit")
+                self.assertEqual(
+                    share_event["rejectDetail"],
+                    "submit nonce must be 8-char hex",
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
     async def test_submit_with_unknown_job_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -3269,12 +3525,16 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             self.assertEqual(rec["preimagePrevhash"], "a" * 64)
             self.assertEqual(rec["preimageNbits"], "1d00ffff")
             self.assertEqual(rec["preimageJobNtime"], "01020304")
+            self.assertEqual(rec["issuedJobCoinb1"], "01")
+            self.assertEqual(rec["issuedJobCoinb2"], "ff")
+            self.assertEqual(rec["issuedJobMerkleBranch"], [])
             self.assertEqual(rec["refinedReasonCode"], "ntime-mismatch")
             self.assertIn("variantTargetMatches", rec)
             variants = rec["variantTargetMatches"]
             self.assertIsInstance(variants, dict)
             self.assertTrue(variants.get("ntimeSourceOrder"))
             self.assertFalse(variants.get("versionSourceOrder"))
+            self.assertNotIn("issuedVsSubmitReconstructionMatch", rec)
             self.assertEqual(rec["rejectReason"], "low-difficulty-share")
 
     def test_reject_evidence_skipped_for_synthetic_source(self):

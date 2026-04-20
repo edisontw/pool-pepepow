@@ -724,7 +724,10 @@ class StratumIngressService:
         login: str,
         observed_at: datetime,
     ) -> SubmitAssessment:
-        malformed_detail = _validate_submit_params(params)
+        malformed_detail = _validate_submit_params(
+            params,
+            expected_extranonce2_size=state.extranonce2_size,
+        )
         if malformed_detail is not None:
             return SubmitAssessment(
                 job_status="malformed",
@@ -935,7 +938,67 @@ class StratumIngressService:
         diag = assessment.share_hash_diagnostic or {}
         coinbase_sum = diag.get("coinbaseAssemblySummary") or {}
         merkle_sum = diag.get("merkleSummary") or {}
-        
+        submitted_extranonce1 = state.extranonce1
+        submitted_extranonce2 = params[2] if len(params) > 2 else None
+        submitted_ntime = params[3] if len(params) > 3 else None
+        submitted_nonce = params[4] if len(params) > 4 else None
+
+        config = getattr(self, "_config", None)
+        preimage = _build_share_header_preimage(
+            cached_job,
+            extranonce1=submitted_extranonce1,
+            extranonce2=submitted_extranonce2,
+            ntime=submitted_ntime,
+            nonce=submitted_nonce,
+            version_source_order=getattr(
+                config,
+                "pepepow_header_version_source_order_enabled",
+                False,
+            )
+            is True,
+        )
+        authoritative_reference = None
+        if (
+            isinstance(submitted_extranonce1, str)
+            and isinstance(submitted_extranonce2, str)
+            and isinstance(submitted_ntime, str)
+            and isinstance(submitted_nonce, str)
+        ):
+            authoritative_reference = _build_independent_authoritative_header80_reference(
+                cached_job,
+                extranonce1_hex=submitted_extranonce1.strip(),
+                extranonce2_hex=submitted_extranonce2.strip(),
+                ntime_hex=submitted_ntime.strip(),
+                nonce_hex=submitted_nonce.strip(),
+            )
+        reconstructed_header_hex = (
+            preimage.header.hex() if preimage.header is not None else diag.get("header80Hex")
+        )
+        reconstructed_coinbase_hash = coinbase_sum.get("coinbaseHash")
+        reconstructed_merkle_root = merkle_sum.get("merkleRoot")
+        if (
+            preimage.header is not None
+            and reconstructed_merkle_root is None
+            and len(preimage.header) >= 68
+        ):
+            reconstructed_merkle_root = preimage.header[36:68].hex()
+        if reconstructed_coinbase_hash is None:
+            coinb1 = _normalize_optional_hex(getattr(cached_job, "coinb1", None))
+            coinb2 = _normalize_optional_hex(getattr(cached_job, "coinb2", None))
+            extranonce1 = _normalize_optional_hex(submitted_extranonce1)
+            extranonce2 = _normalize_optional_hex(submitted_extranonce2)
+            if None not in (coinb1, coinb2, extranonce1, extranonce2):
+                reconstructed_coinbase_hash = _double_sha256(
+                    bytes.fromhex(f"{coinb1}{extranonce1}{extranonce2}{coinb2}")
+                ).hex()
+        authoritative_header_hex = None
+        authoritative_share_hash = None
+        if isinstance(authoritative_reference, dict):
+            authoritative_header = authoritative_reference.get("header80")
+            if isinstance(authoritative_header, bytes):
+                authoritative_header_hex = authoritative_header.hex()
+            authoritative_share_hash = authoritative_reference.get("shareHash")
+
         is_interesting = (
             assessment.share_hash_validation_status in ("share-hash-invalid", "share-hash-valid", "block-candidate", "low-difficulty-share")
             or diag.get("meetsBlockTarget") is True
@@ -955,22 +1018,33 @@ class StratumIngressService:
             "jobStatus": assessment.job_status,
             "cleanJobsLegacy": state.clean_jobs_legacy,
             "shareHashValidationMode": SHARE_HASH_VALIDATION_MODE,
-            "extranonce1": state.extranonce1,
-            "extranonce2": params[2] if len(params) > 2 else None,
-            "ntime": params[3] if len(params) > 3 else None,
-            "nonce": params[4] if len(params) > 4 else None,
+            "extranonce1": submitted_extranonce1,
+            "extranonce2": submitted_extranonce2,
+            "ntime": submitted_ntime,
+            "nonce": submitted_nonce,
             "preimageVersion": getattr(cached_job, "version", None),
             "preimagePrevhash": getattr(cached_job, "prevhash", None),
             "preimageNbits": getattr(cached_job, "nbits", None),
             "preimageJobNtime": getattr(cached_job, "ntime", None),
-            "coinbaseHashLocal": coinbase_sum.get("coinbaseHash"),
+            "issuedJobCoinb1": getattr(cached_job, "coinb1", None),
+            "issuedJobCoinb2": getattr(cached_job, "coinb2", None),
+            "issuedJobMerkleBranch": list(getattr(cached_job, "merkle_branch", ()) or ()),
+            "coinbaseHashLocal": reconstructed_coinbase_hash,
             "coinbaseLocalHex": coinbase_sum.get("coinbaseLocalHex"),
-            "merkleRoot": merkle_sum.get("merkleRoot"),
-            "header80Hex": diag.get("header80Hex"),
+            "merkleRoot": reconstructed_merkle_root,
+            "header80Hex": reconstructed_header_hex,
             "matrixSeed": diag.get("matrixSeed") or diag.get("matrixSeedBlake3"),
             "headerHashBlake3": diag.get("headerHashBlake3"),
             "localComputedHash": diag.get("localComputedHash"),
-            "independentAuthoritativeShareHash": diag.get("independentAuthoritativeShareHash"),
+            "independentAuthoritativeShareHash": (
+                diag.get("independentAuthoritativeShareHash") or authoritative_share_hash
+            ),
+            "independentAuthoritativeHeader80Hex": authoritative_header_hex,
+            "issuedVsSubmitReconstructionMatch": (
+                reconstructed_header_hex == authoritative_header_hex
+                if reconstructed_header_hex is not None and authoritative_header_hex is not None
+                else None
+            ),
             "shareTarget": diag.get("shareTarget") or diag.get("shareTargetUsed"),
             "blockTarget": diag.get("blockTarget") or diag.get("blockTargetUsed"),
             "meetsShareTarget": diag.get("meetsShareTarget"),
@@ -1193,14 +1267,16 @@ class StratumIngressService:
             LOGGER.warning("PEPEPOW local hash check unavailable: %s", exc)
             return ShareHashCheck(status=None, reject_reason=None, detail=str(exc))
         block_target_int = int(target_value.strip(), 16)
-        share_target_int = _share_target_from_difficulty(
-            state.current_difficulty or self._synthetic_difficulty()
-        )
+        effective_difficulty = getattr(cached_job, "assigned_difficulty", None)
+        if effective_difficulty is None:
+            effective_difficulty = state.current_difficulty or self._synthetic_difficulty()
+        share_target_int = _share_target_from_difficulty(effective_difficulty)
         threshold_summary = _build_share_hash_threshold_summary(
             share_hash=share_hash,
             block_target_int=block_target_int,
             share_target_int=share_target_int,
         )
+        threshold_summary["shareDifficultyUsed"] = effective_difficulty
         if threshold_summary["meetsShareTarget"]:
             if threshold_summary["meetsBlockTarget"]:
                 threshold_summary.update(
@@ -1856,7 +1932,11 @@ class StratumIngressService:
         self._job_counter += 1
         state.previous_job_id = state.current_job_id
         state.current_job_id = f"job-{self._job_counter:016x}"
-        job = self._job_manager.issue_job(state.current_job_id, now=observed_at)
+        job = self._job_manager.issue_job(
+            state.current_job_id,
+            now=observed_at,
+            assigned_difficulty=state.current_difficulty or self._synthetic_difficulty(),
+        )
         state.last_notified_anchor = job.template_anchor
         self._dirty_snapshot = True
         return notify_notification(
@@ -1907,7 +1987,11 @@ def _extract_submit_job_id(params: list[Any]) -> str | None:
     return None
 
 
-def _validate_submit_params(params: list[Any]) -> str | None:
+def _validate_submit_params(
+    params: list[Any],
+    *,
+    expected_extranonce2_size: int | None = None,
+) -> str | None:
     if len(params) < 5:
         return "submit params must include login, job id, extranonce2, ntime, and nonce"
     if not isinstance(params[0], str):
@@ -1920,6 +2004,24 @@ def _validate_submit_params(params: list[Any]) -> str | None:
         return "submit ntime must be a non-empty string"
     if not isinstance(params[4], str) or not params[4].strip():
         return "submit nonce must be a non-empty string"
+    extranonce2 = params[2].strip()
+    ntime = params[3].strip()
+    nonce = params[4].strip()
+    if not _is_hex_string(extranonce2) or len(extranonce2) % 2 != 0:
+        return "submit extranonce2 must be even-length hex"
+    if (
+        isinstance(expected_extranonce2_size, int)
+        and expected_extranonce2_size >= 0
+        and len(extranonce2) != expected_extranonce2_size * 2
+    ):
+        return (
+            "submit extranonce2 must be "
+            f"{expected_extranonce2_size * 2}-char hex"
+        )
+    if len(ntime) != 8 or not _is_hex_string(ntime):
+        return "submit ntime must be 8-char hex"
+    if len(nonce) != 8 or not _is_hex_string(nonce):
+        return "submit nonce must be 8-char hex"
     return None
 
 
