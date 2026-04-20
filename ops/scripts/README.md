@@ -70,6 +70,7 @@ Effective difficulty:
 - variable: `PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY`
 - default live-test value: `0.00000001`
 - override: export `PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY=<value>` before `start`
+- estimation-only override: export `PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY=<value>` before `start`
 
 Long-run note:
 

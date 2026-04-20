@@ -140,7 +140,7 @@ class SnapshotProducer:
             load_result.events,
             activity_window_seconds=self._config.activity_window_seconds,
             warning_count=len(load_result.warnings),
-            assumed_share_difficulty=self._config.hashrate_assumed_share_difficulty,
+            assumed_share_difficulty=self._config.estimated_hashrate_assumed_share_difficulty,
         )
         payload = {
             "mode": self._config.activity_mode,
@@ -185,7 +185,7 @@ class SnapshotProducer:
             "warningCount": warning_count,
             "derivedFromShares": True,
             "blockchainVerified": False,
-            "assumedShareDifficulty": self._config.hashrate_assumed_share_difficulty,
+            "assumedShareDifficulty": self._config.estimated_hashrate_assumed_share_difficulty,
             "hashratePolicy": "share-rate-assumed-diff",
             "poolHashrate": None,
             "workerDistribution": [],
@@ -232,7 +232,7 @@ class SnapshotProducer:
             "blockchainVerified": bool(meta.get("blockchainVerified", False)),
             "assumedShareDifficulty": meta.get(
                 "assumedShareDifficulty",
-                self._config.hashrate_assumed_share_difficulty,
+                self._config.estimated_hashrate_assumed_share_difficulty,
             ),
             "hashratePolicy": meta.get("hashratePolicy", "share-rate-assumed-diff"),
             "poolHashrate": pool.get("poolHashrate"),

@@ -210,7 +210,7 @@ class StratumIngressService:
     ) -> None:
         self._config = config
         self._engine = ActivityEngine(
-            assumed_share_difficulty=config.hashrate_assumed_share_difficulty
+            assumed_share_difficulty=config.estimated_hashrate_assumed_share_difficulty
         )
         self._job_manager = TemplateJobManager(config, rpc_client=rpc_client)
         self._queue: asyncio.Queue[ShareEnvelope] = asyncio.Queue(
@@ -2173,7 +2173,9 @@ def _calculate_pepepow_share_hash(header: bytes) -> bytes:
     header_hash = blake3_hash(header)
     matrix_seed = blake3_hash(masked_header)
     nonce = int.from_bytes(header[76:80], byteorder="little", signed=False)
-    return hoohash_v110(matrix_seed, header_hash, nonce)
+    # hoohash_v110 returns the internal digest byte order; normalize once here so
+    # target comparisons and logged block hashes use the canonical big-endian form.
+    return hoohash_v110(matrix_seed, header_hash, nonce)[::-1]
 
 
 def _normalize_optional_hex(raw_value: Any) -> str | None:

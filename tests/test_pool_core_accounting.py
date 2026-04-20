@@ -90,6 +90,37 @@ class PoolCoreAccountingTests(unittest.TestCase):
         self.assertGreater(worker_summary["hashrate"], 0)
         self.assertEqual(miner_summary["rolling"]["5m"]["shareCount"], 1)
 
+    def test_accounting_uses_estimation_difficulty_only_for_hashrate(self):
+        event = parse_share_event(
+            {
+                "timestamp": "2026-04-13T10:10:00Z",
+                "login": "PEPEPOWWalletAlpha111111111111.rig01",
+            }
+        )
+        low_activity = build_activity_snapshot(
+            [event],
+            activity_window_seconds=900,
+            now=datetime(2026, 4, 13, 10, 11, 0, tzinfo=timezone.utc),
+            assumed_share_difficulty=1e-08,
+        )
+        high_activity = build_activity_snapshot(
+            [event],
+            activity_window_seconds=900,
+            now=datetime(2026, 4, 13, 10, 11, 0, tzinfo=timezone.utc),
+            assumed_share_difficulty=1e-05,
+        )
+
+        low_hashrate = low_activity.miners["PEPEPOWWalletAlpha111111111111"][
+            "summary"
+        ]["hashrate"]
+        high_hashrate = high_activity.miners["PEPEPOWWalletAlpha111111111111"][
+            "summary"
+        ]["hashrate"]
+
+        self.assertEqual(low_activity.assumed_share_difficulty, 1e-08)
+        self.assertEqual(high_activity.assumed_share_difficulty, 1e-05)
+        self.assertLess(low_hashrate, high_hashrate)
+
     def test_load_share_events_collects_warnings_for_malformed_lines(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             share_log_path = Path(tmp_dir) / "activity-events.jsonl"

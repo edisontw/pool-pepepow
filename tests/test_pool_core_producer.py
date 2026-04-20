@@ -11,8 +11,10 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "pool-core"))
 
 from rpc_fixture_server import RpcFixtureServer
+from config import load_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,32 @@ REINDEX_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "daemon-reindex"
 
 
 class ProducerTests(unittest.TestCase):
+    def test_load_config_separates_estimation_difficulty_from_share_difficulty(self):
+        original = os.environ.copy()
+        try:
+            os.environ["PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY"] = "1e-08"
+            os.environ["PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY"] = (
+                "1e-11"
+            )
+            config = load_config()
+            self.assertEqual(config.hashrate_assumed_share_difficulty, 1e-08)
+            self.assertEqual(
+                config.estimated_hashrate_assumed_share_difficulty,
+                1e-11,
+            )
+
+            del os.environ[
+                "PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY"
+            ]
+            fallback_config = load_config()
+            self.assertEqual(
+                fallback_config.estimated_hashrate_assumed_share_difficulty,
+                1e-08,
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
     def test_producer_writes_runtime_snapshot_while_unsynced(self):
         server = RpcFixtureServer(REINDEX_FIXTURE_DIR)
         server.start()
@@ -81,6 +109,8 @@ class ProducerTests(unittest.TestCase):
                         "PEPEPOW_POOL_CORE_STRATUM_PORT": "3333",
                         "PEPEPOW_POOL_CORE_ACTIVITY_LOG_PATH": str(share_log_path),
                         "PEPEPOW_POOL_CORE_ACTIVITY_WINDOW_SECONDS": "900",
+                        "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY": "1e-08",
+                        "PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY": "1e-11",
                     }
                 )
                 subprocess.run(
@@ -98,7 +128,7 @@ class ProducerTests(unittest.TestCase):
                 self.assertEqual(payload["meta"]["activityDataStatus"], "live")
                 self.assertTrue(payload["meta"]["activityDerivedFromShares"])
                 self.assertFalse(payload["meta"]["blockchainVerified"])
-                self.assertEqual(payload["meta"]["assumedShareDifficulty"], 1.0)
+                self.assertEqual(payload["meta"]["assumedShareDifficulty"], 1e-11)
                 self.assertFalse(payload["meta"]["degraded"])
                 self.assertEqual(len(payload["blocks"]), 1)
                 self.assertGreater(payload["pool"]["poolHashrate"], 0)

@@ -40,6 +40,7 @@ class PoolCoreConfig:
     activity_mode: str
     stratum_queue_maxsize: int
     hashrate_assumed_share_difficulty: float
+    estimated_hashrate_assumed_share_difficulty: float
     synthetic_job_interval_seconds: float
     template_mode: str
     template_fetch_interval_seconds: float
@@ -146,6 +147,15 @@ def load_config() -> PoolCoreConfig:
             os.getenv(
                 "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
                 "1e-08",
+            )
+        ),
+        estimated_hashrate_assumed_share_difficulty=float(
+            os.getenv(
+                "PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
+                    "1e-08",
+                ),
             )
         ),
         synthetic_job_interval_seconds=max(

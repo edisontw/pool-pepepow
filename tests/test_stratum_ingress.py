@@ -127,7 +127,7 @@ class EmptyMasternodeTemplateRpcClient(SuccessfulTemplateRpcClient):
 
 
 class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
-    def test_load_config_clamps_hashrate_assumed_share_difficulty_to_pool_floor(self):
+    def test_load_config_preserves_hashrate_assumed_share_difficulty(self):
         with mock.patch.dict(
             "os.environ",
             {"PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY": "1e-08"},
@@ -135,8 +135,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         ):
             config = pool_core_config.load_config()
 
-        # config.py currently uses 1e-12 as floor, let's align it or fix test
-        self.assertEqual(config.hashrate_assumed_share_difficulty, 1.0)
+        self.assertEqual(config.hashrate_assumed_share_difficulty, 1e-08)
 
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
@@ -151,6 +150,17 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             bytes.fromhex(header_hex)
         )
         self.assertEqual(share_hash.hex(), expected_hash)
+
+    def test_share_hash_threshold_summary_uses_canonical_hash_order(self):
+        canonical_hash = bytes.fromhex(
+            "00000001fb895a82973fca52938848908d6a6cb3c0dfb93995dc61020ced0a6b"
+        )
+        summary = stratum_ingress._build_share_hash_threshold_summary(
+            share_hash=canonical_hash,
+            block_target_int=int("0f" * 32, 16),
+            share_target_int=int(canonical_hash.hex(), 16),
+        )
+        self.assertTrue(summary["meetsShareTarget"])
 
     def test_candidate_followup_defaults(self):
         result = pool_core_daemon_rpc.candidate_followup_defaults()
@@ -1981,6 +1991,18 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_activity_snapshot_uses_estimation_difficulty_only(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = replace(
+                self._make_config(tmp_path),
+                hashrate_assumed_share_difficulty=1e-08,
+                estimated_hashrate_assumed_share_difficulty=1e-11,
+            )
+            service = StratumIngressService(config)
+            self.assertEqual(service._synthetic_difficulty(), 1e-08)
+            self.assertEqual(service._engine.assumed_share_difficulty, 1e-11)
+
     async def test_submit_with_missing_target_context_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -3137,6 +3159,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             activity_mode="testing-local-ingest",
             stratum_queue_maxsize=1000,
             hashrate_assumed_share_difficulty=1.0,
+            estimated_hashrate_assumed_share_difficulty=1.0,
             synthetic_job_interval_seconds=synthetic_job_interval_seconds,
             template_mode=template_mode,
             template_fetch_interval_seconds=template_fetch_interval_seconds,
