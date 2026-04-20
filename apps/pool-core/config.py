@@ -50,6 +50,7 @@ class PoolCoreConfig:
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
     stratum_notify_clean_jobs_legacy: bool
+    pepepow_header_version_source_order_enabled: bool = False
 
 
 def load_config() -> PoolCoreConfig:
@@ -218,5 +219,8 @@ def load_config() -> PoolCoreConfig:
         ),
         stratum_notify_clean_jobs_legacy=_env_bool(
             "PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY", False
+        ),
+        pepepow_header_version_source_order_enabled=_env_bool(
+            "PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED", False
         ),
     )

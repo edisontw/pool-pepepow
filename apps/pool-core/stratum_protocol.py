@@ -42,6 +42,7 @@ class ConnectionState:
     reject_reason_counts: dict[str, int] = field(default_factory=dict)
     last_share_at: Any | None = None  # Use Any to avoid datetime import dependency here if preferred, but datetime is fine
     clean_jobs_legacy: bool = False
+    last_notified_anchor: str | None = None
 
 
 def new_connection_state() -> ConnectionState:

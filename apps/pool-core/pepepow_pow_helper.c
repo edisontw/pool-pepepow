@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "blake3.h"
+#include "hoohash.h"
 
 extern void HoohashMatrixMultiplication(
     double mat[64][64],
@@ -123,5 +124,13 @@ int pepepow_hoohash_variant(
     }
     
     HoohashMatrixMultiplication(mat, input_hash, output, nonce);
+    return 0;
+}
+
+int pepepow_hoohash_v110_direct(
+    const uint8_t header[80],
+    uint8_t output[32]
+) {
+    hoohashv110(header, 80, output);
     return 0;
 }

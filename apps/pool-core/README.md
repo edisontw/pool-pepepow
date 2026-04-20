@@ -179,3 +179,24 @@ snapshot. In that state:
 - `network.synced` should remain `false`
 - chain metrics are only for path verification, not final acceptance
 - local share/activity data stays separate from chain data
+
+## Hoohash V110 Validator
+
+The validator now uses the direct authoritative 80-byte header path from `hoohash.c`.
+
+- **Primary Entry Point**: `pepepow_hoohash_v110_direct` in `pepepow_pow_helper.c`
+- **Reference**: `hoohash.c` / `hoohash.h` (Vendored in this directory)
+- **Byte Order**: The validator produces normalized reversed (LE/RPC order) bytes as per the authoritative source.
+- **Comparison**: `stratum_ingress.py` uses `byteorder="little"` to correctly interpret the LE hash for integer-based target comparison.
+
+### Compatibility Flags
+
+- **PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED**: (Default: `false`)
+  - If `true`, the `version` field in the 80-byte header is assembled in source byte order (Big-Endian as received from job/stratum) for PoW validation.
+  - This resolves rejections from miners that do not reverse the version field bytes in their local PoW checks.
+  - **Path**: Only affects `_build_share_header_preimage` within `stratum_ingress.py` for share validation.
+
+### Rollback
+To revert to the previous behavior:
+1. Set `PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED=false` or remove the environment variable.
+2. If necessary, revert changes to `apps/pool-core/config.py` and `apps/pool-core/stratum_ingress.py`.

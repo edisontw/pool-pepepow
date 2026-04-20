@@ -148,6 +148,12 @@ class TemplateJobManager:
         self._dirty = False
         self._task: asyncio.Task[None] | None = None
 
+    @property
+    def latest_template_anchor(self) -> str | None:
+        if self._latest_template is not None:
+            return self._latest_template.template_anchor
+        return None
+
     async def start(self) -> None:
         if self._configured_mode != TEMPLATE_MODE_DAEMON or self._task is not None:
             return

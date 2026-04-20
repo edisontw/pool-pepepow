@@ -1124,6 +1124,7 @@ class StratumIngressService:
             extranonce2=params[2],
             ntime=params[3],
             nonce=params[4],
+            version_source_order=getattr(self._config, "pepepow_header_version_source_order_enabled", False) is True,
         )
         if preimage.reject_reason is not None:
             return ShareHashCheck(
@@ -1642,6 +1643,9 @@ class StratumIngressService:
             except asyncio.TimeoutError:
                 if not state.authorized:
                     continue
+                latest_anchor = self._job_manager.latest_template_anchor
+                if latest_anchor is not None and state.last_notified_anchor == latest_anchor:
+                    continue
                 try:
                     notify_message = self._new_notify_message(state)
                     LOGGER.info(
@@ -1839,6 +1843,7 @@ class StratumIngressService:
         state.previous_job_id = state.current_job_id
         state.current_job_id = f"job-{self._job_counter:016x}"
         job = self._job_manager.issue_job(state.current_job_id, now=observed_at)
+        state.last_notified_anchor = job.template_anchor
         self._dirty_snapshot = True
         return notify_notification(
             job_id=state.current_job_id,
@@ -1916,9 +1921,9 @@ def _classify_submit_job_id(
         return "malformed"
     if current_job_id is not None and submit_job_id == current_job_id and cached_job is not None:
         return "current"
-    if previous_job_id is not None and submit_job_id == previous_job_id and cached_job is not None:
+    if cached_job is not None and not is_stale_job:
         return "previous"
-    if is_stale_job or submit_job_id in {current_job_id, previous_job_id}:
+    if is_stale_job:
         return "stale"
     return "unknown"
 
@@ -4854,6 +4859,7 @@ def _build_share_header_preimage(
     extranonce2: str,
     ntime: str,
     nonce: str,
+    version_source_order: bool = False,
 ) -> ShareHeaderPreimage:
     required_hex_fields = {
         "version": getattr(cached_job, "version", None),
@@ -4965,7 +4971,8 @@ def _build_share_header_preimage(
 
     try:
         coinbase = bytes.fromhex(coinb1 + extranonce1_value + extranonce2_value + coinb2)
-        version_le = bytes.fromhex(version)[::-1]
+        version_bytes = bytes.fromhex(version)
+        version_le = version_bytes if version_source_order else version_bytes[::-1]
         prevhash_le = bytes.fromhex(prevhash)[::-1]
         ntime_le = bytes.fromhex(submit_ntime)[::-1]
         nbits_le = bytes.fromhex(nbits)[::-1]

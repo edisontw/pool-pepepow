@@ -71,6 +71,7 @@ set_effective_defaults() {
   REAL_SUBMITBLOCK_ENABLED="${PEPEPOW_ENABLE_REAL_SUBMITBLOCK:-false}"
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
   CLEAN_JOBS_LEGACY="${PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY:-false}"
+  VERSION_SOURCE_ORDER="${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED:-false}"
   RPC_HOST="${detected_rpc_host}"
   RPC_PORT="${detected_rpc_port}"
   RPC_URL="${PEPEPOWD_RPC_URL:-http://${detected_rpc_host}:${detected_rpc_port}}"
@@ -92,6 +93,7 @@ load_launch_env_if_present() {
   local loaded_real_submitblock_max_sends
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
+  local loaded_version_source_order
 
   if [[ ! -f "${LAUNCH_ENV_FILE}" ]]; then
     return
@@ -115,6 +117,7 @@ load_launch_env_if_present() {
   loaded_rpc_user="$(launch_env_value PEPEPOWD_RPC_USER)"
   loaded_rpc_password="$(launch_env_value PEPEPOWD_RPC_PASSWORD)"
   loaded_rpc_timeout="$(launch_env_value PEPEPOWD_RPC_TIMEOUT_SECONDS)"
+  loaded_version_source_order="$(launch_env_value PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED)"
 
   if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST+x}" && -n "${loaded_bind_host}" ]]; then
     BIND_HOST="${loaded_bind_host}"
@@ -170,6 +173,9 @@ load_launch_env_if_present() {
   if [[ -z "${PEPEPOWD_RPC_TIMEOUT_SECONDS+x}" && -n "${loaded_rpc_timeout}" ]]; then
     RPC_TIMEOUT_SECONDS="${loaded_rpc_timeout}"
   fi
+  if [[ -z "${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED+x}" && -n "${loaded_version_source_order}" ]]; then
+    VERSION_SOURCE_ORDER="${loaded_version_source_order}"
+  fi
 }
 
 launch_env_value() {
@@ -205,6 +211,7 @@ rpc_user: ${RPC_USER:-unset}
 rpc_password: $(masked_rpc_password)
 rpc_timeout_seconds: ${RPC_TIMEOUT_SECONDS}
 stratum_notify_clean_jobs_legacy: ${CLEAN_JOBS_LEGACY}
+pepepow_header_version_source_order_enabled: ${VERSION_SOURCE_ORDER}
 runtime_dir: ${RUNTIME_DIR}
 pid_file: ${PID_FILE}
 log_file: ${LOG_FILE}
@@ -303,6 +310,7 @@ PEPEPOWD_RPC_USER=${RPC_USER}
 PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
 PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
 PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY=${CLEAN_JOBS_LEGACY}
+PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED=${VERSION_SOURCE_ORDER}
 PYTHONUNBUFFERED=1
 EOF
   chmod 600 "${LAUNCH_ENV_FILE}"
@@ -844,6 +852,7 @@ start_service() {
     export PEPEPOWD_RPC_PASSWORD="${RPC_PASSWORD}"
     export PEPEPOWD_RPC_TIMEOUT_SECONDS="${RPC_TIMEOUT_SECONDS}"
     export PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY="${CLEAN_JOBS_LEGACY}"
+    export PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED="${VERSION_SOURCE_ORDER}"
     setsid python3 stratum_ingress.py </dev/null >>"${LOG_FILE}" 2>&1 &
     echo "$!" >"${PID_FILE}"
   )

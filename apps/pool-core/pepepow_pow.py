@@ -58,6 +58,11 @@ class _PepepowPowLibrary:
             ctypes.c_void_p,
         ]
         self._lib.pepepow_hoohash_variant.restype = ctypes.c_int
+        self._lib.pepepow_hoohash_v110_direct.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        self._lib.pepepow_hoohash_v110_direct.restype = ctypes.c_int
 
     def blake3_hash(self, payload: bytes) -> bytes:
         return _call_bytes3(self._lib.pepepow_blake3_hash, payload)
@@ -67,6 +72,16 @@ class _PepepowPowLibrary:
 
     def hoohash_variant(self, seed: bytes, input_hash: bytes, nonce: int, variant: int) -> bytes:
         return _call_pow_variant(self._lib.pepepow_hoohash_variant, seed, input_hash, nonce, variant)
+
+    def hoohash_v110_direct(self, header: bytes) -> bytes:
+        if len(header) != 80:
+            raise PepepowPowError(f"PEPEPOW header must be 80 bytes, got {len(header)}")
+        output = ctypes.create_string_buffer(32)
+        header_buffer = ctypes.create_string_buffer(header, 80)
+        rc = self._lib.pepepow_hoohash_v110_direct(header_buffer, output)
+        if rc != 0:
+            raise PepepowPowError(f"native helper returned {rc}")
+        return output.raw
 
 
 def _call_bytes3(func: ctypes._CFuncPtr, payload: bytes) -> bytes:
@@ -126,6 +141,10 @@ def hoohash_variant(seed: bytes, input_hash: bytes, nonce: int, variant: int) ->
     return _get_library().hoohash_variant(seed, input_hash, nonce, variant)
 
 
+def hoohash_v110_direct(header: bytes) -> bytes:
+    return _get_library().hoohash_v110_direct(header)
+
+
 def _get_library() -> _PepepowPowLibrary:
     global _LIBRARY
     if _LIBRARY is None:
@@ -158,10 +177,12 @@ def _ensure_library() -> None:
             "-I",
             str(APP_DIR),
             str(HELPER_SOURCE),
+            str(APP_DIR / "hoohash.c"),
             str(LIB_HOOHASH),
             str(LIB_BLAKE3),
             "-o",
             str(LIB_PATH),
+            "-lm",
         ],
         check=True,
         cwd=str(RUNTIME_BUILD_DIR),
