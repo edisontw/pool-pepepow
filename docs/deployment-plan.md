@@ -581,6 +581,11 @@ Current services:
 - `pepepow-pool-api.service`
 - `pepepow-pool-frontend.service`
 
+This is the general target stack. The current host may run a
+frontend-optional variant where `pepepow-pool-frontend.service` is absent; see
+`docs/benchmarks/2026-04-21-deployment-baseline-frontend-optionality.md` for
+the host-specific baseline and ops-script interpretation.
+
 Optional later services:
 
 - isolated submission helper
