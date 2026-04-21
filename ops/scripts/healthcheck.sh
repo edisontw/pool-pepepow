@@ -3,6 +3,7 @@ set -euo pipefail
 
 API_URL="${API_URL:-http://127.0.0.1:8080/api/health}"
 FRONTEND_URL="${FRONTEND_URL:-http://127.0.0.1:3000/}"
+FRONTEND_SERVICE="${FRONTEND_SERVICE:-pepepow-pool-frontend.service}"
 
 echo "Checking API: ${API_URL}"
 API_PAYLOAD="$(curl --fail --silent --show-error "${API_URL}")"
@@ -25,5 +26,10 @@ print(
 )
 ' "${API_PAYLOAD}"
 
-echo "Checking frontend: ${FRONTEND_URL}"
-curl --fail --silent --show-error --head "${FRONTEND_URL}"
+if command -v systemctl >/dev/null 2>&1 \
+  && ! systemctl list-unit-files --type=service --no-pager --no-legend "${FRONTEND_SERVICE}" | grep -q "^${FRONTEND_SERVICE}[[:space:]]"; then
+  echo "Skipping frontend: ${FRONTEND_SERVICE} is not installed in this deployment"
+else
+  echo "Checking frontend: ${FRONTEND_URL}"
+  curl --fail --silent --show-error --head "${FRONTEND_URL}"
+fi
