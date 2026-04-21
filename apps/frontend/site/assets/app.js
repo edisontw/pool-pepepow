@@ -143,15 +143,22 @@
   }
 
   async function renderDashboard(config) {
-    const [pool, network, blocks, payments] = await Promise.all([
+    const [pool, network, blocks, payments, health] = await Promise.all([
       fetchJson(`${config.apiBaseUrl}/pool/summary`),
       fetchJson(`${config.apiBaseUrl}/network/summary`),
       fetchJson(`${config.apiBaseUrl}/blocks`),
-      fetchJson(`${config.apiBaseUrl}/payments`)
+      fetchJson(`${config.apiBaseUrl}/payments`),
+      fetchJson(`${config.apiBaseUrl}/health`)
     ]);
 
     setText("algorithm", pool.algorithm);
     setText("pool-status", pool.poolStatus);
+    if (health.localServiceBaseline?.frontendExpected === false) {
+      setText(
+        "deployment-baseline-note",
+        "Host baseline: core + API + stratum; no local frontend service expected. Deployment metadata only, not a failure."
+      );
+    }
     setText("pool-hashrate", formatHashrate(pool.poolHashrate));
     setText("active-miners", formatNumber(pool.activeMiners));
     setText("active-workers", formatNumber(pool.activeWorkers));

@@ -54,6 +54,7 @@ runtime snapshot path.
 
 `/api/health` reports:
 
+- `localServiceBaseline`
 - `snapshotSource`
 - `snapshotAgeSeconds`
 - `degraded`
@@ -62,6 +63,11 @@ runtime snapshot path.
 - `chainState`
 - `activityMode`
 - `activityDataStatus`
+
+`localServiceBaseline` is deployment-interpretation metadata for the current
+host baseline. It indicates that core, API, and Stratum are expected locally
+while the frontend systemd unit is not expected. It does not reflect mining
+correctness, submit correctness, or payout readiness.
 
 The public API shape remains stable for the frontend. New status metadata is
 additive only.

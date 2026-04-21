@@ -334,6 +334,16 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertEqual(payload["service"], "test-api")
+            self.assertEqual(
+                payload["localServiceBaseline"],
+                {
+                    "core": True,
+                    "api": True,
+                    "stratum": True,
+                    "frontendExpected": False,
+                    "deploymentVariant": "core-api-stratum-no-local-frontend",
+                },
+            )
             self.assertEqual(payload["snapshotSource"], "runtime")
             self.assertFalse(payload["degraded"])
             self.assertFalse(payload["stale"])

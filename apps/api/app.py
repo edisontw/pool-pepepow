@@ -11,6 +11,15 @@ from config import AppConfig, load_config
 from store import SnapshotRecord, SnapshotStore, SnapshotUnavailableError
 
 
+LOCAL_SERVICE_BASELINE = {
+    "core": True,
+    "api": True,
+    "stratum": True,
+    "frontendExpected": False,
+    "deploymentVariant": "core-api-stratum-no-local-frontend",
+}
+
+
 def create_app(config: AppConfig | None = None) -> Flask:
     app_config = config or load_config()
     app = Flask(__name__)
@@ -59,6 +68,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
         return jsonify(
             {
                 "service": app_config.app_name,
+                "localServiceBaseline": LOCAL_SERVICE_BASELINE,
                 "status": status,
                 "version": app_config.version,
                 "mode": "snapshot",
