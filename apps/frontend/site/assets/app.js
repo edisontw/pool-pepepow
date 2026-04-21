@@ -142,23 +142,36 @@
     return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
-  async function renderDashboard(config) {
-    const [pool, network, blocks, payments, health] = await Promise.all([
-      fetchJson(`${config.apiBaseUrl}/pool/summary`),
-      fetchJson(`${config.apiBaseUrl}/network/summary`),
-      fetchJson(`${config.apiBaseUrl}/blocks`),
-      fetchJson(`${config.apiBaseUrl}/payments`),
-      fetchJson(`${config.apiBaseUrl}/health`)
-    ]);
+  async function fetchOptionalHealth(config) {
+    try {
+      return await fetchJson(`${config.apiBaseUrl}/health`);
+    } catch (_error) {
+      return null;
+    }
+  }
 
-    setText("algorithm", pool.algorithm);
-    setText("pool-status", pool.poolStatus);
-    if (health.localServiceBaseline?.frontendExpected === false) {
+  function renderDeploymentBaselineNote(health) {
+    setText("deployment-baseline-note", "");
+    if (health?.localServiceBaseline?.frontendExpected === false) {
       setText(
         "deployment-baseline-note",
         "Host baseline: core + API + stratum; no local frontend service expected. Deployment metadata only, not a failure."
       );
     }
+  }
+
+  async function renderDashboard(config) {
+    renderDeploymentBaselineNote(null);
+    fetchOptionalHealth(config).then(renderDeploymentBaselineNote);
+    const [pool, network, blocks, payments] = await Promise.all([
+      fetchJson(`${config.apiBaseUrl}/pool/summary`),
+      fetchJson(`${config.apiBaseUrl}/network/summary`),
+      fetchJson(`${config.apiBaseUrl}/blocks`),
+      fetchJson(`${config.apiBaseUrl}/payments`)
+    ]);
+
+    setText("algorithm", pool.algorithm);
+    setText("pool-status", pool.poolStatus);
     setText("pool-hashrate", formatHashrate(pool.poolHashrate));
     setText("active-miners", formatNumber(pool.activeMiners));
     setText("active-workers", formatNumber(pool.activeWorkers));
