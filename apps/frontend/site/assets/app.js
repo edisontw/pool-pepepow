@@ -254,7 +254,7 @@
         renderCards(
           [
             {
-              label: "Hashrate",
+              label: "Hashrate (estimated from shares)",
               value: formatHashrate(summary.hashrate)
             },
             {
@@ -278,7 +278,7 @@
         "<h3>Workers</h3>",
         renderTable(workers, [
           { key: "name", label: "Worker" },
-          { key: "hashrate", label: "Hashrate", render: formatHashrate },
+          { key: "hashrate", label: "Hashrate (estimated from shares)", render: formatHashrate },
           { key: "lastShareAt", label: "Last Share", render: formatDate }
         ]),
         "<h3>Recent Payments</h3>",

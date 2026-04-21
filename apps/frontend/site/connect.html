@@ -43,15 +43,15 @@
           <ul class="text-list">
             <li>Use your PEPEPOW wallet address as the username.</li>
             <li>Worker names can be appended with a dot suffix.</li>
-            <li>This MVP site is snapshot-backed while pool core is still being integrated.</li>
+            <li>This lightweight site is snapshot-backed from the public API.</li>
           </ul>
         </section>
 
         <section class="panel">
           <h3>Security boundary</h3>
           <p class="muted">
-            The public website and API do not proxy daemon RPC or Redis. Only the future
-            stratum endpoint will be exposed for miners.
+            The public website and API do not proxy daemon RPC or Redis. The Stratum
+            endpoint is the miner-facing service.
           </p>
         </section>
       </main>
