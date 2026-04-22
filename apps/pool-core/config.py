@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+MIN_HASHRATE_ASSUMED_SHARE_DIFFICULTY = 0.01
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -61,6 +64,15 @@ def load_config() -> PoolCoreConfig:
     rpc_host = os.getenv("PEPEPOWD_RPC_HOST", "127.0.0.1")
     rpc_port = int(os.getenv("PEPEPOWD_RPC_PORT", "8834"))
     stratum_port = int(os.getenv("PEPEPOW_POOL_CORE_STRATUM_PORT", "3333"))
+    hashrate_assumed_share_difficulty = max(
+        MIN_HASHRATE_ASSUMED_SHARE_DIFFICULTY,
+        float(
+            os.getenv(
+                "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
+                str(MIN_HASHRATE_ASSUMED_SHARE_DIFFICULTY),
+            )
+        ),
+    )
 
     return PoolCoreConfig(
         coin_name=os.getenv("PEPEPOW_POOL_CORE_COIN_NAME", "PEPEPOW"),
@@ -143,19 +155,11 @@ def load_config() -> PoolCoreConfig:
         stratum_queue_maxsize=max(
             100, int(os.getenv("PEPEPOW_POOL_CORE_STRATUM_QUEUE_MAXSIZE", "50000"))
         ),
-        hashrate_assumed_share_difficulty=float(
-            os.getenv(
-                "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
-                "1e-08",
-            )
-        ),
+        hashrate_assumed_share_difficulty=hashrate_assumed_share_difficulty,
         estimated_hashrate_assumed_share_difficulty=float(
             os.getenv(
                 "PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
-                os.getenv(
-                    "PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY",
-                    "1e-08",
-                ),
+                str(hashrate_assumed_share_difficulty),
             )
         ),
         synthetic_job_interval_seconds=max(

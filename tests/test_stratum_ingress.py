@@ -127,7 +127,7 @@ class EmptyMasternodeTemplateRpcClient(SuccessfulTemplateRpcClient):
 
 
 class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
-    def test_load_config_preserves_hashrate_assumed_share_difficulty(self):
+    def test_load_config_clamps_hashrate_assumed_share_difficulty_to_pool_floor(self):
         with mock.patch.dict(
             "os.environ",
             {"PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY": "1e-08"},
@@ -135,7 +135,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         ):
             config = pool_core_config.load_config()
 
-        self.assertEqual(config.hashrate_assumed_share_difficulty, 1e-08)
+        self.assertEqual(config.hashrate_assumed_share_difficulty, 0.01)
+        self.assertEqual(config.estimated_hashrate_assumed_share_difficulty, 0.01)
 
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
