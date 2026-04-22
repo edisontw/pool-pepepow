@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import urllib.error
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -138,6 +139,28 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.hashrate_assumed_share_difficulty, 0.01)
         self.assertEqual(config.estimated_hashrate_assumed_share_difficulty, 0.01)
 
+    def test_load_config_reads_stratum_vardiff_settings(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED": "true",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY": "0.2",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY": "0.02",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY": "32",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS": "90",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES": "5",
+            },
+            clear=False,
+        ):
+            config = pool_core_config.load_config()
+
+        self.assertTrue(config.stratum_vardiff_enabled)
+        self.assertEqual(config.stratum_vardiff_initial_difficulty, 0.2)
+        self.assertEqual(config.stratum_vardiff_min_difficulty, 0.02)
+        self.assertEqual(config.stratum_vardiff_max_difficulty, 32.0)
+        self.assertEqual(config.stratum_vardiff_retarget_interval_seconds, 90.0)
+        self.assertEqual(config.stratum_vardiff_min_shares, 5)
+
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
             "0040002038e31388c54124146478ff691985eecd02610db91efbc9cd7aabca4900000000"
@@ -162,6 +185,23 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             share_target_int=int(canonical_hash.hex(), 16),
         )
         self.assertTrue(summary["meetsShareTarget"])
+
+    def test_share_hash_threshold_summary_keeps_pool_share_target_distinct(self):
+        block_target_int = int("00ff" + "00" * 30, 16)
+        share_target_int = int("000f" + "00" * 30, 16)
+        share_hash = (share_target_int - 1).to_bytes(32, "big")
+
+        summary = stratum_ingress._build_share_hash_threshold_summary(
+            share_hash=share_hash,
+            block_target_int=block_target_int,
+            share_target_int=share_target_int,
+        )
+
+        self.assertNotEqual(summary["shareTargetUsed"], summary["blockTargetUsed"])
+        self.assertEqual(summary["shareTargetUsed"], f"{share_target_int:064x}")
+        self.assertEqual(summary["blockTargetUsed"], f"{block_target_int:064x}")
+        self.assertTrue(summary["meetsShareTarget"])
+        self.assertTrue(summary["meetsBlockTarget"])
 
     def test_assess_share_hash_uses_job_assigned_difficulty_for_previous_job(self):
         tmp_path = Path(tempfile.mkdtemp())
@@ -221,6 +261,133 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(assessment.status, "share-hash-valid")
         self.assertEqual(assessment.diagnostic["shareDifficultyUsed"], 1.0)
+
+    def test_daemon_template_share_hash_uses_pool_share_target_not_block_target(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        config = self._make_config(tmp_path)
+        service = StratumIngressService(config)
+        state = stratum_ingress.new_connection_state()
+        state.extranonce1 = "aabbccdd"
+        state.current_difficulty = 51.2
+        share_target_int = stratum_ingress._share_target_from_difficulty(51.2)
+        self.assertIsNotNone(share_target_int)
+        block_target_int = share_target_int // 4
+
+        class _Job:
+            source = "daemon-template"
+            assigned_difficulty = 51.2
+            target_context = {"target": f"{block_target_int:064x}"}
+            authoritative_context = {}
+            template_anchor = "anchor"
+            version = "20000000"
+            prevhash = "00" * 32
+            nbits = "1d00ffff"
+            ntime = "01020304"
+            coinb1 = "01"
+            coinb2 = "ff"
+            merkle_branch = ()
+            preimage_context = {"source": "template-derived"}
+
+        self.assertNotEqual(share_target_int, block_target_int)
+        share_hash = (share_target_int - 1).to_bytes(32, "big")
+
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ):
+            assessment = service._assess_share_hash(
+                ["wallet.rig", "job-1", "00000001", "01020304", "00000000"],
+                state=state,
+                cached_job=_Job(),
+                target_context_check=stratum_ingress.TargetContextCheck(
+                    status="candidate-possible",
+                    reject_reason=None,
+                    candidate_possible=True,
+                ),
+            )
+
+        self.assertEqual(assessment.status, "share-hash-valid")
+        self.assertTrue(assessment.diagnostic["meetsShareTarget"])
+        self.assertFalse(assessment.diagnostic["meetsBlockTarget"])
+        self.assertEqual(
+            assessment.diagnostic["shareTargetUsed"],
+            f"{share_target_int:064x}",
+        )
+        self.assertEqual(
+            assessment.diagnostic["blockTargetUsed"],
+            f"{block_target_int:064x}",
+        )
+
+    def test_daemon_template_block_candidate_uses_block_target_separately(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        config = self._make_config(tmp_path)
+        service = StratumIngressService(config)
+        state = stratum_ingress.new_connection_state()
+        state.extranonce1 = "aabbccdd"
+
+        class _Job:
+            source = "daemon-template"
+            assigned_difficulty = 51.2
+            target_context = {
+                "target": "00000004248e0000000000000000000000000000000000000000000000000000"
+            }
+            authoritative_context = {}
+            template_anchor = "anchor"
+            job_id = "job-1"
+            version = "20000000"
+            prevhash = "00" * 32
+            nbits = "1d00ffff"
+            ntime = "01020304"
+            coinb1 = "01"
+            coinb2 = "ff"
+            merkle_branch = ()
+            preimage_context = {"source": "template-derived"}
+
+        block_target_int = int(_Job.target_context["target"], 16)
+        share_target_int = stratum_ingress._share_target_from_difficulty(51.2)
+        self.assertIsNotNone(share_target_int)
+        self.assertLess(share_target_int, block_target_int)
+        share_hash = (block_target_int - 1).to_bytes(32, "big")
+
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ), mock.patch.object(
+            service,
+            "_append_candidate_evidence",
+        ):
+            assessment = service._assess_share_hash(
+                ["wallet.rig", "job-1", "00000001", "01020304", "00000000"],
+                state=state,
+                cached_job=_Job(),
+                target_context_check=stratum_ingress.TargetContextCheck(
+                    status="candidate-possible",
+                    reject_reason=None,
+                    candidate_possible=True,
+                ),
+            )
+
+        self.assertEqual(assessment.status, "block-candidate")
+        self.assertFalse(assessment.diagnostic["meetsShareTarget"])
+        self.assertTrue(assessment.diagnostic["meetsBlockTarget"])
 
     def test_candidate_followup_defaults(self):
         result = pool_core_daemon_rpc.candidate_followup_defaults()
@@ -605,6 +772,251 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     writer.close()
                     await writer.wait_closed()
                 await service.stop()
+
+    async def test_authorize_starts_at_vardiff_initial_difficulty_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                stratum_vardiff_enabled=True,
+                stratum_vardiff_initial_difficulty=0.1,
+            )
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 1,
+                        "method": "mining.subscribe",
+                        "params": ["test-miner/1.0"],
+                    },
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": [
+                                "PEPEPOW1KnownWalletAddress000000.rig01",
+                                "x",
+                            ],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                self.assertTrue((await self._read_json(reader))["result"])
+                difficulty_message = await self._read_json(reader)
+                self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
+                self.assertEqual(difficulty_message["params"], [0.1])
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    def test_vardiff_fast_share_session_retargets_upward(self):
+        service = StratumIngressService(
+            self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
+        )
+        state = stratum_ingress.new_connection_state()
+        state.current_difficulty = 0.1
+        stats = SessionStats()
+        start = datetime(2026, 4, 22, tzinfo=timezone.utc)
+
+        message = None
+        for index, offset in enumerate(range(0, 65, 5), start=1):
+            stats.accepted_share_count = index
+            stats.first_share_at = start
+            message = service._maybe_update_vardiff(
+                state=state,
+                session_stats=stats,
+                observed_at=start + timedelta(seconds=offset),
+                sample_for_vardiff=True,
+            )
+
+        self.assertEqual(state.current_difficulty, 0.2)
+        self.assertEqual(message["method"], "mining.set_difficulty")
+        self.assertEqual(message["params"], [0.2])
+
+    def test_vardiff_slow_share_session_retargets_downward(self):
+        service = StratumIngressService(
+            self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
+        )
+        state = stratum_ingress.new_connection_state()
+        state.current_difficulty = 0.1
+        stats = SessionStats()
+        start = datetime(2026, 4, 22, tzinfo=timezone.utc)
+
+        message = None
+        for index, offset in enumerate((0, 30, 60, 90), start=1):
+            stats.accepted_share_count = index
+            stats.first_share_at = start
+            message = service._maybe_update_vardiff(
+                state=state,
+                session_stats=stats,
+                observed_at=start + timedelta(seconds=offset),
+                sample_for_vardiff=True,
+            )
+
+        self.assertEqual(state.current_difficulty, 0.05)
+        self.assertEqual(message["params"], [0.05])
+
+    def test_vardiff_does_not_retarget_before_minimum_window_conditions(self):
+        service = StratumIngressService(
+            self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
+        )
+        state = stratum_ingress.new_connection_state()
+        state.current_difficulty = 0.1
+        stats = SessionStats()
+        start = datetime(2026, 4, 22, tzinfo=timezone.utc)
+
+        for index, offset in enumerate((0, 5, 10, 15), start=1):
+            stats.accepted_share_count = index
+            stats.first_share_at = start
+            message = service._maybe_update_vardiff(
+                state=state,
+                session_stats=stats,
+                observed_at=start + timedelta(seconds=offset),
+                sample_for_vardiff=True,
+            )
+            self.assertIsNone(message)
+
+        self.assertEqual(state.current_difficulty, 0.1)
+
+    def test_vardiff_low_difficulty_share_samples_can_retarget_upward(self):
+        service = StratumIngressService(
+            self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
+        )
+        state = stratum_ingress.new_connection_state()
+        state.current_difficulty = 0.1
+        stats = SessionStats()
+        start = datetime(2026, 4, 22, tzinfo=timezone.utc)
+
+        message = None
+        for offset in range(0, 65, 5):
+            message = service._maybe_update_vardiff(
+                state=state,
+                session_stats=stats,
+                observed_at=start + timedelta(seconds=offset),
+                sample_for_vardiff=True,
+            )
+
+        self.assertEqual(stats.vardiff_sample_count, 13)
+        self.assertEqual(state.current_difficulty, 0.2)
+        self.assertEqual(message["params"], [0.2])
+
+    def test_vardiff_retarget_next_notify_carries_new_assigned_difficulty(self):
+        service = StratumIngressService(
+            self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
+        )
+        state = stratum_ingress.new_connection_state()
+        state.current_difficulty = 0.1
+        stats = SessionStats()
+        start = datetime(2026, 4, 22, tzinfo=timezone.utc)
+
+        for offset in range(0, 65, 5):
+            service._maybe_update_vardiff(
+                state=state,
+                session_stats=stats,
+                observed_at=start + timedelta(seconds=offset),
+                sample_for_vardiff=True,
+            )
+
+        self.assertEqual(state.current_difficulty, 0.2)
+        notify_message = service._new_notify_message(state)
+        job_id = notify_message["params"][0]
+        issued_job = service._job_manager.get_job(job_id)
+        self.assertIsNotNone(issued_job)
+        self.assertEqual(issued_job.assigned_difficulty, 0.2)
+
+    def test_submit_validation_uses_newly_issued_job_difficulty_after_vardiff(self):
+        service = StratumIngressService(
+            self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
+        )
+        state = stratum_ingress.new_connection_state()
+        state.extranonce1 = "aabbccdd"
+        state.current_difficulty = 0.2
+        notify_message = service._new_notify_message(state)
+        job_id = notify_message["params"][0]
+        cached_job = service._job_manager.get_job(job_id)
+        self.assertIsNotNone(cached_job)
+        target_context = dict(cached_job.target_context)
+        target_context["target"] = "00" * 31 + "01"
+        cached_job = replace(
+            cached_job,
+            source="daemon-template",
+            target_context=target_context,
+        )
+
+        share_hash = (
+            stratum_ingress._share_target_from_difficulty(0.2) - 1
+        ).to_bytes(32, "big")
+
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ):
+            assessment = service._assess_share_hash(
+                ["wallet.rig", job_id, "00000001", "01020304", "00000000"],
+                state=state,
+                cached_job=cached_job,
+                target_context_check=stratum_ingress.TargetContextCheck(
+                    status="candidate-possible",
+                    reject_reason=None,
+                    candidate_possible=True,
+                ),
+            )
+
+        self.assertEqual(assessment.diagnostic["shareDifficultyUsed"], 0.2)
+        self.assertTrue(assessment.diagnostic["meetsShareTarget"])
+
+    def test_vardiff_sample_predicate_allows_only_clean_low_difficulty_shares(self):
+        class _Job:
+            pass
+
+        clean_low_diff = SubmitAssessment(
+            job_status="current",
+            submit_job_id="job-1",
+            cached_job=_Job(),
+            accepted=False,
+            reject_reason="low-difficulty-share",
+            target_validation_status="context-valid",
+            share_hash_validation_status="low-difficulty-share",
+            share_hash_valid=False,
+        )
+        self.assertTrue(stratum_ingress._counts_as_vardiff_sample(clean_low_diff))
+
+        excluded = [
+            replace(clean_low_diff, job_status="malformed", reject_reason="malformed-submit"),
+            replace(clean_low_diff, job_status="unknown", reject_reason="unknown-job"),
+            replace(clean_low_diff, job_status="stale", reject_reason="stale-job"),
+            replace(clean_low_diff, target_validation_status="context-mismatch"),
+            replace(clean_low_diff, cached_job=None),
+            replace(clean_low_diff, duplicate_submit=True),
+        ]
+        for assessment in excluded:
+            with self.subTest(
+                job_status=assessment.job_status,
+                reject_reason=assessment.reject_reason,
+                target_validation_status=assessment.target_validation_status,
+            ):
+                self.assertFalse(stratum_ingress._counts_as_vardiff_sample(assessment))
 
     async def test_real_submitblock_enabled_logs_startup_warning(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3388,6 +3800,10 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         activity_log_rotate_bytes: int = 32 * 1024 * 1024,
         activity_log_retention_files: int = 8,
         stratum_notify_clean_jobs_legacy: bool = False,
+        stratum_vardiff_enabled: bool = False,
+        stratum_vardiff_initial_difficulty: float = 0.1,
+        stratum_vardiff_min_difficulty: float = 0.01,
+        stratum_vardiff_max_difficulty: float = 64.0,
     ) -> PoolCoreConfig:
         return PoolCoreConfig(
             coin_name="PEPEPOW",
@@ -3427,6 +3843,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             activity_log_rotate_bytes=activity_log_rotate_bytes,
             activity_log_retention_files=activity_log_retention_files,
             stratum_notify_clean_jobs_legacy=stratum_notify_clean_jobs_legacy,
+            stratum_vardiff_enabled=stratum_vardiff_enabled,
+            stratum_vardiff_initial_difficulty=stratum_vardiff_initial_difficulty,
+            stratum_vardiff_min_difficulty=stratum_vardiff_min_difficulty,
+            stratum_vardiff_max_difficulty=stratum_vardiff_max_difficulty,
+            stratum_vardiff_target_share_interval_seconds=15.0,
+            stratum_vardiff_retarget_interval_seconds=60.0,
+            stratum_vardiff_min_shares=4,
+            stratum_vardiff_fast_share_interval_seconds=8.0,
+            stratum_vardiff_slow_share_interval_seconds=25.0,
         )
 
 

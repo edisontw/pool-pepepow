@@ -53,6 +53,15 @@ RPC_URL=""
 RPC_USER=""
 RPC_PASSWORD=""
 RPC_TIMEOUT_SECONDS=""
+VARDIFF_ENABLED=""
+VARDIFF_INITIAL_DIFFICULTY=""
+VARDIFF_MIN_DIFFICULTY=""
+VARDIFF_MAX_DIFFICULTY=""
+VARDIFF_TARGET_SHARE_INTERVAL_SECONDS=""
+VARDIFF_RETARGET_INTERVAL_SECONDS=""
+VARDIFF_MIN_SHARES=""
+VARDIFF_FAST_SHARE_INTERVAL_SECONDS=""
+VARDIFF_SLOW_SHARE_INTERVAL_SECONDS=""
 
 set_effective_defaults() {
   local detected_rpc_host detected_rpc_port
@@ -80,6 +89,15 @@ set_effective_defaults() {
   RPC_USER="${PEPEPOWD_RPC_USER:-}"
   RPC_PASSWORD="${PEPEPOWD_RPC_PASSWORD:-}"
   RPC_TIMEOUT_SECONDS="${PEPEPOWD_RPC_TIMEOUT_SECONDS:-5}"
+  VARDIFF_ENABLED="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED:-false}"
+  VARDIFF_INITIAL_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY:-0.1}"
+  VARDIFF_MIN_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY:-0.01}"
+  VARDIFF_MAX_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY:-64}"
+  VARDIFF_TARGET_SHARE_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_TARGET_SHARE_INTERVAL_SECONDS:-15}"
+  VARDIFF_RETARGET_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS:-60}"
+  VARDIFF_MIN_SHARES="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES:-4}"
+  VARDIFF_FAST_SHARE_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS:-8}"
+  VARDIFF_SLOW_SHARE_INTERVAL_SECONDS="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS:-25}"
 }
 
 ensure_runtime_dir() {
@@ -97,6 +115,11 @@ load_launch_env_if_present() {
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_version_source_order
+  local loaded_vardiff_enabled loaded_vardiff_initial_difficulty
+  local loaded_vardiff_min_difficulty loaded_vardiff_max_difficulty
+  local loaded_vardiff_target_share_interval loaded_vardiff_retarget_interval
+  local loaded_vardiff_min_shares loaded_vardiff_fast_share_interval
+  local loaded_vardiff_slow_share_interval
 
   if [[ ! -f "${LAUNCH_ENV_FILE}" ]]; then
     return
@@ -122,6 +145,15 @@ load_launch_env_if_present() {
   loaded_rpc_password="$(launch_env_value PEPEPOWD_RPC_PASSWORD)"
   loaded_rpc_timeout="$(launch_env_value PEPEPOWD_RPC_TIMEOUT_SECONDS)"
   loaded_version_source_order="$(launch_env_value PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED)"
+  loaded_vardiff_enabled="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED)"
+  loaded_vardiff_initial_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY)"
+  loaded_vardiff_min_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY)"
+  loaded_vardiff_max_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY)"
+  loaded_vardiff_target_share_interval="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_TARGET_SHARE_INTERVAL_SECONDS)"
+  loaded_vardiff_retarget_interval="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS)"
+  loaded_vardiff_min_shares="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES)"
+  loaded_vardiff_fast_share_interval="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS)"
+  loaded_vardiff_slow_share_interval="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS)"
 
   if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST+x}" && -n "${loaded_bind_host}" ]]; then
     BIND_HOST="${loaded_bind_host}"
@@ -183,6 +215,33 @@ load_launch_env_if_present() {
   if [[ -z "${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED+x}" && -n "${loaded_version_source_order}" ]]; then
     VERSION_SOURCE_ORDER="${loaded_version_source_order}"
   fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED+x}" && -n "${loaded_vardiff_enabled}" ]]; then
+    VARDIFF_ENABLED="${loaded_vardiff_enabled}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY+x}" && -n "${loaded_vardiff_initial_difficulty}" ]]; then
+    VARDIFF_INITIAL_DIFFICULTY="${loaded_vardiff_initial_difficulty}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY+x}" && -n "${loaded_vardiff_min_difficulty}" ]]; then
+    VARDIFF_MIN_DIFFICULTY="${loaded_vardiff_min_difficulty}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY+x}" && -n "${loaded_vardiff_max_difficulty}" ]]; then
+    VARDIFF_MAX_DIFFICULTY="${loaded_vardiff_max_difficulty}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_TARGET_SHARE_INTERVAL_SECONDS+x}" && -n "${loaded_vardiff_target_share_interval}" ]]; then
+    VARDIFF_TARGET_SHARE_INTERVAL_SECONDS="${loaded_vardiff_target_share_interval}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS+x}" && -n "${loaded_vardiff_retarget_interval}" ]]; then
+    VARDIFF_RETARGET_INTERVAL_SECONDS="${loaded_vardiff_retarget_interval}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES+x}" && -n "${loaded_vardiff_min_shares}" ]]; then
+    VARDIFF_MIN_SHARES="${loaded_vardiff_min_shares}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS+x}" && -n "${loaded_vardiff_fast_share_interval}" ]]; then
+    VARDIFF_FAST_SHARE_INTERVAL_SECONDS="${loaded_vardiff_fast_share_interval}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS+x}" && -n "${loaded_vardiff_slow_share_interval}" ]]; then
+    VARDIFF_SLOW_SHARE_INTERVAL_SECONDS="${loaded_vardiff_slow_share_interval}"
+  fi
 }
 
 launch_env_value() {
@@ -221,6 +280,15 @@ rpc_password: $(masked_rpc_password)
 rpc_timeout_seconds: ${RPC_TIMEOUT_SECONDS}
 stratum_notify_clean_jobs_legacy: ${CLEAN_JOBS_LEGACY}
 pepepow_header_version_source_order_enabled: ${VERSION_SOURCE_ORDER}
+stratum_vardiff_enabled: ${VARDIFF_ENABLED}
+stratum_vardiff_initial_difficulty: ${VARDIFF_INITIAL_DIFFICULTY}
+stratum_vardiff_min_difficulty: ${VARDIFF_MIN_DIFFICULTY}
+stratum_vardiff_max_difficulty: ${VARDIFF_MAX_DIFFICULTY}
+stratum_vardiff_target_share_interval_seconds: ${VARDIFF_TARGET_SHARE_INTERVAL_SECONDS}
+stratum_vardiff_retarget_interval_seconds: ${VARDIFF_RETARGET_INTERVAL_SECONDS}
+stratum_vardiff_min_shares: ${VARDIFF_MIN_SHARES}
+stratum_vardiff_fast_share_interval_seconds: ${VARDIFF_FAST_SHARE_INTERVAL_SECONDS}
+stratum_vardiff_slow_share_interval_seconds: ${VARDIFF_SLOW_SHARE_INTERVAL_SECONDS}
 runtime_dir: ${RUNTIME_DIR}
 pid_file: ${PID_FILE}
 log_file: ${LOG_FILE}
@@ -321,6 +389,15 @@ PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
 PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
 PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY=${CLEAN_JOBS_LEGACY}
 PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED=${VERSION_SOURCE_ORDER}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED=${VARDIFF_ENABLED}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY=${VARDIFF_INITIAL_DIFFICULTY}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY=${VARDIFF_MIN_DIFFICULTY}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY=${VARDIFF_MAX_DIFFICULTY}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_TARGET_SHARE_INTERVAL_SECONDS=${VARDIFF_TARGET_SHARE_INTERVAL_SECONDS}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS=${VARDIFF_RETARGET_INTERVAL_SECONDS}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES=${VARDIFF_MIN_SHARES}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS=${VARDIFF_FAST_SHARE_INTERVAL_SECONDS}
+PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS=${VARDIFF_SLOW_SHARE_INTERVAL_SECONDS}
 PYTHONUNBUFFERED=1
 EOF
   chmod 600 "${LAUNCH_ENV_FILE}"
@@ -864,6 +941,15 @@ start_service() {
     export PEPEPOWD_RPC_TIMEOUT_SECONDS="${RPC_TIMEOUT_SECONDS}"
     export PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY="${CLEAN_JOBS_LEGACY}"
     export PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED="${VERSION_SOURCE_ORDER}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED="${VARDIFF_ENABLED}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY="${VARDIFF_INITIAL_DIFFICULTY}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY="${VARDIFF_MIN_DIFFICULTY}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY="${VARDIFF_MAX_DIFFICULTY}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_TARGET_SHARE_INTERVAL_SECONDS="${VARDIFF_TARGET_SHARE_INTERVAL_SECONDS}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS="${VARDIFF_RETARGET_INTERVAL_SECONDS}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES="${VARDIFF_MIN_SHARES}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS="${VARDIFF_FAST_SHARE_INTERVAL_SECONDS}"
+    export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS="${VARDIFF_SLOW_SHARE_INTERVAL_SECONDS}"
     setsid python3 stratum_ingress.py </dev/null >>"${LOG_FILE}" 2>&1 &
     echo "$!" >"${PID_FILE}"
   )

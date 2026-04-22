@@ -108,6 +108,11 @@ class SessionStats:
     reject_log_key: tuple[Any, ...] | None = None
     suppressed_reject_logs: int = 0
     reject_log_context: dict[str, Any] | None = None
+    vardiff_sample_count: int = 0
+    vardiff_first_accepted_share_at: datetime | None = None
+    vardiff_last_accepted_share_at: datetime | None = None
+    vardiff_average_share_interval_seconds: float | None = None
+    vardiff_last_retarget_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -540,7 +545,7 @@ class StratumIngressService:
             )
 
             notifications: list[dict[str, Any]] = []
-            desired_difficulty = self._synthetic_difficulty()
+            desired_difficulty = self._initial_session_difficulty()
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
                 notifications.append(difficulty_notification(desired_difficulty))
@@ -708,8 +713,27 @@ class StratumIngressService:
                 self._queue.put_nowait(envelope)
             except asyncio.QueueFull:
                 await self._queue.put(envelope)
+            notifications = []
+            vardiff_message = self._maybe_update_vardiff(
+                state=state,
+                session_stats=session_stats,
+                observed_at=observed_at,
+                sample_for_vardiff=_counts_as_vardiff_sample(assessment),
+            )
+            if vardiff_message is not None:
+                notifications.append(vardiff_message)
+                notify_message = self._new_notify_message(state)
+                LOGGER.info(
+                    "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s reason=vardiff-retarget",
+                    state.session_id,
+                    state.current_job_id,
+                    state.previous_job_id,
+                    notify_message["params"][8],
+                )
+                notifications.append(notify_message)
             return DispatchResult(
-                success_response(request.request_id, assessment.accepted)
+                success_response(request.request_id, assessment.accepted),
+                notifications=notifications,
             )
 
         return DispatchResult(
@@ -1277,41 +1301,41 @@ class StratumIngressService:
             share_target_int=share_target_int,
         )
         threshold_summary["shareDifficultyUsed"] = effective_difficulty
+        if threshold_summary["meetsBlockTarget"]:
+            threshold_summary.update(
+                _prepare_candidate_artifact(
+                    cached_job,
+                    header=preimage.header,
+                    share_hash=share_hash,
+                    extranonce1_hex=str(state.extranonce1).strip(),
+                    extranonce2_hex=str(params[2]).strip(),
+                    ntime_hex=str(params[3]).strip(),
+                    nonce_hex=str(params[4]).strip(),
+                    block_target_hex=f"{block_target_int:064x}",
+                )
+            )
+            threshold_summary.update(
+                self._maybe_submit_prepared_candidate(threshold_summary)
+            )
+            self._append_candidate_evidence(
+                cached_job=cached_job,
+                wallet=wallet,
+                worker=worker,
+                login=login,
+                threshold_summary=threshold_summary,
+            )
+            return ShareHashCheck(
+                status="block-candidate",
+                reject_reason=None,
+                valid=True,
+                diagnostic={
+                    "comparisonStage": "share-hash-compare",
+                    "reasonCode": "block-candidate",
+                    "localComputedHash": share_hash.hex(),
+                    **threshold_summary,
+                },
+            )
         if threshold_summary["meetsShareTarget"]:
-            if threshold_summary["meetsBlockTarget"]:
-                threshold_summary.update(
-                    _prepare_candidate_artifact(
-                        cached_job,
-                        header=preimage.header,
-                        share_hash=share_hash,
-                        extranonce1_hex=str(state.extranonce1).strip(),
-                        extranonce2_hex=str(params[2]).strip(),
-                        ntime_hex=str(params[3]).strip(),
-                        nonce_hex=str(params[4]).strip(),
-                        block_target_hex=f"{block_target_int:064x}",
-                    )
-                )
-                threshold_summary.update(
-                    self._maybe_submit_prepared_candidate(threshold_summary)
-                )
-                self._append_candidate_evidence(
-                    cached_job=cached_job,
-                    wallet=wallet,
-                    worker=worker,
-                    login=login,
-                    threshold_summary=threshold_summary,
-                )
-                return ShareHashCheck(
-                    status="block-candidate",
-                    reject_reason=None,
-                    valid=True,
-                    diagnostic={
-                        "comparisonStage": "share-hash-compare",
-                        "reasonCode": "block-candidate",
-                        "localComputedHash": share_hash.hex(),
-                        **threshold_summary,
-                    },
-                )
             return ShareHashCheck(
                 status="share-hash-valid",
                 reject_reason=None,
@@ -1968,6 +1992,85 @@ class StratumIngressService:
     def _synthetic_difficulty(self) -> float:
         return self._config.hashrate_assumed_share_difficulty
 
+    def _initial_session_difficulty(self) -> float:
+        if not self._config.stratum_vardiff_enabled:
+            return self._synthetic_difficulty()
+        return self._clamp_vardiff(self._config.stratum_vardiff_initial_difficulty)
+
+    def _maybe_update_vardiff(
+        self,
+        *,
+        state: ConnectionState,
+        session_stats: SessionStats,
+        observed_at: datetime,
+        sample_for_vardiff: bool,
+    ) -> dict[str, Any] | None:
+        if not self._config.stratum_vardiff_enabled or not sample_for_vardiff:
+            return None
+
+        previous_share_at = session_stats.vardiff_last_accepted_share_at
+        if session_stats.vardiff_first_accepted_share_at is None:
+            session_stats.vardiff_first_accepted_share_at = observed_at
+        session_stats.vardiff_last_accepted_share_at = observed_at
+        session_stats.vardiff_sample_count += 1
+        if previous_share_at is not None:
+            interval_seconds = max(0.0, (observed_at - previous_share_at).total_seconds())
+            if session_stats.vardiff_average_share_interval_seconds is None:
+                session_stats.vardiff_average_share_interval_seconds = interval_seconds
+            else:
+                session_stats.vardiff_average_share_interval_seconds = (
+                    session_stats.vardiff_average_share_interval_seconds * 0.5
+                    + interval_seconds * 0.5
+                )
+
+        if (
+            session_stats.vardiff_sample_count
+            < self._config.stratum_vardiff_min_shares
+            or session_stats.vardiff_average_share_interval_seconds is None
+        ):
+            return None
+
+        retarget_anchor = (
+            session_stats.vardiff_last_retarget_at
+            or session_stats.vardiff_first_accepted_share_at
+            or observed_at
+        )
+        if (
+            observed_at - retarget_anchor
+        ).total_seconds() < self._config.stratum_vardiff_retarget_interval_seconds:
+            return None
+
+        current_difficulty = state.current_difficulty or self._initial_session_difficulty()
+        average_interval = session_stats.vardiff_average_share_interval_seconds
+        if average_interval < self._config.stratum_vardiff_fast_share_interval_seconds:
+            next_difficulty = current_difficulty * 2.0
+        elif average_interval > self._config.stratum_vardiff_slow_share_interval_seconds:
+            next_difficulty = current_difficulty / 2.0
+        else:
+            session_stats.vardiff_last_retarget_at = observed_at
+            return None
+
+        next_difficulty = self._clamp_vardiff(next_difficulty)
+        if math.isclose(next_difficulty, current_difficulty, rel_tol=0.0, abs_tol=1e-12):
+            session_stats.vardiff_last_retarget_at = observed_at
+            return None
+
+        state.current_difficulty = next_difficulty
+        session_stats.vardiff_last_retarget_at = observed_at
+        LOGGER.info(
+            "Vardiff retarget: session=%s difficulty=%s averageShareInterval=%.3f vardiffSamples=%s",
+            state.session_id,
+            next_difficulty,
+            average_interval,
+            session_stats.vardiff_sample_count,
+        )
+        return difficulty_notification(next_difficulty)
+
+    def _clamp_vardiff(self, difficulty: float) -> float:
+        minimum = self._config.stratum_vardiff_min_difficulty
+        maximum = max(minimum, self._config.stratum_vardiff_max_difficulty)
+        return min(maximum, max(minimum, difficulty))
+
     def _load_previous_activity_snapshot(self) -> dict[str, Any] | None:
         path = self._config.activity_snapshot_output_path
         if not path.exists():
@@ -1979,6 +2082,19 @@ class StratumIngressService:
             return None
 
         return payload if isinstance(payload, dict) else None
+
+
+def _counts_as_vardiff_sample(assessment: SubmitAssessment) -> bool:
+    if assessment.counts_as_accepted_share:
+        return True
+    return (
+        assessment.reject_reason == "low-difficulty-share"
+        and assessment.job_status in {"current", "previous"}
+        and assessment.cached_job is not None
+        and assessment.duplicate_submit is False
+        and assessment.target_validation_status == "context-valid"
+        and assessment.share_hash_validation_status == "low-difficulty-share"
+    )
 
 
 def _extract_submit_job_id(params: list[Any]) -> str | None:
@@ -2078,9 +2194,8 @@ def _build_share_hash_threshold_summary(
     block_target_int: int,
     share_target_int: int | None,
 ) -> dict[str, Any]:
-    effective_share_target_int = max(
-        block_target_int,
-        share_target_int if share_target_int is not None else block_target_int,
+    effective_share_target_int = (
+        share_target_int if share_target_int is not None else block_target_int
     )
     share_hash_int = int.from_bytes(share_hash, byteorder="big", signed=False)
     return {

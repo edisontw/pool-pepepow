@@ -6,6 +6,9 @@ from pathlib import Path
 
 
 MIN_HASHRATE_ASSUMED_SHARE_DIFFICULTY = 0.01
+DEFAULT_STRATUM_VARDIFF_INITIAL_DIFFICULTY = 0.1
+DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY = 0.01
+DEFAULT_STRATUM_VARDIFF_MAX_DIFFICULTY = 64.0
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -54,6 +57,15 @@ class PoolCoreConfig:
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
     stratum_notify_clean_jobs_legacy: bool
+    stratum_vardiff_enabled: bool
+    stratum_vardiff_initial_difficulty: float
+    stratum_vardiff_min_difficulty: float
+    stratum_vardiff_max_difficulty: float
+    stratum_vardiff_target_share_interval_seconds: float
+    stratum_vardiff_retarget_interval_seconds: float
+    stratum_vardiff_min_shares: int
+    stratum_vardiff_fast_share_interval_seconds: float
+    stratum_vardiff_slow_share_interval_seconds: float
     pepepow_header_version_source_order_enabled: bool = False
 
 
@@ -230,6 +242,76 @@ def load_config() -> PoolCoreConfig:
         ),
         stratum_notify_clean_jobs_legacy=_env_bool(
             "PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY", False
+        ),
+        stratum_vardiff_enabled=_env_bool(
+            "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED", False
+        ),
+        stratum_vardiff_initial_difficulty=max(
+            DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY",
+                    str(DEFAULT_STRATUM_VARDIFF_INITIAL_DIFFICULTY),
+                )
+            ),
+        ),
+        stratum_vardiff_min_difficulty=max(
+            DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY",
+                    str(DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY),
+                )
+            ),
+        ),
+        stratum_vardiff_max_difficulty=max(
+            DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY",
+                    str(DEFAULT_STRATUM_VARDIFF_MAX_DIFFICULTY),
+                )
+            ),
+        ),
+        stratum_vardiff_target_share_interval_seconds=max(
+            1.0,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_TARGET_SHARE_INTERVAL_SECONDS",
+                    "15",
+                )
+            ),
+        ),
+        stratum_vardiff_retarget_interval_seconds=max(
+            1.0,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_RETARGET_INTERVAL_SECONDS",
+                    "60",
+                )
+            ),
+        ),
+        stratum_vardiff_min_shares=max(
+            1,
+            int(os.getenv("PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_SHARES", "4")),
+        ),
+        stratum_vardiff_fast_share_interval_seconds=max(
+            0.1,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS",
+                    "8",
+                )
+            ),
+        ),
+        stratum_vardiff_slow_share_interval_seconds=max(
+            0.1,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS",
+                    "25",
+                )
+            ),
         ),
         pepepow_header_version_source_order_enabled=_env_bool(
             "PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED", False
