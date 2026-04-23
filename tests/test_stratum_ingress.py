@@ -186,6 +186,28 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(summary["meetsShareTarget"])
 
+    def test_pepepow_share_target_uses_pool_diff1_baseline(self):
+        self.assertEqual(
+            stratum_ingress.STRATUM_DIFF1_TARGET,
+            int(
+                "0000ffff00000000000000000000000000000000000000000000000000000000",
+                16,
+            ),
+        )
+
+    def test_pepepow_share_target_from_representative_difficulties(self):
+        cases = {
+            0.1: "0009fff600000000000000000000000000000000000000000000000000000000",
+            0.2: "0004fffb00000000000000000000000000000000000000000000000000000000",
+            3.2: "00004fffb0000000000000000000000000000000000000000000000000000000",
+        }
+
+        for difficulty, expected_target in cases.items():
+            with self.subTest(difficulty=difficulty):
+                target = stratum_ingress._share_target_from_difficulty(difficulty)
+
+                self.assertEqual(f"{target:064x}", expected_target)
+
     def test_share_hash_threshold_summary_keeps_pool_share_target_distinct(self):
         block_target_int = int("00ff" + "00" * 30, 16)
         share_target_int = int("000f" + "00" * 30, 16)
@@ -336,7 +358,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
         class _Job:
             source = "daemon-template"
-            assigned_difficulty = 51.2
+            assigned_difficulty = 32768.0
             target_context = {
                 "target": "00000004248e0000000000000000000000000000000000000000000000000000"
             }
@@ -353,7 +375,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             preimage_context = {"source": "template-derived"}
 
         block_target_int = int(_Job.target_context["target"], 16)
-        share_target_int = stratum_ingress._share_target_from_difficulty(51.2)
+        share_target_int = stratum_ingress._share_target_from_difficulty(
+            _Job.assigned_difficulty
+        )
         self.assertIsNotNone(share_target_int)
         self.assertLess(share_target_int, block_target_int)
         share_hash = (block_target_int - 1).to_bytes(32, "big")
@@ -1563,7 +1587,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     share_event["shareHashValidationStatus"], "block-candidate"
                 )
                 self.assertTrue(share_event["shareHashValid"])
-                self.assertTrue(
+                self.assertFalse(
                     share_event["shareHashDiagnostic"]["meetsShareTarget"]
                 )
                 self.assertTrue(
@@ -1575,7 +1599,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(
                     share_event["shareHashDiagnostic"]["shareTargetUsed"],
-                    "f" * 64,
+                    f"{stratum_ingress.STRATUM_DIFF1_TARGET:064x}",
                 )
                 self.assertEqual(
                     share_event["shareHashDiagnostic"]["blockTargetUsed"],
@@ -3216,9 +3240,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         "params": [
                             "PEPEPOW1KnownWalletAddress000000.rig01",
                             "job-not-known-here",
-                            "extra",
-                            "ntime",
-                            "nonce",
+                            "00000000",
+                            "661dc000",
+                            "00000000",
                         ],
                     },
                 )
@@ -3282,9 +3306,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         "params": [
                             "PEPEPOW1KnownWalletAddress000000.rig01",
                             "job-0000000000000010",
-                            "extra",
-                            "ntime",
-                            "nonce",
+                            "00000000",
+                            "661dc000",
+                            "00000000",
                         ],
                     },
                 )

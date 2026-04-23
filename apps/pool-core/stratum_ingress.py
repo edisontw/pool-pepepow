@@ -64,12 +64,12 @@ HEADER80_FIELD_LAYOUT = (
 HEADER80_FIELD_OFFSET_MAP = {
     field_name: offset for field_name, offset, _size in HEADER80_FIELD_LAYOUT
 }
-STRATUM_DIFF1_TARGET_BITCOIN = int(
-    "00000000ffff0000000000000000000000000000000000000000000000000000", 16
+STRATUM_DIFF1_TARGET_PEPEPOW_POOL = int(
+    "0000ffff00000000000000000000000000000000000000000000000000000000", 16
 )
-# Use the standard Bitcoin Diff-1 target. The pool difficulty values are expressed
-# in Bitcoin-compatible units, as used by pools like Foztor (e.g. 0.1, 76, 327).
-STRATUM_DIFF1_TARGET = STRATUM_DIFF1_TARGET_BITCOIN
+# Miner-facing PEPEPOW stratum difficulty uses the pool-difficulty baseline.
+# The Bitcoin diff1 target is 65,536x stricter and rejects ordinary pool shares.
+STRATUM_DIFF1_TARGET = STRATUM_DIFF1_TARGET_PEPEPOW_POOL
 MAX_UINT256_TARGET = (1 << 256) - 1
 
 
@@ -137,6 +137,23 @@ class SubmitAssessment:
         if self.share_hash_validation_status is None:
             return True
         return self.share_hash_valid is True
+
+
+@dataclass
+class NotifyProbeMetadata:
+    job_id: str
+    notify_sent_at: datetime
+    assigned_difficulty: float | None
+    previous_assigned_difficulty: float | None
+    template_height: int | None
+    replaced_current_job: bool
+
+
+@dataclass
+class DifficultyProbeMetadata:
+    difficulty: float
+    sent_at: datetime
+    notify_followed_immediately: bool = False
 
 
 @dataclass(frozen=True)
@@ -549,6 +566,7 @@ class StratumIngressService:
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
                 notifications.append(difficulty_notification(desired_difficulty))
+                self._record_difficulty_probe(state, desired_difficulty)
                 LOGGER.info(
                     "Difficulty sent: session=%s difficulty=%s",
                     state.session_id,
@@ -621,6 +639,13 @@ class StratumIngressService:
                 previous_job_id=state.previous_job_id,
                 assessment=assessment,
                 session_stats=session_stats,
+            )
+            self._log_submit_path_probe(
+                assessment=assessment,
+                state=state,
+                wallet=wallet,
+                worker=worker,
+                observed_at=observed_at,
             )
             event = ShareEvent(
                 wallet=wallet,
@@ -722,6 +747,9 @@ class StratumIngressService:
             )
             if vardiff_message is not None:
                 notifications.append(vardiff_message)
+                difficulty_value = vardiff_message.get("params", [None])[0]
+                if isinstance(difficulty_value, (int, float)):
+                    self._record_difficulty_probe(state, float(difficulty_value))
                 notify_message = self._new_notify_message(state)
                 LOGGER.info(
                     "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s reason=vardiff-retarget",
@@ -1954,14 +1982,33 @@ class StratumIngressService:
     def _new_notify_message(self, state: ConnectionState) -> dict[str, Any]:
         observed_at = utc_now()
         self._job_counter += 1
+        replaced_current_job = state.current_job_id is not None
         state.previous_job_id = state.current_job_id
         state.current_job_id = f"job-{self._job_counter:016x}"
+        previous_job_probe = self._notify_probe_for_job(state, state.previous_job_id)
+        assigned_difficulty = state.current_difficulty or self._synthetic_difficulty()
         job = self._job_manager.issue_job(
             state.current_job_id,
             now=observed_at,
-            assigned_difficulty=state.current_difficulty or self._synthetic_difficulty(),
+            assigned_difficulty=assigned_difficulty,
         )
         state.last_notified_anchor = job.template_anchor
+        self._record_notify_probe(
+            state,
+            NotifyProbeMetadata(
+                job_id=state.current_job_id,
+                notify_sent_at=observed_at,
+                assigned_difficulty=assigned_difficulty,
+                previous_assigned_difficulty=(
+                    previous_job_probe.assigned_difficulty
+                    if previous_job_probe is not None
+                    else None
+                ),
+                template_height=_optional_int((job.target_context or {}).get("height")),
+                replaced_current_job=replaced_current_job,
+            ),
+        )
+        self._mark_latest_difficulty_notify_followed(state)
         self._dirty_snapshot = True
         return notify_notification(
             job_id=state.current_job_id,
@@ -1974,6 +2021,124 @@ class StratumIngressService:
             ntime=job.ntime,
             clean_jobs=True,
             legacy_clean_jobs=state.clean_jobs_legacy,
+        )
+
+    def _record_notify_probe(
+        self, state: ConnectionState, metadata: NotifyProbeMetadata
+    ) -> None:
+        probes = getattr(state, "_notify_probe_metadata", None)
+        if not isinstance(probes, OrderedDict):
+            probes = OrderedDict()
+            setattr(state, "_notify_probe_metadata", probes)
+        probes[metadata.job_id] = metadata
+        while len(probes) > 8:
+            probes.popitem(last=False)
+
+    def _notify_probe_for_job(
+        self, state: ConnectionState, job_id: str | None
+    ) -> NotifyProbeMetadata | None:
+        probes = getattr(state, "_notify_probe_metadata", None)
+        if not isinstance(probes, dict) or job_id is None:
+            return None
+        probe = probes.get(job_id)
+        return probe if isinstance(probe, NotifyProbeMetadata) else None
+
+    def _record_difficulty_probe(
+        self, state: ConnectionState, difficulty: float, sent_at: datetime | None = None
+    ) -> None:
+        setattr(
+            state,
+            "_latest_difficulty_probe",
+            DifficultyProbeMetadata(
+                difficulty=difficulty,
+                sent_at=sent_at or utc_now(),
+            ),
+        )
+
+    def _latest_difficulty_probe(
+        self, state: ConnectionState
+    ) -> DifficultyProbeMetadata | None:
+        probe = getattr(state, "_latest_difficulty_probe", None)
+        return probe if isinstance(probe, DifficultyProbeMetadata) else None
+
+    def _mark_latest_difficulty_notify_followed(self, state: ConnectionState) -> None:
+        probe = self._latest_difficulty_probe(state)
+        if probe is not None:
+            probe.notify_followed_immediately = True
+
+    def _log_submit_path_probe(
+        self,
+        *,
+        assessment: SubmitAssessment,
+        state: ConnectionState,
+        wallet: str,
+        worker: str,
+        observed_at: datetime,
+    ) -> None:
+        notify_probe = self._notify_probe_for_job(state, assessment.submit_job_id)
+        difficulty_probe = self._latest_difficulty_probe(state)
+        record = {
+            "event": "stratum-submit-path-probe",
+            "sessionId": state.session_id,
+            "wallet": wallet,
+            "worker": worker,
+            "submittedJobId": assessment.submit_job_id,
+            "jobMatch": _submit_job_match_bucket(
+                assessment.submit_job_id,
+                current_job_id=state.current_job_id,
+                previous_job_id=state.previous_job_id,
+            ),
+            "currentJobId": state.current_job_id,
+            "activeDifficultyAtSubmit": state.current_difficulty
+            or self._synthetic_difficulty(),
+            "notifiedJobDifficulty": (
+                notify_probe.assigned_difficulty if notify_probe is not None else None
+            ),
+            "notifiedJobSentAt": (
+                _isoformat_optional(notify_probe.notify_sent_at)
+                if notify_probe is not None
+                else None
+            ),
+            "notifiedJobPreviousDifficulty": (
+                notify_probe.previous_assigned_difficulty
+                if notify_probe is not None
+                else None
+            ),
+            "notifiedJobTemplateHeight": (
+                notify_probe.template_height if notify_probe is not None else None
+            ),
+            "notifiedJobReplacedCurrent": (
+                notify_probe.replaced_current_job if notify_probe is not None else None
+            ),
+            "notifyToSubmitDeltaMs": (
+                _delta_ms(notify_probe.notify_sent_at, observed_at)
+                if notify_probe is not None
+                else None
+            ),
+            "latestDifficulty": (
+                difficulty_probe.difficulty if difficulty_probe is not None else None
+            ),
+            "latestDifficultySentAt": (
+                _isoformat_optional(difficulty_probe.sent_at)
+                if difficulty_probe is not None
+                else None
+            ),
+            "latestDifficultyNotifyFollowedImmediately": (
+                difficulty_probe.notify_followed_immediately
+                if difficulty_probe is not None
+                else None
+            ),
+            "latestDifficultyToSubmitDeltaMs": (
+                _delta_ms(difficulty_probe.sent_at, observed_at)
+                if difficulty_probe is not None
+                else None
+            ),
+            "classification": "accepted" if assessment.accepted else "rejected",
+            "reasonBucket": _submit_reason_bucket(assessment),
+        }
+        LOGGER.info(
+            "Stratum submit path probe: %s",
+            json.dumps(record, sort_keys=True, separators=(",", ":")),
         )
 
     def _select_replay_segments(self, segments: list[Any], sequence_floor: int) -> list[Any]:
@@ -2095,6 +2260,49 @@ def _counts_as_vardiff_sample(assessment: SubmitAssessment) -> bool:
         and assessment.target_validation_status == "context-valid"
         and assessment.share_hash_validation_status == "low-difficulty-share"
     )
+
+
+def _delta_ms(start: datetime, end: datetime) -> int:
+    return max(0, int((end - start).total_seconds() * 1000))
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _submit_job_match_bucket(
+    submit_job_id: str | None,
+    *,
+    current_job_id: str | None,
+    previous_job_id: str | None,
+) -> str:
+    if submit_job_id is not None and submit_job_id == current_job_id:
+        return "current"
+    if submit_job_id is not None and submit_job_id == previous_job_id:
+        return "previous"
+    return "unknown"
+
+
+def _submit_reason_bucket(assessment: SubmitAssessment) -> str:
+    if assessment.accepted:
+        return "accepted"
+    if assessment.reject_reason in {
+        "stale-job",
+        "unknown-job",
+        "low-difficulty-share",
+        "malformed-submit",
+    }:
+        return assessment.reject_reason
+    return "other"
 
 
 def _extract_submit_job_id(params: list[Any]) -> str | None:
