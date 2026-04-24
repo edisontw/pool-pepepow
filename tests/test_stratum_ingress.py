@@ -161,6 +161,20 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.stratum_vardiff_retarget_interval_seconds, 90.0)
         self.assertEqual(config.stratum_vardiff_min_shares, 5)
 
+    def test_load_config_allows_fixed_stratum_difficulty_of_point_zero_zero_one(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY": "0.001",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY": "0.001",
+            },
+            clear=False,
+        ):
+            config = pool_core_config.load_config()
+
+        self.assertEqual(config.stratum_vardiff_initial_difficulty, 0.001)
+        self.assertEqual(config.stratum_vardiff_min_difficulty, 0.001)
+
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
             "0040002038e31388c54124146478ff691985eecd02610db91efbc9cd7aabca4900000000"
@@ -665,7 +679,10 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             config = self._make_config(
                 tmp_path,
                 synthetic_job_interval_seconds=30.0,
+                stratum_vardiff_initial_difficulty=0.001,
+                stratum_vardiff_min_difficulty=0.001,
             )
+            config = replace(config, hashrate_assumed_share_difficulty=0.05)
             service = StratumIngressService(config)
             await service.start()
 
@@ -715,7 +732,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
                 self.assertEqual(
                     difficulty_message["params"],
-                    [config.hashrate_assumed_share_difficulty],
+                    [config.stratum_vardiff_initial_difficulty],
                 )
                 self.assertEqual(notify_message["method"], "mining.notify")
                 self.assertEqual(len(notify_message["params"]), 9)
@@ -759,7 +776,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(share_event["jobId"], notify_message["params"][0])
                 self.assertEqual(
                     share_event["difficulty"],
-                    config.hashrate_assumed_share_difficulty,
+                    config.stratum_vardiff_initial_difficulty,
                 )
                 self.assertEqual(share_event["jobStatus"], "current")
                 self.assertTrue(share_event["syntheticWork"])
@@ -2401,6 +2418,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     tmp_path,
                     template_mode="daemon-template",
                     template_fetch_interval_seconds=5.0,
+                    stratum_vardiff_initial_difficulty=0.001,
+                    stratum_vardiff_min_difficulty=0.001,
                 ),
                 hashrate_assumed_share_difficulty=0.00000001,
             )
@@ -2444,7 +2463,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 difficulty_message = await self._read_json(reader)
                 notify_message = await self._read_json(reader)
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
-                self.assertEqual(difficulty_message["params"], [0.00000001])
+                self.assertEqual(difficulty_message["params"], [0.001])
 
                 job_id = notify_message["params"][0]
                 cached_job = service._job_manager.get_job(job_id)
@@ -2458,7 +2477,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 extranonce1 = subscribe_response["result"][1]
                 extranonce2 = "00000001"
                 share_target_int = stratum_ingress._share_target_from_difficulty(
-                    config.hashrate_assumed_share_difficulty
+                    difficulty_message["params"][0]
                 )
                 self.assertIsNotNone(share_target_int)
                 submit_nonce = None

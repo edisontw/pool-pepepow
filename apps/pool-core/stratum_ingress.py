@@ -2158,8 +2158,6 @@ class StratumIngressService:
         return self._config.hashrate_assumed_share_difficulty
 
     def _initial_session_difficulty(self) -> float:
-        if not self._config.stratum_vardiff_enabled:
-            return self._synthetic_difficulty()
         return self._clamp_vardiff(self._config.stratum_vardiff_initial_difficulty)
 
     def _maybe_update_vardiff(
