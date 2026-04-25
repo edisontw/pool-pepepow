@@ -851,11 +851,19 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     + b"\n"
                 )
                 await writer.drain()
-
-                self.assertTrue((await self._read_json(reader))["result"])
-                difficulty_message = await self._read_json(reader)
+                with self.assertLogs("pepepow.stratum_ingress", level="INFO") as captured:
+                    self.assertTrue((await self._read_json(reader))["result"])
+                    difficulty_message = await self._read_json(reader)
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
                 self.assertEqual(difficulty_message["params"], [0.1])
+                combined_logs = "\n".join(captured.output)
+                self.assertIn("Difficulty sent: session=", combined_logs)
+                self.assertIn("remote=", combined_logs)
+                self.assertIn("wallet=PEPEPOW1KnownWalletAddress000000", combined_logs)
+                self.assertIn("worker=rig01", combined_logs)
+                self.assertIn("difficulty=0.1", combined_logs)
+                self.assertIn("reason=authorize-fixed", combined_logs)
+                self.assertIn("vardiffEnabled=True", combined_logs)
             finally:
                 if writer is not None:
                     writer.close()
@@ -867,24 +875,36 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
         )
         state = stratum_ingress.new_connection_state()
+        state.authorized_wallet = "walletA"
+        state.authorized_worker = "rigA"
         state.current_difficulty = 0.1
         stats = SessionStats()
         start = datetime(2026, 4, 22, tzinfo=timezone.utc)
 
         message = None
-        for index, offset in enumerate(range(0, 65, 5), start=1):
-            stats.accepted_share_count = index
-            stats.first_share_at = start
-            message = service._maybe_update_vardiff(
-                state=state,
-                session_stats=stats,
-                observed_at=start + timedelta(seconds=offset),
-                sample_for_vardiff=True,
-            )
+        with self.assertLogs("pepepow.stratum_ingress", level="INFO") as captured:
+            for index, offset in enumerate(range(0, 65, 5), start=1):
+                stats.accepted_share_count = index
+                stats.first_share_at = start
+                message = service._maybe_update_vardiff(
+                    state=state,
+                    session_stats=stats,
+                    observed_at=start + timedelta(seconds=offset),
+                    sample_for_vardiff=True,
+                )
 
         self.assertEqual(state.current_difficulty, 0.2)
         self.assertEqual(message["method"], "mining.set_difficulty")
         self.assertEqual(message["params"], [0.2])
+        combined_logs = "\n".join(captured.output)
+        self.assertIn("Vardiff retarget: session=", combined_logs)
+        self.assertIn("Difficulty sent: session=", combined_logs)
+        self.assertIn("remote=unknown", combined_logs)
+        self.assertIn("wallet=walletA", combined_logs)
+        self.assertIn("worker=rigA", combined_logs)
+        self.assertIn("difficulty=0.2", combined_logs)
+        self.assertIn("reason=vardiff-retarget", combined_logs)
+        self.assertIn("vardiffEnabled=True", combined_logs)
 
     def test_vardiff_slow_share_session_retargets_downward(self):
         service = StratumIngressService(

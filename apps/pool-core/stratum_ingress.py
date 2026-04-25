@@ -567,10 +567,11 @@ class StratumIngressService:
                 state.current_difficulty = desired_difficulty
                 notifications.append(difficulty_notification(desired_difficulty))
                 self._record_difficulty_probe(state, desired_difficulty)
-                LOGGER.info(
-                    "Difficulty sent: session=%s difficulty=%s",
-                    state.session_id,
-                    desired_difficulty,
+                self._log_difficulty_sent(
+                    state,
+                    difficulty=desired_difficulty,
+                    reason="authorize-fixed",
+                    remote_address=remote_address,
                 )
             notify_message = self._new_notify_message(state)
             LOGGER.info(
@@ -2157,6 +2158,25 @@ class StratumIngressService:
     def _synthetic_difficulty(self) -> float:
         return self._config.hashrate_assumed_share_difficulty
 
+    def _log_difficulty_sent(
+        self,
+        state: ConnectionState,
+        *,
+        difficulty: float,
+        reason: str,
+        remote_address: str | None = None,
+    ) -> None:
+        LOGGER.info(
+            "Difficulty sent: session=%s remote=%s wallet=%s worker=%s difficulty=%s reason=%s vardiffEnabled=%s",
+            state.session_id,
+            remote_address or "unknown",
+            state.authorized_wallet or "unknown",
+            state.authorized_worker or DEFAULT_WORKER_NAME,
+            difficulty,
+            reason,
+            self._config.stratum_vardiff_enabled,
+        )
+
     def _initial_session_difficulty(self) -> float:
         return self._clamp_vardiff(self._config.stratum_vardiff_initial_difficulty)
 
@@ -2226,6 +2246,11 @@ class StratumIngressService:
             next_difficulty,
             average_interval,
             session_stats.vardiff_sample_count,
+        )
+        self._log_difficulty_sent(
+            state,
+            difficulty=next_difficulty,
+            reason="vardiff-retarget",
         )
         return difficulty_notification(next_difficulty)
 
