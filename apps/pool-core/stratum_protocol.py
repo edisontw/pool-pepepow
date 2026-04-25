@@ -43,6 +43,7 @@ class ConnectionState:
     last_share_at: Any | None = None  # Use Any to avoid datetime import dependency here if preferred, but datetime is fine
     clean_jobs_legacy: bool = False
     last_notified_anchor: str | None = None
+    last_difficulty_reason: str | None = None
 
 
 def new_connection_state() -> ConnectionState:
@@ -80,6 +81,12 @@ def success_response(request_id: Any, result: Any) -> dict[str, Any]:
 
 def error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"id": request_id, "result": None, "error": {"code": code, "message": message}}
+
+
+def submit_error_response(
+    request_id: Any, code: int, message: str, data: Any = None
+) -> dict[str, Any]:
+    return {"id": request_id, "result": None, "error": [code, message, data]}
 
 
 def subscribe_result(state: ConnectionState) -> list[Any]:

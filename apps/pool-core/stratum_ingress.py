@@ -33,6 +33,7 @@ from stratum_protocol import (
     parse_request,
     resolve_submit_identity,
     subscribe_result,
+    submit_error_response,
     success_response,
 )
 from template_jobs import PLACEHOLDER_PAYOUT_SCRIPT, TemplateJobManager
@@ -485,9 +486,21 @@ class StratumIngressService:
                     remote_address,
                     session_stats,
                 )
-                await self._send_message(writer, send_lock, dispatch.response)
+                await self._send_message(
+                    writer,
+                    send_lock,
+                    dispatch.response,
+                    state=state,
+                    remote_address=remote_address,
+                )
                 for message in dispatch.notifications:
-                    await self._send_message(writer, send_lock, message)
+                    await self._send_message(
+                        writer,
+                        send_lock,
+                        message,
+                        state=state,
+                        remote_address=remote_address,
+                    )
 
                 if dispatch.start_notify_loop and notify_task is None:
                     notify_task = asyncio.create_task(
@@ -565,6 +578,7 @@ class StratumIngressService:
             desired_difficulty = self._initial_session_difficulty()
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
+                state.last_difficulty_reason = "authorize-fixed"
                 notifications.append(difficulty_notification(desired_difficulty))
                 self._record_difficulty_probe(state, desired_difficulty)
                 self._log_difficulty_sent(
@@ -760,8 +774,15 @@ class StratumIngressService:
                     notify_message["params"][8],
                 )
                 notifications.append(notify_message)
+            submit_response = success_response(request.request_id, assessment.accepted)
+            if not assessment.accepted and assessment.reject_reason == "low-difficulty-share":
+                submit_response = submit_error_response(
+                    request.request_id,
+                    23,
+                    "Low difficulty share",
+                )
             return DispatchResult(
-                success_response(request.request_id, assessment.accepted),
+                submit_response,
                 notifications=notifications,
             )
 
@@ -1802,6 +1823,7 @@ class StratumIngressService:
                         writer,
                         send_lock,
                         notify_message,
+                        state=state,
                     )
                 except ConnectionError:
                     return
@@ -1811,7 +1833,22 @@ class StratumIngressService:
         writer: asyncio.StreamWriter,
         send_lock: asyncio.Lock,
         payload: dict[str, Any],
+        *,
+        state: ConnectionState | None = None,
+        remote_address: str | None = None,
     ) -> None:
+        if payload.get("method") == "mining.set_difficulty":
+            difficulty = None
+            params = payload.get("params")
+            if isinstance(params, list) and params:
+                difficulty = params[0]
+            LOGGER.info(
+                "Wire send: session=%s remote=%s method=mining.set_difficulty difficulty=%s reason=%s",
+                state.session_id if state is not None else "unknown",
+                remote_address or "unknown",
+                difficulty,
+                state.last_difficulty_reason if state is not None else "unknown",
+            )
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
         async with send_lock:
             writer.write(encoded)
@@ -2247,6 +2284,7 @@ class StratumIngressService:
             average_interval,
             session_stats.vardiff_sample_count,
         )
+        state.last_difficulty_reason = "vardiff-retarget"
         self._log_difficulty_sent(
             state,
             difficulty=next_difficulty,

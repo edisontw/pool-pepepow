@@ -1274,7 +1274,11 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         ),
                     },
                 )
-                self.assertFalse(submit_response["result"])
+                self.assertIsNone(submit_response["result"])
+                self.assertEqual(
+                    submit_response["error"],
+                    [23, "Low difficulty share", None],
+                )
 
                 await self._wait_for(
                     lambda: len(self._read_share_events(config.activity_log_path)) == 1
