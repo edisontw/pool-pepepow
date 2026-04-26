@@ -108,6 +108,19 @@ def difficulty_notification(difficulty: float) -> dict[str, Any]:
     }
 
 
+def format_prevhash_for_stratum(prevhash: str) -> str:
+    value = prevhash.strip()
+    if len(value) != 64:
+        raise ValueError("prevhash must be 64-character hex")
+    try:
+        bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("prevhash must be valid hex") from exc
+
+    words = [value[index : index + 8] for index in range(0, 64, 8)]
+    return "".join(bytes.fromhex(word)[::-1].hex() for word in words)
+
+
 def notify_notification(
     *,
     job_id: str,
@@ -126,7 +139,7 @@ def notify_notification(
         "method": "mining.notify",
         "params": [
             job_id,
-            prevhash,
+            format_prevhash_for_stratum(prevhash),
             coinb1,
             coinb2,
             merkle_branch,

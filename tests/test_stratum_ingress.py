@@ -31,6 +31,7 @@ pool_core_config = _load_module("pool_core_config", "config.py")
 sys.modules["config"] = pool_core_config
 stratum_ingress = _load_module("pool_core_stratum_ingress", "stratum_ingress.py")
 pool_core_daemon_rpc = sys.modules["daemon_rpc"]
+stratum_protocol = sys.modules["stratum_protocol"]
 template_jobs = sys.modules["template_jobs"]
 
 PoolCoreConfig = pool_core_config.PoolCoreConfig
@@ -188,6 +189,56 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             bytes.fromhex(header_hex)
         )
         self.assertEqual(share_hash.hex(), expected_hash)
+
+    def test_format_prevhash_for_stratum_word_swaps_live_capture(self):
+        canonical_prevhash = (
+            "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa"
+        )
+        expected_wire_prevhash = (
+            "010000000df259aac8b2b21edcf17e407f9207b74a7008b967000819fa42cb26"
+        )
+
+        self.assertEqual(
+            stratum_protocol.format_prevhash_for_stratum(canonical_prevhash),
+            expected_wire_prevhash,
+        )
+
+    def test_notify_notification_word_swaps_prevhash_only_on_wire(self):
+        canonical_prevhash = (
+            "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa"
+        )
+        notify_message = stratum_protocol.notify_notification(
+            job_id="job-123",
+            prevhash=canonical_prevhash,
+            coinb1="aa",
+            coinb2="bb",
+            merkle_branch=["cc" * 32],
+            version="20004000",
+            nbits="1d0487ce",
+            ntime="69ee38d8",
+            clean_jobs=True,
+        )
+
+        self.assertEqual(notify_message["method"], "mining.notify")
+        self.assertEqual(
+            notify_message["params"][1],
+            "010000000df259aac8b2b21edcf17e407f9207b74a7008b967000819fa42cb26",
+        )
+        self.assertEqual(canonical_prevhash, "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa")
+
+    def test_notify_notification_rejects_invalid_prevhash(self):
+        with self.assertRaisesRegex(ValueError, "prevhash must be 64-character hex"):
+            stratum_protocol.notify_notification(
+                job_id="job-123",
+                prevhash="abcd",
+                coinb1="aa",
+                coinb2="bb",
+                merkle_branch=[],
+                version="20004000",
+                nbits="1d0487ce",
+                ntime="69ee38d8",
+                clean_jobs=True,
+            )
 
     def test_share_hash_threshold_summary_uses_canonical_hash_order(self):
         canonical_hash = bytes.fromhex(
@@ -1113,7 +1164,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             reader = writer = None
             try:
                 reader, writer = await self._open_client(service)
-                subscribe_response = await self._rpc_call(
+                await self._rpc_call(
                     reader,
                     writer,
                     {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
@@ -1219,7 +1270,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 reader, writer = await self._open_client(service)
-                subscribe_response = await self._rpc_call(
+                await self._rpc_call(
                     reader,
                     writer,
                     {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
@@ -1250,7 +1301,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 self.assertEqual(notify_message["method"], "mining.notify")
-                self.assertEqual(notify_message["params"][1], "1" * 64)
+                self.assertEqual(notify_message["params"][1], "11111111" * 8)
                 self.assertNotEqual(
                     notify_message["params"][2], stratum_ingress.SYNTHETIC_COINB1
                 )
@@ -1857,7 +1908,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 reader, writer = await self._open_client(service)
-                await self._rpc_call(
+                subscribe_response = await self._rpc_call(
                     reader,
                     writer,
                     {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
@@ -2605,6 +2656,208 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             service = StratumIngressService(config)
             self.assertEqual(service._synthetic_difficulty(), 1e-08)
             self.assertEqual(service._engine.assumed_share_difficulty, 1e-11)
+
+    async def test_notify_debug_capture_default_limit_zero_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                notify_debug_capture_limit=0,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=SuccessfulTemplateRpcClient(),
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                self.assertEqual(notify_message["method"], "mining.notify")
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            extranonce2="00000001",
+                            nonce="00000000",
+                        ),
+                    },
+                )
+                self.assertIn("result", submit_response)
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                self.assertFalse(self._notify_debug_capture_path(config).exists())
+                self.assertEqual(
+                    subscribe_response["result"][2],
+                    4,
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_notify_debug_capture_is_bounded_and_matches_wire_notify(self):
+        class NotifyCaptureTemplateRpcClient(SuccessfulTemplateRpcClient):
+            def get_block_template(self) -> dict[str, object]:
+                payload = super().get_block_template()
+                payload["previousblockhash"] = (
+                    "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa"
+                )
+                return payload
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                notify_debug_capture_limit=1,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=NotifyCaptureTemplateRpcClient(),
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                difficulty_message = await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
+                self.assertEqual(notify_message["method"], "mining.notify")
+                await self._wait_for(
+                    lambda: len(self._read_notify_debug_capture_events(config)) == 1
+                )
+                capture_record = json.loads(
+                    self._read_notify_debug_capture_events(config)[0]
+                )
+                self.assertEqual(capture_record["event"], "notify")
+                self.assertEqual(capture_record["notifyParams"], notify_message["params"])
+                self.assertEqual(capture_record["jobId"], notify_message["params"][0])
+                self.assertEqual(
+                    capture_record["canonicalPrevhash"],
+                    "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa",
+                )
+                self.assertEqual(
+                    capture_record["wireNotifyPrevhash"],
+                    "010000000df259aac8b2b21edcf17e407f9207b74a7008b967000819fa42cb26",
+                )
+
+                first_submit = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            extranonce2="00000001",
+                            nonce="00000000",
+                        ),
+                    },
+                )
+                second_submit = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 4,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            extranonce2="00000001",
+                            nonce="00000001",
+                        ),
+                    },
+                )
+                self.assertIsNotNone(first_submit)
+                self.assertIsNotNone(second_submit)
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 2
+                )
+                self.assertEqual(
+                    len(self._read_notify_debug_capture_events(config)),
+                    1,
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
 
     async def test_submit_with_missing_target_context_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3854,6 +4107,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             return []
         return path.read_text(encoding="utf-8").splitlines()
 
+    def _notify_debug_capture_path(self, config: PoolCoreConfig) -> Path:
+        return config.activity_log_path.with_name("notify-debug-capture.jsonl")
+
+    def _read_notify_debug_capture_events(self, config: PoolCoreConfig) -> list[str]:
+        path = self._notify_debug_capture_path(config)
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
     def _make_config(
         self,
         tmp_path: Path,
@@ -3866,6 +4128,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         real_submitblock_max_sends: int = 1,
         activity_log_rotate_bytes: int = 32 * 1024 * 1024,
         activity_log_retention_files: int = 8,
+        notify_debug_capture_limit: int = 0,
         stratum_notify_clean_jobs_legacy: bool = False,
         stratum_vardiff_enabled: bool = False,
         stratum_vardiff_initial_difficulty: float = 0.1,
@@ -3909,6 +4172,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             real_submitblock_max_sends=real_submitblock_max_sends,
             activity_log_rotate_bytes=activity_log_rotate_bytes,
             activity_log_retention_files=activity_log_retention_files,
+            notify_debug_capture_limit=notify_debug_capture_limit,
             stratum_notify_clean_jobs_legacy=stratum_notify_clean_jobs_legacy,
             stratum_vardiff_enabled=stratum_vardiff_enabled,
             stratum_vardiff_initial_difficulty=stratum_vardiff_initial_difficulty,

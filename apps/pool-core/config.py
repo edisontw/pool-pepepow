@@ -56,6 +56,7 @@ class PoolCoreConfig:
     real_submitblock_max_sends: int
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
+    notify_debug_capture_limit: int
     stratum_notify_clean_jobs_legacy: bool
     stratum_vardiff_enabled: bool
     stratum_vardiff_initial_difficulty: float
@@ -237,6 +238,15 @@ def load_config() -> PoolCoreConfig:
                 os.getenv(
                     "PEPEPOW_POOL_CORE_ACTIVITY_LOG_RETENTION_FILES",
                     "8",
+                )
+            ),
+        ),
+        notify_debug_capture_limit=max(
+            0,
+            int(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_NOTIFY_DEBUG_CAPTURE_LIMIT",
+                    "0",
                 )
             ),
         ),

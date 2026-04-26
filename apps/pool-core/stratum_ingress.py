@@ -268,6 +268,16 @@ class StratumIngressService:
         self._submit_evidence_path = config.activity_log_path.with_name(
             "submit-evidence.jsonl"
         )
+        self._notify_debug_capture_path = config.activity_log_path.with_name(
+            "notify-debug-capture.jsonl"
+        )
+        self._notify_debug_capture_limit = max(
+            0, int(getattr(config, "notify_debug_capture_limit", 0))
+        )
+        self._notify_debug_capture_count = 0
+        self._notify_debug_context_by_session_job: OrderedDict[
+            tuple[str, str], dict[str, Any]
+        ] = OrderedDict()
         self._share_hash_probe_captured = False
         self._submit_validation_counts: dict[str, Any] = {
             "mode": "structural-skeleton",
@@ -1138,6 +1148,104 @@ class StratumIngressService:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")
         except Exception as exc:
             LOGGER.error("Failed to append submit evidence: %s", exc)
+        self._append_notify_debug_capture(
+            assessment=assessment,
+            state=state,
+            remote_address=remote_address,
+            observed_at=observed_at,
+            params=params,
+            record=record,
+        )
+
+    def _remember_notify_debug_context(
+        self,
+        *,
+        state: ConnectionState,
+        remote_address: str | None,
+        payload: dict[str, Any],
+    ) -> None:
+        if getattr(self, "_notify_debug_capture_limit", 0) <= 0:
+            return
+        params = payload.get("params")
+        if not isinstance(params, list) or len(params) != 9:
+            return
+        job_id = params[0]
+        if not isinstance(job_id, str) or not job_id:
+            return
+        contexts = getattr(self, "_notify_debug_context_by_session_job", None)
+        if not isinstance(contexts, OrderedDict):
+            contexts = OrderedDict()
+            self._notify_debug_context_by_session_job = contexts
+        context_key = (state.session_id, job_id)
+        if context_key in contexts:
+            return
+        cached_job = self._job_manager.get_job(job_id)
+        canonical_prevhash = _normalize_optional_hex(
+            getattr(cached_job, "prevhash", None)
+        )
+        context = {
+            "timestamp": utc_now()
+            .replace(microsecond=0)
+            .astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "sessionId": state.session_id,
+            "remoteAddress": remote_address,
+            "wallet": state.authorized_wallet,
+            "worker": state.authorized_worker,
+            "jobId": job_id,
+            "notifyParams": list(params),
+            "difficulty": state.current_difficulty,
+            "extranonce1": state.extranonce1,
+            "extranonce2Size": state.extranonce2_size,
+            "version": params[5],
+            "prevhash": params[1],
+            "canonicalPrevhash": canonical_prevhash,
+            "wireNotifyPrevhash": params[1],
+            "coinb1": params[2],
+            "coinb2": params[3],
+            "merkleBranch": params[4],
+            "nbits": params[6],
+            "ntime": params[7],
+            "cleanJobs": params[8],
+        }
+        contexts[context_key] = context
+        while len(contexts) > 64:
+            contexts.popitem(last=False)
+        capture_count = int(getattr(self, "_notify_debug_capture_count", 0))
+        if capture_count >= int(getattr(self, "_notify_debug_capture_limit", 0)):
+            return
+        capture_path = getattr(self, "_notify_debug_capture_path", None)
+        if not isinstance(capture_path, Path):
+            return
+        capture_record = {
+            "timestamp": context["timestamp"],
+            "event": "notify",
+            "sessionId": state.session_id,
+            "remoteAddress": remote_address,
+            "jobId": job_id,
+            "notifyParams": list(params),
+            "canonicalPrevhash": canonical_prevhash,
+            "wireNotifyPrevhash": params[1],
+        }
+        try:
+            with open(capture_path, "a") as f:
+                f.write(json.dumps(capture_record, separators=(",", ":")) + "\n")
+            self._notify_debug_capture_count = capture_count + 1
+        except Exception as exc:
+            LOGGER.error("Failed to append notify debug capture: %s", exc)
+
+    def _append_notify_debug_capture(
+        self,
+        *,
+        assessment: SubmitAssessment,
+        state: ConnectionState,
+        remote_address: str,
+        observed_at: datetime,
+        params: list[Any],
+        record: dict[str, Any],
+    ) -> None:
+        return
 
     def _assess_target_context(
         self,
@@ -1853,6 +1961,12 @@ class StratumIngressService:
         async with send_lock:
             writer.write(encoded)
             await writer.drain()
+        if payload.get("method") == "mining.notify" and state is not None:
+            self._remember_notify_debug_context(
+                state=state,
+                remote_address=remote_address,
+                payload=payload,
+            )
 
     async def _append_loop(self) -> None:
         log_path = self._config.activity_log_path
