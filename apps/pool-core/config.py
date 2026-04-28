@@ -9,6 +9,7 @@ MIN_HASHRATE_ASSUMED_SHARE_DIFFICULTY = 0.001
 DEFAULT_STRATUM_VARDIFF_INITIAL_DIFFICULTY = 0.1
 DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY = 0.001
 DEFAULT_STRATUM_VARDIFF_MAX_DIFFICULTY = 64.0
+DEFAULT_STRATUM_WIRE_DIFFICULTY_SCALE = 65536.0
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -58,6 +59,7 @@ class PoolCoreConfig:
     activity_log_retention_files: int
     notify_debug_capture_limit: int
     stratum_notify_clean_jobs_legacy: bool
+    stratum_wire_difficulty_scale: float
     stratum_vardiff_enabled: bool
     stratum_vardiff_initial_difficulty: float
     stratum_vardiff_min_difficulty: float
@@ -252,6 +254,15 @@ def load_config() -> PoolCoreConfig:
         ),
         stratum_notify_clean_jobs_legacy=_env_bool(
             "PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY", False
+        ),
+        stratum_wire_difficulty_scale=max(
+            1.0,
+            float(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE",
+                    str(DEFAULT_STRATUM_WIRE_DIFFICULTY_SCALE),
+                )
+            ),
         ),
         stratum_vardiff_enabled=_env_bool(
             "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED", False

@@ -24,6 +24,7 @@ from runtime_io import write_json_atomic
 from pepepow_pow import PepepowPowError, blake3_hash, hoohash_v110
 from stratum_protocol import (
     ConnectionState,
+    DEFAULT_WORKER_NAME,
     StratumProtocolError,
     authorize_identity,
     difficulty_notification,
@@ -152,7 +153,8 @@ class NotifyProbeMetadata:
 
 @dataclass
 class DifficultyProbeMetadata:
-    difficulty: float
+    effective_difficulty: float
+    miner_wire_difficulty: float
     sent_at: datetime
     notify_followed_immediately: bool = False
 
@@ -589,11 +591,21 @@ class StratumIngressService:
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
                 state.last_difficulty_reason = "authorize-fixed"
-                notifications.append(difficulty_notification(desired_difficulty))
-                self._record_difficulty_probe(state, desired_difficulty)
+                miner_wire_difficulty = self._miner_wire_difficulty(
+                    desired_difficulty
+                )
+                notifications.append(
+                    difficulty_notification(miner_wire_difficulty)
+                )
+                self._record_difficulty_probe(
+                    state,
+                    effective_difficulty=desired_difficulty,
+                    miner_wire_difficulty=miner_wire_difficulty,
+                )
                 self._log_difficulty_sent(
                     state,
-                    difficulty=desired_difficulty,
+                    effective_difficulty=desired_difficulty,
+                    miner_wire_difficulty=miner_wire_difficulty,
                     reason="authorize-fixed",
                     remote_address=remote_address,
                 )
@@ -774,7 +786,12 @@ class StratumIngressService:
                 notifications.append(vardiff_message)
                 difficulty_value = vardiff_message.get("params", [None])[0]
                 if isinstance(difficulty_value, (int, float)):
-                    self._record_difficulty_probe(state, float(difficulty_value))
+                    self._record_difficulty_probe(
+                        state,
+                        effective_difficulty=state.current_difficulty
+                        or self._initial_session_difficulty(),
+                        miner_wire_difficulty=float(difficulty_value),
+                    )
                 notify_message = self._new_notify_message(state)
                 LOGGER.info(
                     "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s reason=vardiff-retarget",
@@ -1950,11 +1967,22 @@ class StratumIngressService:
             params = payload.get("params")
             if isinstance(params, list) and params:
                 difficulty = params[0]
+            effective_share_difficulty = (
+                state.current_difficulty if state is not None else None
+            )
+            difficulty_scale = (
+                getattr(self._config, "stratum_wire_difficulty_scale", None)
+                if hasattr(self, "_config")
+                else None
+            )
             LOGGER.info(
-                "Wire send: session=%s remote=%s method=mining.set_difficulty difficulty=%s reason=%s",
+                "Wire send: session=%s remote=%s method=mining.set_difficulty difficulty=%s effectiveShareDifficulty=%s minerWireDifficulty=%s difficultyScale=%s reason=%s",
                 state.session_id if state is not None else "unknown",
                 remote_address or "unknown",
                 difficulty,
+                effective_share_difficulty,
+                difficulty,
+                difficulty_scale,
                 state.last_difficulty_reason if state is not None else "unknown",
             )
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -2105,7 +2133,18 @@ class StratumIngressService:
                     "acceptedShares": stats.accepted_share_count,
                     "rejectedShares": stats.rejected_share_count,
                     "rejectReasonCounts": stats.reject_reason_counts,
-                    "advertisedDifficulty": state.current_difficulty,
+                    "advertisedDifficulty": self._miner_wire_difficulty(
+                        state.current_difficulty
+                    )
+                    if state.current_difficulty is not None
+                    else None,
+                    "effectiveShareDifficulty": state.current_difficulty,
+                    "minerWireDifficulty": self._miner_wire_difficulty(
+                        state.current_difficulty
+                    )
+                    if state.current_difficulty is not None
+                    else None,
+                    "difficultyScale": self._config.stratum_wire_difficulty_scale,
                     "cleanJobsLegacy": state.clean_jobs_legacy,
                     "lastShareAt": _isoformat_or_none(stats.last_share_at),
                     "currentJobId": state.current_job_id,
@@ -2196,13 +2235,19 @@ class StratumIngressService:
         return probe if isinstance(probe, NotifyProbeMetadata) else None
 
     def _record_difficulty_probe(
-        self, state: ConnectionState, difficulty: float, sent_at: datetime | None = None
+        self,
+        state: ConnectionState,
+        *,
+        effective_difficulty: float,
+        miner_wire_difficulty: float,
+        sent_at: datetime | None = None,
     ) -> None:
         setattr(
             state,
             "_latest_difficulty_probe",
             DifficultyProbeMetadata(
-                difficulty=difficulty,
+                effective_difficulty=effective_difficulty,
+                miner_wire_difficulty=miner_wire_difficulty,
                 sent_at=sent_at or utc_now(),
             ),
         )
@@ -2267,8 +2312,15 @@ class StratumIngressService:
                 if notify_probe is not None
                 else None
             ),
-            "latestDifficulty": (
-                difficulty_probe.difficulty if difficulty_probe is not None else None
+            "latestEffectiveShareDifficulty": (
+                difficulty_probe.effective_difficulty
+                if difficulty_probe is not None
+                else None
+            ),
+            "latestMinerWireDifficulty": (
+                difficulty_probe.miner_wire_difficulty
+                if difficulty_probe is not None
+                else None
             ),
             "latestDifficultySentAt": (
                 _isoformat_optional(difficulty_probe.sent_at)
@@ -2309,21 +2361,29 @@ class StratumIngressService:
     def _synthetic_difficulty(self) -> float:
         return self._config.hashrate_assumed_share_difficulty
 
+    def _miner_wire_difficulty(self, effective_difficulty: float | None) -> float | None:
+        if effective_difficulty is None:
+            return None
+        return effective_difficulty * self._config.stratum_wire_difficulty_scale
+
     def _log_difficulty_sent(
         self,
         state: ConnectionState,
         *,
-        difficulty: float,
+        effective_difficulty: float,
+        miner_wire_difficulty: float,
         reason: str,
         remote_address: str | None = None,
     ) -> None:
         LOGGER.info(
-            "Difficulty sent: session=%s remote=%s wallet=%s worker=%s difficulty=%s reason=%s vardiffEnabled=%s",
+            "Difficulty sent: session=%s remote=%s wallet=%s worker=%s effectiveShareDifficulty=%s minerWireDifficulty=%s difficultyScale=%s reason=%s vardiffEnabled=%s",
             state.session_id,
             remote_address or "unknown",
             state.authorized_wallet or "unknown",
             state.authorized_worker or DEFAULT_WORKER_NAME,
-            difficulty,
+            effective_difficulty,
+            miner_wire_difficulty,
+            self._config.stratum_wire_difficulty_scale,
             reason,
             self._config.stratum_vardiff_enabled,
         )
@@ -2391,20 +2451,24 @@ class StratumIngressService:
 
         state.current_difficulty = next_difficulty
         session_stats.vardiff_last_retarget_at = observed_at
+        miner_wire_difficulty = self._miner_wire_difficulty(next_difficulty)
         LOGGER.info(
-            "Vardiff retarget: session=%s difficulty=%s averageShareInterval=%.3f vardiffSamples=%s",
+            "Vardiff retarget: session=%s effectiveShareDifficulty=%s minerWireDifficulty=%s difficultyScale=%s averageShareInterval=%.3f vardiffSamples=%s",
             state.session_id,
             next_difficulty,
+            miner_wire_difficulty,
+            self._config.stratum_wire_difficulty_scale,
             average_interval,
             session_stats.vardiff_sample_count,
         )
         state.last_difficulty_reason = "vardiff-retarget"
         self._log_difficulty_sent(
             state,
-            difficulty=next_difficulty,
+            effective_difficulty=next_difficulty,
+            miner_wire_difficulty=miner_wire_difficulty,
             reason="vardiff-retarget",
         )
-        return difficulty_notification(next_difficulty)
+        return difficulty_notification(miner_wire_difficulty)
 
     def _clamp_vardiff(self, difficulty: float) -> float:
         minimum = self._config.stratum_vardiff_min_difficulty

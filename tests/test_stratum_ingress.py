@@ -162,6 +162,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.stratum_vardiff_retarget_interval_seconds, 90.0)
         self.assertEqual(config.stratum_vardiff_min_shares, 5)
 
+    def test_load_config_reads_stratum_wire_difficulty_scale(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE": "65536"},
+            clear=False,
+        ):
+            config = pool_core_config.load_config()
+
+        self.assertEqual(config.stratum_wire_difficulty_scale, 65536.0)
+
     def test_load_config_allows_fixed_stratum_difficulty_of_point_zero_zero_one(self):
         with mock.patch.dict(
             "os.environ",
@@ -783,11 +793,17 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
                 self.assertEqual(
                     difficulty_message["params"],
-                    [config.stratum_vardiff_initial_difficulty],
+                    [65.536],
                 )
                 self.assertEqual(notify_message["method"], "mining.notify")
                 self.assertEqual(len(notify_message["params"]), 9)
                 self.assertTrue(notify_message["params"][8])
+                issued_job = service._job_manager.get_job(notify_message["params"][0])
+                self.assertIsNotNone(issued_job)
+                self.assertEqual(
+                    issued_job.assigned_difficulty,
+                    config.stratum_vardiff_initial_difficulty,
+                )
 
                 submit_response = await self._rpc_call(
                     reader,
@@ -835,6 +851,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     share_event["shareValidationMode"], "structural-skeleton"
                 )
+                snapshot = self._load_json(config.activity_snapshot_output_path)
+                active_sessions = snapshot["activeSessions"]
+                self.assertEqual(len(active_sessions), 1)
+                session = next(iter(active_sessions.values()))
+                self.assertEqual(
+                    session["effectiveShareDifficulty"],
+                    config.stratum_vardiff_initial_difficulty,
+                )
+                self.assertEqual(session["minerWireDifficulty"], 65.536)
+                self.assertEqual(session["difficultyScale"], 65536.0)
 
                 await self._wait_for(
                     lambda: (
@@ -906,13 +932,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue((await self._read_json(reader))["result"])
                     difficulty_message = await self._read_json(reader)
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
-                self.assertEqual(difficulty_message["params"], [0.1])
+                self.assertEqual(difficulty_message["params"], [6553.6])
                 combined_logs = "\n".join(captured.output)
                 self.assertIn("Difficulty sent: session=", combined_logs)
                 self.assertIn("remote=", combined_logs)
                 self.assertIn("wallet=PEPEPOW1KnownWalletAddress000000", combined_logs)
                 self.assertIn("worker=rig01", combined_logs)
-                self.assertIn("difficulty=0.1", combined_logs)
+                self.assertIn("effectiveShareDifficulty=0.1", combined_logs)
+                self.assertIn("minerWireDifficulty=6553.6", combined_logs)
+                self.assertIn("difficultyScale=65536.0", combined_logs)
                 self.assertIn("reason=authorize-fixed", combined_logs)
                 self.assertIn("vardiffEnabled=True", combined_logs)
             finally:
@@ -946,14 +974,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.current_difficulty, 0.2)
         self.assertEqual(message["method"], "mining.set_difficulty")
-        self.assertEqual(message["params"], [0.2])
+        self.assertEqual(message["params"], [13107.2])
         combined_logs = "\n".join(captured.output)
         self.assertIn("Vardiff retarget: session=", combined_logs)
         self.assertIn("Difficulty sent: session=", combined_logs)
         self.assertIn("remote=unknown", combined_logs)
         self.assertIn("wallet=walletA", combined_logs)
         self.assertIn("worker=rigA", combined_logs)
-        self.assertIn("difficulty=0.2", combined_logs)
+        self.assertIn("effectiveShareDifficulty=0.2", combined_logs)
+        self.assertIn("minerWireDifficulty=13107.2", combined_logs)
         self.assertIn("reason=vardiff-retarget", combined_logs)
         self.assertIn("vardiffEnabled=True", combined_logs)
 
@@ -1022,7 +1051,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats.vardiff_sample_count, 13)
         self.assertEqual(state.current_difficulty, 0.2)
-        self.assertEqual(message["params"], [0.2])
+        self.assertEqual(message["params"], [13107.2])
 
     def test_vardiff_retarget_next_notify_carries_new_assigned_difficulty(self):
         service = StratumIngressService(
@@ -4130,6 +4159,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         activity_log_retention_files: int = 8,
         notify_debug_capture_limit: int = 0,
         stratum_notify_clean_jobs_legacy: bool = False,
+        stratum_wire_difficulty_scale: float = 65536.0,
         stratum_vardiff_enabled: bool = False,
         stratum_vardiff_initial_difficulty: float = 0.1,
         stratum_vardiff_min_difficulty: float = 0.01,
@@ -4174,6 +4204,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             activity_log_retention_files=activity_log_retention_files,
             notify_debug_capture_limit=notify_debug_capture_limit,
             stratum_notify_clean_jobs_legacy=stratum_notify_clean_jobs_legacy,
+            stratum_wire_difficulty_scale=stratum_wire_difficulty_scale,
             stratum_vardiff_enabled=stratum_vardiff_enabled,
             stratum_vardiff_initial_difficulty=stratum_vardiff_initial_difficulty,
             stratum_vardiff_min_difficulty=stratum_vardiff_min_difficulty,

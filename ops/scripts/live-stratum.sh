@@ -55,6 +55,7 @@ RPC_USER=""
 RPC_PASSWORD=""
 RPC_TIMEOUT_SECONDS=""
 VARDIFF_ENABLED=""
+STRATUM_WIRE_DIFFICULTY_SCALE=""
 VARDIFF_INITIAL_DIFFICULTY=""
 VARDIFF_MIN_DIFFICULTY=""
 VARDIFF_MAX_DIFFICULTY=""
@@ -92,6 +93,7 @@ set_effective_defaults() {
   RPC_PASSWORD="${PEPEPOWD_RPC_PASSWORD:-}"
   RPC_TIMEOUT_SECONDS="${PEPEPOWD_RPC_TIMEOUT_SECONDS:-5}"
   VARDIFF_ENABLED="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED:-false}"
+  STRATUM_WIRE_DIFFICULTY_SCALE="${PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE:-65536}"
   VARDIFF_INITIAL_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY:-0.1}"
   VARDIFF_MIN_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY:-0.01}"
   VARDIFF_MAX_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MAX_DIFFICULTY:-64}"
@@ -118,6 +120,7 @@ load_launch_env_if_present() {
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_version_source_order
+  local loaded_stratum_wire_difficulty_scale
   local loaded_vardiff_enabled loaded_vardiff_initial_difficulty
   local loaded_vardiff_min_difficulty loaded_vardiff_max_difficulty
   local loaded_vardiff_target_share_interval loaded_vardiff_retarget_interval
@@ -149,6 +152,7 @@ load_launch_env_if_present() {
   loaded_rpc_password="$(launch_env_value PEPEPOWD_RPC_PASSWORD)"
   loaded_rpc_timeout="$(launch_env_value PEPEPOWD_RPC_TIMEOUT_SECONDS)"
   loaded_version_source_order="$(launch_env_value PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED)"
+  loaded_stratum_wire_difficulty_scale="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE)"
   loaded_vardiff_enabled="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED)"
   loaded_vardiff_initial_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY)"
   loaded_vardiff_min_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY)"
@@ -222,6 +226,9 @@ load_launch_env_if_present() {
   if [[ -z "${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED+x}" && -n "${loaded_version_source_order}" ]]; then
     VERSION_SOURCE_ORDER="${loaded_version_source_order}"
   fi
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE+x}" && -n "${loaded_stratum_wire_difficulty_scale}" ]]; then
+    STRATUM_WIRE_DIFFICULTY_SCALE="${loaded_stratum_wire_difficulty_scale}"
+  fi
   if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED+x}" && -n "${loaded_vardiff_enabled}" ]]; then
     VARDIFF_ENABLED="${loaded_vardiff_enabled}"
   fi
@@ -268,8 +275,11 @@ print_paths() {
   cat <<EOF
 endpoint: stratum+tcp://${PUBLIC_HOST}:${PORT}
 bind: ${BIND_HOST}:${PORT}
-effective_difficulty: ${SHARE_DIFFICULTY}
-difficulty_source: ${LAUNCH_ENV_FILE} -> PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY
+hashrate_assumed_share_difficulty: ${SHARE_DIFFICULTY}
+hashrate_assumed_share_difficulty_source: ${LAUNCH_ENV_FILE} -> PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY
+stratum_wire_difficulty_scale: ${STRATUM_WIRE_DIFFICULTY_SCALE}
+fixed_effective_share_difficulty: ${VARDIFF_INITIAL_DIFFICULTY}
+fixed_effective_share_difficulty_source: ${LAUNCH_ENV_FILE} -> PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY
 estimated_hashrate_difficulty: ${ESTIMATED_HASHRATE_SHARE_DIFFICULTY}
 estimated_hashrate_difficulty_source: ${LAUNCH_ENV_FILE} -> PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY
 notify_interval_seconds: ${JOB_INTERVAL_SECONDS}
@@ -398,6 +408,7 @@ PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
 PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
 PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY=${CLEAN_JOBS_LEGACY}
 PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED=${VERSION_SOURCE_ORDER}
+PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE=${STRATUM_WIRE_DIFFICULTY_SCALE}
 PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED=${VARDIFF_ENABLED}
 PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY=${VARDIFF_INITIAL_DIFFICULTY}
 PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY=${VARDIFF_MIN_DIFFICULTY}
@@ -458,7 +469,9 @@ for sid, session in active_sessions.items():
     print(f"  remote: {session.get('remoteAddress')}")
     print(f"  worker: {session.get('wallet')}.{session.get('worker')}")
     print(f"  submits: {session.get('submitsReceived')} (ok:{session.get('acceptedShares')} / rej:{session.get('rejectedShares')})")
-    print(f"  diff: {session.get('advertisedDifficulty')}")
+    print(f"  effective_share_diff: {session.get('effectiveShareDifficulty')}")
+    print(f"  miner_wire_diff: {session.get('minerWireDifficulty')}")
+    print(f"  difficulty_scale: {session.get('difficultyScale')}")
     print(f"  legacy_notify: {session.get('cleanJobsLegacy')}")
     print(f"  last_share: {session.get('lastShareAt')}")
     if session.get("rejectReasonCounts"):
