@@ -55,6 +55,7 @@ RPC_USER=""
 RPC_PASSWORD=""
 RPC_TIMEOUT_SECONDS=""
 VARDIFF_ENABLED=""
+LOW_DIFF_SHARE_FULL_LOG_EVERY_N=""
 STRATUM_WIRE_DIFFICULTY_SCALE=""
 VARDIFF_INITIAL_DIFFICULTY=""
 VARDIFF_MIN_DIFFICULTY=""
@@ -93,6 +94,7 @@ set_effective_defaults() {
   RPC_PASSWORD="${PEPEPOWD_RPC_PASSWORD:-}"
   RPC_TIMEOUT_SECONDS="${PEPEPOWD_RPC_TIMEOUT_SECONDS:-5}"
   VARDIFF_ENABLED="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED:-false}"
+  LOW_DIFF_SHARE_FULL_LOG_EVERY_N="${PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N:-1}"
   STRATUM_WIRE_DIFFICULTY_SCALE="${PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE:-65536}"
   VARDIFF_INITIAL_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY:-0.1}"
   VARDIFF_MIN_DIFFICULTY="${PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY:-0.01}"
@@ -120,6 +122,7 @@ load_launch_env_if_present() {
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_version_source_order
+  local loaded_low_diff_share_full_log_every_n
   local loaded_stratum_wire_difficulty_scale
   local loaded_vardiff_enabled loaded_vardiff_initial_difficulty
   local loaded_vardiff_min_difficulty loaded_vardiff_max_difficulty
@@ -152,6 +155,7 @@ load_launch_env_if_present() {
   loaded_rpc_password="$(launch_env_value PEPEPOWD_RPC_PASSWORD)"
   loaded_rpc_timeout="$(launch_env_value PEPEPOWD_RPC_TIMEOUT_SECONDS)"
   loaded_version_source_order="$(launch_env_value PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED)"
+  loaded_low_diff_share_full_log_every_n="$(launch_env_value PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N)"
   loaded_stratum_wire_difficulty_scale="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE)"
   loaded_vardiff_enabled="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED)"
   loaded_vardiff_initial_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY)"
@@ -225,6 +229,9 @@ load_launch_env_if_present() {
   fi
   if [[ -z "${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED+x}" && -n "${loaded_version_source_order}" ]]; then
     VERSION_SOURCE_ORDER="${loaded_version_source_order}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N+x}" && -n "${loaded_low_diff_share_full_log_every_n}" ]]; then
+    LOW_DIFF_SHARE_FULL_LOG_EVERY_N="${loaded_low_diff_share_full_log_every_n}"
   fi
   if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE+x}" && -n "${loaded_stratum_wire_difficulty_scale}" ]]; then
     STRATUM_WIRE_DIFFICULTY_SCALE="${loaded_stratum_wire_difficulty_scale}"
@@ -408,6 +415,7 @@ PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
 PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
 PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY=${CLEAN_JOBS_LEGACY}
 PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED=${VERSION_SOURCE_ORDER}
+PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N=${LOW_DIFF_SHARE_FULL_LOG_EVERY_N}
 PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE=${STRATUM_WIRE_DIFFICULTY_SCALE}
 PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED=${VARDIFF_ENABLED}
 PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY=${VARDIFF_INITIAL_DIFFICULTY}
@@ -964,6 +972,7 @@ start_service() {
     export PEPEPOWD_RPC_TIMEOUT_SECONDS="${RPC_TIMEOUT_SECONDS}"
     export PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY="${CLEAN_JOBS_LEGACY}"
     export PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED="${VERSION_SOURCE_ORDER}"
+    export PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N="${LOW_DIFF_SHARE_FULL_LOG_EVERY_N}"
     export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED="${VARDIFF_ENABLED}"
     export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY="${VARDIFF_INITIAL_DIFFICULTY}"
     export PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY="${VARDIFF_MIN_DIFFICULTY}"
