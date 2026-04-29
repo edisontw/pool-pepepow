@@ -601,25 +601,13 @@ class StratumIngressService:
             desired_difficulty = self._initial_session_difficulty()
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
-                state.last_difficulty_reason = "authorize-fixed"
-                miner_wire_difficulty = self._miner_wire_difficulty(
-                    desired_difficulty
-                )
-                notifications.append(
-                    difficulty_notification(miner_wire_difficulty)
-                )
-                self._record_difficulty_probe(
+                difficulty_message = self._current_difficulty_notification(
                     state,
-                    effective_difficulty=desired_difficulty,
-                    miner_wire_difficulty=miner_wire_difficulty,
-                )
-                self._log_difficulty_sent(
-                    state,
-                    effective_difficulty=desired_difficulty,
-                    miner_wire_difficulty=miner_wire_difficulty,
                     reason="authorize-fixed",
                     remote_address=remote_address,
                 )
+                if difficulty_message is not None:
+                    notifications.append(difficulty_message)
             notify_message = self._new_notify_message(state)
             LOGGER.info(
                 "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s",
@@ -2021,6 +2009,10 @@ class StratumIngressService:
                 if latest_anchor is not None and state.last_notified_anchor == latest_anchor:
                     continue
                 try:
+                    difficulty_message = self._current_difficulty_notification(
+                        state,
+                        reason="notify-clean-job-repeat",
+                    )
                     notify_message = self._new_notify_message(state)
                     LOGGER.info(
                         "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s",
@@ -2029,6 +2021,13 @@ class StratumIngressService:
                         state.previous_job_id,
                         notify_message["params"][8],
                     )
+                    if difficulty_message is not None:
+                        await self._send_message(
+                            writer,
+                            send_lock,
+                            difficulty_message,
+                            state=state,
+                        )
                     await self._send_message(
                         writer,
                         send_lock,
@@ -2450,6 +2449,32 @@ class StratumIngressService:
         if effective_difficulty is None:
             return None
         return effective_difficulty * self._config.stratum_wire_difficulty_scale
+
+    def _current_difficulty_notification(
+        self,
+        state: ConnectionState,
+        *,
+        reason: str,
+        remote_address: str | None = None,
+    ) -> dict[str, Any] | None:
+        effective_difficulty = state.current_difficulty
+        miner_wire_difficulty = self._miner_wire_difficulty(effective_difficulty)
+        if effective_difficulty is None or miner_wire_difficulty is None:
+            return None
+        state.last_difficulty_reason = reason
+        self._record_difficulty_probe(
+            state,
+            effective_difficulty=effective_difficulty,
+            miner_wire_difficulty=miner_wire_difficulty,
+        )
+        self._log_difficulty_sent(
+            state,
+            effective_difficulty=effective_difficulty,
+            miner_wire_difficulty=miner_wire_difficulty,
+            reason=reason,
+            remote_address=remote_address,
+        )
+        return difficulty_notification(miner_wire_difficulty)
 
     def _log_difficulty_sent(
         self,

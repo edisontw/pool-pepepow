@@ -1243,8 +1243,18 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(authorize_response["result"])
                 self.assertIsNotNone(first_notify)
 
-                periodic_notify = await asyncio.wait_for(self._read_json(reader), timeout=2.5)
+                periodic_difficulty = await asyncio.wait_for(
+                    self._read_json(reader), timeout=2.5
+                )
+                periodic_notify = await asyncio.wait_for(
+                    self._read_json(reader), timeout=2.5
+                )
+                self.assertEqual(periodic_difficulty["method"], "mining.set_difficulty")
                 self.assertEqual(periodic_notify["method"], "mining.notify")
+                self.assertEqual(
+                    periodic_difficulty["params"],
+                    [config.stratum_vardiff_initial_difficulty * config.stratum_wire_difficulty_scale],
+                )
                 self.assertNotEqual(periodic_notify["params"][0], first_notify["params"][0])
             finally:
                 if writer is not None:
@@ -3353,10 +3363,18 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 await self._read_json(reader)
                 await self._read_json(reader)
                 first_notify = await self._read_json(reader)
+                second_difficulty = await asyncio.wait_for(
+                    self._read_json(reader), timeout=2.5
+                )
                 second_notify = await asyncio.wait_for(self._read_json(reader), timeout=2.5)
 
                 self.assertEqual(first_notify["method"], "mining.notify")
+                self.assertEqual(second_difficulty["method"], "mining.set_difficulty")
                 self.assertEqual(second_notify["method"], "mining.notify")
+                self.assertEqual(
+                    second_difficulty["params"],
+                    [config.stratum_vardiff_initial_difficulty * config.stratum_wire_difficulty_scale],
+                )
 
                 response = await self._rpc_call(
                     reader,
