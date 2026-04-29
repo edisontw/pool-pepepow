@@ -79,6 +79,13 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _reverse_hex_bytes(hex_value: str | None) -> str | None:
+    normalized = _normalize_optional_hex(hex_value)
+    if normalized is None:
+        return None
+    return bytes.fromhex(normalized)[::-1].hex()
+
+
 @dataclass(frozen=True)
 class ShareEnvelope:
     sequence: int
@@ -1507,6 +1514,8 @@ class StratumIngressService:
                     "comparisonStage": "share-hash-compare",
                     "reasonCode": "block-candidate",
                     "localComputedHash": share_hash.hex(),
+                    "localComputedHashReversed": _reverse_hex_bytes(share_hash.hex()),
+                    "localComputedHashOrder": "canonical-big-endian-target-compare",
                     **threshold_summary,
                 },
             )
@@ -1519,6 +1528,8 @@ class StratumIngressService:
                     "comparisonStage": "share-hash-compare",
                     "reasonCode": "pool-share",
                     "localComputedHash": share_hash.hex(),
+                    "localComputedHashReversed": _reverse_hex_bytes(share_hash.hex()),
+                    "localComputedHashOrder": "canonical-big-endian-target-compare",
                     **threshold_summary,
                 },
             )
@@ -3085,6 +3096,10 @@ def _build_share_hash_diagnostic(
         ),
         "header80Hex": header_hex,
         "localComputedHash": share_hash.hex() if share_hash is not None else None,
+        "localComputedHashReversed": (
+            _reverse_hex_bytes(share_hash.hex()) if share_hash is not None else None
+        ),
+        "localComputedHashOrder": "canonical-big-endian-target-compare",
         "comparedTarget": normalized_target,
         "matrixSeedBlake3": matrix_seed_blake3,
         "headerHashBlake3": header_hash_blake3,

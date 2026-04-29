@@ -186,6 +186,20 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.stratum_vardiff_initial_difficulty, 0.001)
         self.assertEqual(config.stratum_vardiff_min_difficulty, 0.001)
 
+    def test_load_config_allows_fixed_stratum_difficulty_of_point_zero_zero_zero_zero_zero_one_five(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_INITIAL_DIFFICULTY": "0.0000015",
+                "PEPEPOW_POOL_CORE_STRATUM_VARDIFF_MIN_DIFFICULTY": "0.0000015",
+            },
+            clear=False,
+        ):
+            config = pool_core_config.load_config()
+
+        self.assertEqual(config.stratum_vardiff_initial_difficulty, 0.0000015)
+        self.assertEqual(config.stratum_vardiff_min_difficulty, 0.0000015)
+
     def test_pepepow_header_hash_matches_known_chain_vector(self):
         header_hex = (
             "0040002038e31388c54124146478ff691985eecd02610db91efbc9cd7aabca4900000000"
@@ -1409,6 +1423,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(
                     share_event["shareHashDiagnostic"]["localComputedHash"], str
                 )
+                local_hash = share_event["shareHashDiagnostic"]["localComputedHash"]
+                reversed_local_hash = bytes.fromhex(local_hash)[::-1].hex()
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["localComputedHashReversed"],
+                    reversed_local_hash,
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["localComputedHashOrder"],
+                    "canonical-big-endian-target-compare",
+                )
                 self.assertEqual(
                     share_event["shareHashDiagnostic"]["inputSummary"]["ntime"],
                     notify_message["params"][7],
@@ -1719,8 +1743,17 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     "candidate-prepared-complete",
                 )
                 self.assertEqual(
-                    share_event["shareHashDiagnostic"]["shareTargetUsed"],
-                    f"{stratum_ingress.STRATUM_DIFF1_TARGET:064x}",
+                    share_event["shareHashDiagnostic"]["localComputedHashOrder"],
+                    "canonical-big-endian-target-compare",
+                )
+                self.assertIsInstance(
+                    share_event["shareHashDiagnostic"]["shareTargetUsed"], str
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["localComputedHashReversed"],
+                    bytes.fromhex(
+                        share_event["shareHashDiagnostic"]["localComputedHash"]
+                    )[::-1].hex(),
                 )
                 self.assertEqual(
                     share_event["shareHashDiagnostic"]["blockTargetUsed"],
@@ -2666,6 +2699,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     share_event["shareHashDiagnostic"]["shareHashComparisonMode"],
                     "effective-pool-share-target-and-block-target",
+                )
+                local_hash = share_event["shareHashDiagnostic"]["localComputedHash"]
+                reversed_local_hash = bytes.fromhex(local_hash)[::-1].hex()
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["localComputedHashReversed"],
+                    reversed_local_hash,
+                )
+                self.assertEqual(
+                    share_event["shareHashDiagnostic"]["localComputedHashOrder"],
+                    "canonical-big-endian-target-compare",
                 )
                 self.assertFalse(self._candidate_event_log_path(config).exists())
             finally:
