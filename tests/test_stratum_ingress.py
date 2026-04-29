@@ -172,6 +172,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(config.stratum_wire_difficulty_scale, 65536.0)
 
+    def test_load_config_reads_low_diff_share_full_log_every_n(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N": "10"},
+            clear=False,
+        ):
+            config = pool_core_config.load_config()
+
+        self.assertEqual(config.low_diff_share_full_log_every_n, 10)
+
     def test_load_config_allows_fixed_stratum_difficulty_of_point_zero_zero_one(self):
         with mock.patch.dict(
             "os.environ",
@@ -4201,6 +4211,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         activity_log_rotate_bytes: int = 32 * 1024 * 1024,
         activity_log_retention_files: int = 8,
         notify_debug_capture_limit: int = 0,
+        low_diff_share_full_log_every_n: int = 1,
         stratum_notify_clean_jobs_legacy: bool = False,
         stratum_wire_difficulty_scale: float = 65536.0,
         stratum_vardiff_enabled: bool = False,
@@ -4245,6 +4256,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             real_submitblock_max_sends=real_submitblock_max_sends,
             activity_log_rotate_bytes=activity_log_rotate_bytes,
             activity_log_retention_files=activity_log_retention_files,
+            low_diff_share_full_log_every_n=low_diff_share_full_log_every_n,
             notify_debug_capture_limit=notify_debug_capture_limit,
             stratum_notify_clean_jobs_legacy=stratum_notify_clean_jobs_legacy,
             stratum_wire_difficulty_scale=stratum_wire_difficulty_scale,
@@ -4387,6 +4399,162 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
 
             self.assertFalse(evidence_path.exists())
+
+
+class LowDifficultyShareLogThrottleTests(unittest.TestCase):
+    def _make_service(self, *, low_diff_share_full_log_every_n: int) -> StratumIngressService:
+        tmp_path = Path(tempfile.mkdtemp())
+        config = StratumIngressTests()._make_config(
+            tmp_path,
+            low_diff_share_full_log_every_n=low_diff_share_full_log_every_n,
+        )
+        return StratumIngressService(config)
+
+    def _make_state(self):
+        state = stratum_protocol.ConnectionState(session_id="sid-1", extranonce1="aabbccdd")
+        state.authorized_wallet = "wallet1"
+        state.authorized_worker = "rig01"
+        state.current_difficulty = 1.0
+        state.clean_jobs_legacy = False
+        return state
+
+    def _make_job(self):
+        class _Job:
+            pass
+
+        job = _Job()
+        job.source = "daemon-template"
+        job.template_anchor = "anchor-1"
+        job.target_context = {"bits": "1d00ffff"}
+        job.preimage_context = {"source": "template-derived"}
+        return job
+
+    def _make_assessment(
+        self,
+        *,
+        accepted: bool,
+        reject_reason: str | None,
+        share_hash_validation_status: str | None,
+    ) -> SubmitAssessment:
+        diagnostic = {
+            "comparisonStage": "share-hash-compare",
+            "reasonCode": reject_reason or "pool-share",
+            "localComputedHash": "11" * 32,
+            "shareTargetUsed": "22" * 32,
+            "blockTargetUsed": "33" * 32,
+            "meetsShareTarget": accepted,
+            "meetsBlockTarget": False,
+        }
+        return SubmitAssessment(
+            job_status="current",
+            submit_job_id="job-1",
+            cached_job=self._make_job(),
+            accepted=accepted,
+            reject_reason=reject_reason,
+            detail="detail-text" if reject_reason is not None else None,
+            duplicate_submit=False,
+            target_validation_status="context-valid",
+            candidate_possible=False,
+            share_hash_validation_status=share_hash_validation_status,
+            share_hash_valid=accepted,
+            share_hash_diagnostic=diagnostic,
+        )
+
+    def _build_payload(self, service: StratumIngressService, assessment: SubmitAssessment, *, sequence: int) -> dict[str, object]:
+        state = self._make_state()
+        return service._build_share_event_payload(
+            assessment=assessment,
+            state=state,
+            cached_job=assessment.cached_job,
+            wallet="wallet1",
+            worker="rig01",
+            login="wallet1.rig01",
+            observed_at=datetime(2026, 4, 29, 12, 0, 0, tzinfo=timezone.utc),
+            remote_address="127.0.0.1:1111",
+            sequence=sequence,
+            submit_job_id=assessment.submit_job_id,
+            submit_params=["wallet1.rig01", "job-1", "00000001", "01020304", "aabbccdd"],
+            accepted_submit=assessment.accepted,
+            accepted_share=assessment.counts_as_accepted_share,
+            share_event_candidate_possible=assessment.candidate_possible,
+        )
+
+    def test_accepted_share_still_writes_full_event(self):
+        service = self._make_service(low_diff_share_full_log_every_n=10)
+        payload = self._build_payload(
+            service,
+            self._make_assessment(
+                accepted=True,
+                reject_reason=None,
+                share_hash_validation_status="share-hash-valid",
+            ),
+            sequence=1,
+        )
+
+        self.assertIn("submit", payload)
+        self.assertIn("shareHashDiagnostic", payload)
+        self.assertIn("targetContext", payload)
+        self.assertIn("preimageContext", payload)
+        self.assertNotIn("lowDifficultyShareLogSampled", payload)
+
+    def test_non_low_difficulty_rejection_still_writes_full_event(self):
+        service = self._make_service(low_diff_share_full_log_every_n=10)
+        payload = self._build_payload(
+            service,
+            self._make_assessment(
+                accepted=False,
+                reject_reason="target-context-mismatch",
+                share_hash_validation_status="preimage-mismatch",
+            ),
+            sequence=1,
+        )
+
+        self.assertIn("submit", payload)
+        self.assertIn("shareHashDiagnostic", payload)
+        self.assertIn("targetContext", payload)
+        self.assertNotIn("lowDifficultyShareLogSampled", payload)
+
+    def test_low_difficulty_share_respects_every_n_throttle(self):
+        service = self._make_service(low_diff_share_full_log_every_n=3)
+        assessment = self._make_assessment(
+            accepted=False,
+            reject_reason="low-difficulty-share",
+            share_hash_validation_status="low-difficulty-share",
+        )
+
+        first = self._build_payload(service, assessment, sequence=1)
+        second = self._build_payload(service, assessment, sequence=2)
+        third = self._build_payload(service, assessment, sequence=3)
+
+        self.assertNotIn("submit", first)
+        self.assertNotIn("shareHashDiagnostic", first)
+        self.assertEqual(first["rejectReason"], "low-difficulty-share")
+        self.assertNotIn("submit", second)
+        self.assertIn("submit", third)
+        self.assertIn("shareHashDiagnostic", third)
+        self.assertEqual(third["lowDifficultyShareLogSampled"], True)
+        self.assertEqual(third["lowDifficultyShareSkippedSinceLastSample"], 2)
+
+    def test_low_difficulty_share_counters_remain_accurate(self):
+        service = self._make_service(low_diff_share_full_log_every_n=20)
+        assessment = self._make_assessment(
+            accepted=False,
+            reject_reason="low-difficulty-share",
+            share_hash_validation_status="low-difficulty-share",
+        )
+
+        for _ in range(3):
+            service._record_submit_validation(assessment)
+
+        self.assertEqual(service._submit_validation_counts["rejected"], 3)
+        self.assertEqual(
+            service._submit_validation_counts["rejectReasonCounts"]["low-difficulty-share"],
+            3,
+        )
+        self.assertEqual(
+            service._submit_validation_counts["shareHashValidationCounts"]["low-difficulty-share"],
+            3,
+        )
 
     def test_reject_evidence_clean_jobs_legacy_false_recorded(self):
         """cleanJobsLegacy=False is faithfully recorded."""

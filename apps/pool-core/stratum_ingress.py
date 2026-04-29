@@ -284,6 +284,10 @@ class StratumIngressService:
             0, int(getattr(config, "notify_debug_capture_limit", 0))
         )
         self._notify_debug_capture_count = 0
+        self._low_diff_share_full_log_every_n = max(
+            1, int(getattr(config, "low_diff_share_full_log_every_n", 1))
+        )
+        self._low_diff_share_skipped_since_last_full = 0
         self._notify_debug_context_by_session_job: OrderedDict[
             tuple[str, str], dict[str, Any]
         ] = OrderedDict()
@@ -703,59 +707,22 @@ class StratumIngressService:
                 and assessment.share_hash_diagnostic.get("meetsBlockTarget") is not True
             ):
                 share_event_candidate_possible = False
-            # Export the final post-resolution assessment values verbatim.
-            payload = {
-                "timestamp": observed_at.replace(microsecond=0)
-                .astimezone(timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z"),
-                "wallet": wallet,
-                "worker": worker,
-                "login": login,
-                "accepted": accepted_submit,
-                "status": "accepted" if accepted_submit else "rejected",
-                "source": "stratum",
-                "remoteAddress": remote_address,
-                "sessionId": state.session_id,
-                "sequence": sequence,
-                "jobId": submit_job_id,
-                "jobStatus": assessment.job_status,
-                "difficulty": state.current_difficulty or self._synthetic_difficulty(),
-                "syntheticWork": cached_job is None or cached_job.source == "synthetic",
-                "blockchainVerified": False,
-                "shareValidationMode": SHARE_VALIDATION_MODE,
-                "rejectReason": assessment.reject_reason,
-                "rejectDetail": assessment.detail,
-                "duplicateSubmit": assessment.duplicate_submit,
-                "targetValidationStatus": assessment.target_validation_status,
-                "candidatePossible": share_event_candidate_possible,
-                "shareHashValidationStatus": assessment.share_hash_validation_status,
-                "shareHashValid": assessment.share_hash_valid,
-                "countsAsAcceptedShare": accepted_share,
-                "jobSource": cached_job.source if cached_job is not None else None,
-                "templateAnchor": (
-                    cached_job.template_anchor if cached_job is not None else None
-                ),
-                "targetContext": (
-                    cached_job.target_context if cached_job is not None else None
-                ),
-                "preimageContext": (
-                    cached_job.preimage_context if cached_job is not None else None
-                ),
-                "submit": request.params,
-            }
-            if assessment.share_hash_diagnostic is not None:
-                candidate_artifact = assessment.share_hash_diagnostic.get("candidateArtifact")
-                if isinstance(candidate_artifact, dict):
-                    candidate_artifact.setdefault(
-                        "attribution",
-                        {
-                            "wallet": wallet,
-                            "worker": worker,
-                            "login": login,
-                        },
-                    )
-                payload["shareHashDiagnostic"] = assessment.share_hash_diagnostic
+            payload = self._build_share_event_payload(
+                assessment=assessment,
+                state=state,
+                cached_job=cached_job,
+                wallet=wallet,
+                worker=worker,
+                login=login,
+                observed_at=observed_at,
+                remote_address=remote_address,
+                sequence=sequence,
+                submit_job_id=submit_job_id,
+                submit_params=request.params,
+                accepted_submit=accepted_submit,
+                accepted_share=accepted_share,
+                share_event_candidate_possible=share_event_candidate_possible,
+            )
             self._maybe_append_share_hash_probe(
                 assessment=assessment,
                 state=state,
@@ -823,6 +790,113 @@ class StratumIngressService:
         return DispatchResult(
             error_response(request.request_id, -32601, "Method not found")
         )
+
+    def _build_share_event_payload(
+        self,
+        *,
+        assessment: SubmitAssessment,
+        state: ConnectionState,
+        cached_job: Any | None,
+        wallet: str,
+        worker: str,
+        login: str,
+        observed_at: datetime,
+        remote_address: str,
+        sequence: int,
+        submit_job_id: str | None,
+        submit_params: list[Any],
+        accepted_submit: bool,
+        accepted_share: bool,
+        share_event_candidate_possible: bool,
+    ) -> dict[str, Any]:
+        # Export the final post-resolution assessment values verbatim unless this is an
+        # unsampled low-difficulty reject, where a reduced payload preserves replayable
+        # counters without repeating heavy diagnostics on every row.
+        payload = {
+                "timestamp": observed_at.replace(microsecond=0)
+                .astimezone(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "wallet": wallet,
+                "worker": worker,
+                "login": login,
+                "accepted": accepted_submit,
+                "status": "accepted" if accepted_submit else "rejected",
+                "source": "stratum",
+                "remoteAddress": remote_address,
+                "sessionId": state.session_id,
+                "sequence": sequence,
+                "jobId": submit_job_id,
+                "jobStatus": assessment.job_status,
+                "difficulty": state.current_difficulty or self._synthetic_difficulty(),
+                "syntheticWork": cached_job is None or cached_job.source == "synthetic",
+                "blockchainVerified": False,
+                "shareValidationMode": SHARE_VALIDATION_MODE,
+                "rejectReason": assessment.reject_reason,
+                "rejectDetail": assessment.detail,
+                "duplicateSubmit": assessment.duplicate_submit,
+                "targetValidationStatus": assessment.target_validation_status,
+                "candidatePossible": share_event_candidate_possible,
+                "shareHashValidationStatus": assessment.share_hash_validation_status,
+                "shareHashValid": assessment.share_hash_valid,
+                "countsAsAcceptedShare": accepted_share,
+                "jobSource": cached_job.source if cached_job is not None else None,
+            }
+        low_diff_full_sampled = False
+        low_diff_skipped_since_last_sample = 0
+        if assessment.reject_reason == "low-difficulty-share":
+            (
+                low_diff_full_sampled,
+                low_diff_skipped_since_last_sample,
+            ) = self._consume_low_diff_share_log_sample()
+        if not assessment.accepted and assessment.reject_reason == "low-difficulty-share":
+            if not low_diff_full_sampled:
+                return {k: v for k, v in payload.items() if v is not None}
+            if self._low_diff_share_full_log_every_n > 1:
+                payload["lowDifficultyShareLogSampled"] = True
+                payload["lowDifficultyShareSkippedSinceLastSample"] = (
+                    low_diff_skipped_since_last_sample
+                )
+        payload.update(
+            {
+                "templateAnchor": (
+                    cached_job.template_anchor if cached_job is not None else None
+                ),
+                "targetContext": (
+                    cached_job.target_context if cached_job is not None else None
+                ),
+                "preimageContext": (
+                    cached_job.preimage_context if cached_job is not None else None
+                ),
+                "submit": submit_params,
+            }
+        )
+        if assessment.share_hash_diagnostic is not None:
+            candidate_artifact = assessment.share_hash_diagnostic.get("candidateArtifact")
+            if isinstance(candidate_artifact, dict):
+                candidate_artifact.setdefault(
+                    "attribution",
+                    {
+                        "wallet": wallet,
+                        "worker": worker,
+                        "login": login,
+                    },
+                )
+            payload["shareHashDiagnostic"] = assessment.share_hash_diagnostic
+        return payload
+
+    def _consume_low_diff_share_log_sample(self) -> tuple[bool, int]:
+        if self._low_diff_share_full_log_every_n <= 1:
+            return True, 0
+        self._low_diff_share_skipped_since_last_full += 1
+        if (
+            self._low_diff_share_skipped_since_last_full
+            < self._low_diff_share_full_log_every_n
+        ):
+            return False, 0
+        skipped_since_last_sample = self._low_diff_share_skipped_since_last_full - 1
+        self._low_diff_share_skipped_since_last_full = 0
+        return True, skipped_since_last_sample
 
     def _assess_submit(
         self,

@@ -57,6 +57,7 @@ class PoolCoreConfig:
     real_submitblock_max_sends: int
     activity_log_rotate_bytes: int
     activity_log_retention_files: int
+    low_diff_share_full_log_every_n: int
     notify_debug_capture_limit: int
     stratum_notify_clean_jobs_legacy: bool
     stratum_wire_difficulty_scale: float
@@ -240,6 +241,15 @@ def load_config() -> PoolCoreConfig:
                 os.getenv(
                     "PEPEPOW_POOL_CORE_ACTIVITY_LOG_RETENTION_FILES",
                     "8",
+                )
+            ),
+        ),
+        low_diff_share_full_log_every_n=max(
+            1,
+            int(
+                os.getenv(
+                    "PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N",
+                    "1",
                 )
             ),
         ),
