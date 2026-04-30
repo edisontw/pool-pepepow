@@ -49,6 +49,8 @@ Purpose:
 - make the effective synthetic difficulty explicit via `launch.env` and `status`
 - support fast `start`, `stop`, `restart`, `status`, `logs`, and `paths` flows
 - rotate `stratum.log` on start when it grows beyond the configured size guard
+- audit candidate probability from a bounded tail of `share-events.jsonl` with
+  `candidate-probability-audit [tail-lines]`
 
 Runtime paths:
 

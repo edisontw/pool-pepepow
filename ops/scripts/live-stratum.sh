@@ -748,6 +748,23 @@ for raw_line in selected:
 PY
 }
 
+candidate_probability_audit_service() {
+  ensure_runtime_dir
+
+  local count
+  count="${2:-100000}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || (( count == 0 )); then
+    echo "candidate-probability-audit count must be a positive integer" >&2
+    return 1
+  fi
+  if [[ ! -f "${SHARE_LOG}" ]]; then
+    echo "candidate_probability_audit: none (share log not found)"
+    return 0
+  fi
+
+  tail -n "${count}" "${SHARE_LOG}" | python3 "${SCRIPT_DIR}/candidate_probability_audit.py" "${count}" "${SHARE_LOG}"
+}
+
 latest_reject_service() {
   ensure_runtime_dir
 
@@ -1121,6 +1138,9 @@ case "${SUBCOMMAND}" in
   candidate-followup-events)
     candidate_followup_events_service "$@"
     ;;
+  candidate-probability-audit)
+    candidate_probability_audit_service "$@"
+    ;;
   latest-reject)
     latest_reject_service
     ;;
@@ -1140,7 +1160,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|logs|paths}" >&2
     exit 1
     ;;
 esac
