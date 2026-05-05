@@ -2737,13 +2737,28 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
-    async def test_activity_snapshot_uses_estimation_difficulty_only(self):
+    async def test_activity_snapshot_uses_fixed_effective_difficulty_for_hashrate(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             config = replace(
                 self._make_config(tmp_path),
                 hashrate_assumed_share_difficulty=1e-08,
                 estimated_hashrate_assumed_share_difficulty=1e-11,
+                stratum_vardiff_enabled=False,
+                stratum_vardiff_initial_difficulty=0.00025,
+            )
+            service = StratumIngressService(config)
+            self.assertEqual(service._synthetic_difficulty(), 1e-08)
+            self.assertEqual(service._engine.assumed_share_difficulty, 0.00025)
+
+    async def test_activity_snapshot_uses_estimation_difficulty_for_vardiff(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = replace(
+                self._make_config(tmp_path),
+                hashrate_assumed_share_difficulty=1e-08,
+                estimated_hashrate_assumed_share_difficulty=1e-11,
+                stratum_vardiff_enabled=True,
             )
             service = StratumIngressService(config)
             self.assertEqual(service._synthetic_difficulty(), 1e-08)

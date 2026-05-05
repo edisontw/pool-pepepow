@@ -242,7 +242,7 @@ class StratumIngressService:
     ) -> None:
         self._config = config
         self._engine = ActivityEngine(
-            assumed_share_difficulty=config.estimated_hashrate_assumed_share_difficulty
+            assumed_share_difficulty=_hashrate_estimation_difficulty(config)
         )
         self._job_manager = TemplateJobManager(config, rpc_client=rpc_client)
         self._queue: asyncio.Queue[ShareEnvelope] = asyncio.Queue(
@@ -2736,6 +2736,12 @@ def _submit_fingerprint(login: str, params: list[Any]) -> str:
 
 def _double_sha256(payload: bytes) -> bytes:
     return hashlib.sha256(hashlib.sha256(payload).digest()).digest()
+
+
+def _hashrate_estimation_difficulty(config: PoolCoreConfig) -> float:
+    if not config.stratum_vardiff_enabled:
+        return config.stratum_vardiff_initial_difficulty
+    return config.estimated_hashrate_assumed_share_difficulty
 
 
 def _share_target_from_difficulty(difficulty: float | None) -> int | None:
