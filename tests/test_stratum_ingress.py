@@ -2620,7 +2620,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 difficulty_message = await self._read_json(reader)
                 notify_message = await self._read_json(reader)
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
-                self.assertEqual(difficulty_message["params"], [0.001])
+                self.assertEqual(difficulty_message["params"], [65.536])
 
                 job_id = notify_message["params"][0]
                 cached_job = service._job_manager.get_job(job_id)
@@ -2634,7 +2634,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 extranonce1 = subscribe_response["result"][1]
                 extranonce2 = "00000001"
                 share_target_int = stratum_ingress._share_target_from_difficulty(
-                    difficulty_message["params"][0]
+                    0.001
                 )
                 self.assertIsNotNone(share_target_int)
                 submit_nonce = None

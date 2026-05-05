@@ -277,6 +277,12 @@ class StratumIngressService:
         self._submit_evidence_path = config.activity_log_path.with_name(
             "submit-evidence.jsonl"
         )
+        self._notify_evidence_path = config.activity_log_path.with_name(
+            "notify-evidence.jsonl"
+        )
+        self._notify_evidence_by_session_job: OrderedDict[
+            tuple[str, str], dict[str, Any]
+        ] = OrderedDict()
         self._notify_debug_capture_path = config.activity_log_path.with_name(
             "notify-debug-capture.jsonl"
         )
@@ -527,7 +533,7 @@ class StratumIngressService:
 
                 if dispatch.start_notify_loop and notify_task is None:
                     notify_task = asyncio.create_task(
-                        self._notify_loop(state, writer, send_lock),
+                        self._notify_loop(state, writer, send_lock, remote_address),
                         name=f"synthetic-notify-{state.session_id}",
                     )
         except ConnectionError:
@@ -1112,6 +1118,10 @@ class StratumIngressService:
         submitted_extranonce2 = params[2] if len(params) > 2 else None
         submitted_ntime = params[3] if len(params) > 3 else None
         submitted_nonce = params[4] if len(params) > 4 else None
+        notify_prevhash_header_hex = self._notify_prevhash_for_submit(
+            state=state,
+            job_id=assessment.submit_job_id,
+        )
 
         config = getattr(self, "_config", None)
         preimage = _build_share_header_preimage(
@@ -1126,6 +1136,7 @@ class StratumIngressService:
                 False,
             )
             is True,
+            prevhash_header_hex=notify_prevhash_header_hex,
         )
         authoritative_reference = None
         if (
@@ -1140,6 +1151,7 @@ class StratumIngressService:
                 extranonce2_hex=submitted_extranonce2.strip(),
                 ntime_hex=submitted_ntime.strip(),
                 nonce_hex=submitted_nonce.strip(),
+                prevhash_header_hex=notify_prevhash_header_hex,
             )
         reconstructed_header_hex = (
             preimage.header.hex() if preimage.header is not None else diag.get("header80Hex")
@@ -1177,6 +1189,27 @@ class StratumIngressService:
         if not is_interesting:
             return
 
+        submit_coinb1 = getattr(cached_job, "coinb1", None)
+        submit_coinb2 = getattr(cached_job, "coinb2", None)
+        submit_merkle_branch = list(getattr(cached_job, "merkle_branch", ()) or ())
+        submit_job_cache_digest = _job_cache_digest(
+            prevhash=notify_prevhash_header_hex or getattr(cached_job, "prevhash", None),
+            coinb1=submit_coinb1,
+            coinb2=submit_coinb2,
+            merkle_branch=submit_merkle_branch,
+            version=getattr(cached_job, "version", None),
+            nbits=getattr(cached_job, "nbits", None),
+            ntime=getattr(cached_job, "ntime", None),
+        )
+        notify_evidence = self._notify_evidence_for_submit(
+            state=state,
+            job_id=assessment.submit_job_id,
+        )
+        notify_job_cache_digest = (
+            notify_evidence.get("jobCacheDigest")
+            if isinstance(notify_evidence, dict)
+            else None
+        )
         record = {
             "timestamp": observed_at.replace(microsecond=0).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             "sessionId": state.session_id,
@@ -1196,9 +1229,9 @@ class StratumIngressService:
             "preimagePrevhash": getattr(cached_job, "prevhash", None),
             "preimageNbits": getattr(cached_job, "nbits", None),
             "preimageJobNtime": getattr(cached_job, "ntime", None),
-            "issuedJobCoinb1": getattr(cached_job, "coinb1", None),
-            "issuedJobCoinb2": getattr(cached_job, "coinb2", None),
-            "issuedJobMerkleBranch": list(getattr(cached_job, "merkle_branch", ()) or ()),
+            "issuedJobCoinb1": submit_coinb1,
+            "issuedJobCoinb2": submit_coinb2,
+            "issuedJobMerkleBranch": submit_merkle_branch,
             "coinbaseHashLocal": reconstructed_coinbase_hash,
             "coinbaseLocalHex": coinbase_sum.get("coinbaseLocalHex"),
             "merkleRoot": reconstructed_merkle_root,
@@ -1227,6 +1260,75 @@ class StratumIngressService:
             "rejectReason": assessment.reject_reason,
             "rejectDetail": assessment.detail,
             "jobContext": assessment.job_status,
+            "notifyEvidenceMatched": isinstance(notify_evidence, dict),
+            "notifyEvidenceDigest": (
+                notify_evidence.get("notifyEvidenceDigest")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitJobCacheDigest": submit_job_cache_digest,
+            "notifyVsSubmitJobCacheDigestMatch": (
+                notify_job_cache_digest == submit_job_cache_digest
+                if isinstance(notify_job_cache_digest, str)
+                and isinstance(submit_job_cache_digest, str)
+                else None
+            ),
+            "notifyPrevhashSent": (
+                notify_evidence.get("prevhashSent")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitPrevhashUsed": notify_prevhash_header_hex
+            or getattr(cached_job, "prevhash", None),
+            "submitPrevhashCached": getattr(cached_job, "prevhash", None),
+            "notifyNbitsSent": (
+                notify_evidence.get("nbitsSent")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitNbitsUsed": getattr(cached_job, "nbits", None),
+            "notifyNtimeSent": (
+                notify_evidence.get("ntimeSent")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitNtimeUsed": getattr(cached_job, "ntime", None),
+            "notifyVersionSent": (
+                notify_evidence.get("versionSent")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitVersionUsed": getattr(cached_job, "version", None),
+            "notifyCoinbase1Sha256": (
+                notify_evidence.get("coinbase1Sha256")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "notifyCoinbase2Sha256": (
+                notify_evidence.get("coinbase2Sha256")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitCoinbase1Sha256": _sha256_hex_from_hex(submit_coinb1),
+            "submitCoinbase2Sha256": _sha256_hex_from_hex(submit_coinb2),
+            "notifyMerkleBranchDigest": (
+                notify_evidence.get("merkleBranchDigest")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitMerkleBranchDigest": _merkle_branch_digest(submit_merkle_branch),
+            "notifyExtranonce1": (
+                notify_evidence.get("extranonce1")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitExtranonce1": submitted_extranonce1,
+            "notifyExtranonce2Size": (
+                notify_evidence.get("extranonce2Size")
+                if isinstance(notify_evidence, dict)
+                else None
+            ),
+            "submitExtranonce2Size": state.extranonce2_size,
         }
         record = {k: v for k, v in record.items() if v is not None}
         try:
@@ -1242,6 +1344,106 @@ class StratumIngressService:
             params=params,
             record=record,
         )
+
+    def _append_notify_evidence(
+        self,
+        *,
+        state: ConnectionState,
+        remote_address: str | None,
+        payload: dict[str, Any],
+    ) -> None:
+        params = payload.get("params")
+        if not isinstance(params, list) or len(params) < 9:
+            return
+        job_id = params[0]
+        if not isinstance(job_id, str) or not job_id:
+            return
+        merkle_branch = params[4] if isinstance(params[4], list) else []
+        record = {
+            "timestamp": utc_now()
+            .replace(microsecond=0)
+            .astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "sessionId": state.session_id,
+            "remoteAddress": remote_address,
+            "jobId": job_id,
+            "difficultyEffective": state.current_difficulty,
+            "difficultyWire": self._miner_wire_difficulty(state.current_difficulty),
+            "difficultyScale": self._config.stratum_wire_difficulty_scale,
+            "cleanJobs": params[8],
+            "extranonce1": state.extranonce1,
+            "extranonce2Size": state.extranonce2_size,
+            "notifyParamCount": len(params),
+            "notifyParamsDigest": _json_sha256_digest(params),
+            "prevhashSent": params[1],
+            "coinbase1Len": _hex_byte_length(params[2]),
+            "coinbase1Prefix": _hex_prefix(params[2]),
+            "coinbase1Suffix": _hex_suffix(params[2]),
+            "coinbase1Sha256": _sha256_hex_from_hex(params[2]),
+            "coinbase2Len": _hex_byte_length(params[3]),
+            "coinbase2Prefix": _hex_prefix(params[3]),
+            "coinbase2Suffix": _hex_suffix(params[3]),
+            "coinbase2Sha256": _sha256_hex_from_hex(params[3]),
+            "merkleBranchCount": len(merkle_branch),
+            "merkleBranchDigest": _merkle_branch_digest(merkle_branch),
+            "versionSent": params[5],
+            "nbitsSent": params[6],
+            "ntimeSent": params[7],
+            "jobCacheDigest": _job_cache_digest(
+                prevhash=params[1],
+                coinb1=params[2],
+                coinb2=params[3],
+                merkle_branch=merkle_branch,
+                version=params[5],
+                nbits=params[6],
+                ntime=params[7],
+            ),
+        }
+        record["notifyEvidenceDigest"] = _json_sha256_digest(
+            {k: v for k, v in record.items() if k not in {"timestamp"}}
+        )
+        record = {k: v for k, v in record.items() if v is not None}
+        evidence = getattr(self, "_notify_evidence_by_session_job", None)
+        if isinstance(evidence, OrderedDict):
+            evidence[(state.session_id, job_id)] = record
+            while len(evidence) > 256:
+                evidence.popitem(last=False)
+        try:
+            self._notify_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._notify_evidence_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        except Exception as exc:
+            LOGGER.error("Failed to append notify evidence: %s", exc)
+
+    def _notify_evidence_for_submit(
+        self,
+        *,
+        state: ConnectionState,
+        job_id: str | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(job_id, str) or not job_id:
+            return None
+        evidence = getattr(self, "_notify_evidence_by_session_job", None)
+        if not isinstance(evidence, dict):
+            return None
+        record = evidence.get((state.session_id, job_id))
+        return record if isinstance(record, dict) else None
+
+    def _notify_prevhash_for_submit(
+        self,
+        *,
+        state: ConnectionState,
+        job_id: str | None,
+    ) -> str | None:
+        evidence = self._notify_evidence_for_submit(state=state, job_id=job_id)
+        if not isinstance(evidence, dict):
+            return None
+        prevhash_sent = evidence.get("prevhashSent")
+        normalized = _normalize_optional_hex(prevhash_sent)
+        if normalized is None or len(normalized) != 64 or not _is_hex_string(normalized):
+            return None
+        return normalized
 
     def _remember_notify_debug_context(
         self,
@@ -1470,6 +1672,10 @@ class StratumIngressService:
             ntime=params[3],
             nonce=params[4],
             version_source_order=getattr(self._config, "pepepow_header_version_source_order_enabled", False) is True,
+            prevhash_header_hex=self._notify_prevhash_for_submit(
+                state=state,
+                job_id=getattr(cached_job, "job_id", None) or params[1],
+            ),
         )
         if preimage.reject_reason is not None:
             return ShareHashCheck(
@@ -1995,6 +2201,7 @@ class StratumIngressService:
         state: ConnectionState,
         writer: asyncio.StreamWriter,
         send_lock: asyncio.Lock,
+        remote_address: str,
     ) -> None:
         while not self._stop_event.is_set() and not writer.is_closing():
             try:
@@ -2027,12 +2234,14 @@ class StratumIngressService:
                             send_lock,
                             difficulty_message,
                             state=state,
+                            remote_address=remote_address,
                         )
                     await self._send_message(
                         writer,
                         send_lock,
                         notify_message,
                         state=state,
+                        remote_address=remote_address,
                     )
                 except ConnectionError:
                     return
@@ -2074,6 +2283,11 @@ class StratumIngressService:
             writer.write(encoded)
             await writer.drain()
         if payload.get("method") == "mining.notify" and state is not None:
+            self._append_notify_evidence(
+                state=state,
+                remote_address=remote_address,
+                payload=payload,
+            )
             self._remember_notify_debug_context(
                 state=state,
                 remote_address=remote_address,
@@ -2981,6 +3195,76 @@ def _hex_digest(raw_hex: Any) -> str | None:
         return None
 
 
+def _sha256_hex_from_hex(raw_hex: Any) -> str | None:
+    normalized = _normalize_optional_hex(raw_hex)
+    if normalized is None or not _is_hex_string(normalized):
+        return None
+    try:
+        return hashlib.sha256(bytes.fromhex(normalized)).hexdigest()
+    except ValueError:
+        return None
+
+
+def _hex_byte_length(raw_hex: Any) -> int | None:
+    normalized = _normalize_optional_hex(raw_hex)
+    if normalized is None or not _is_hex_string(normalized):
+        return None
+    return len(normalized) // 2
+
+
+def _hex_prefix(raw_hex: Any, hex_chars: int = 24) -> str | None:
+    normalized = _normalize_optional_hex(raw_hex)
+    if normalized is None:
+        return None
+    return normalized[:hex_chars]
+
+
+def _hex_suffix(raw_hex: Any, hex_chars: int = 24) -> str | None:
+    normalized = _normalize_optional_hex(raw_hex)
+    if normalized is None:
+        return None
+    return normalized[-hex_chars:]
+
+
+def _json_sha256_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _merkle_branch_digest(merkle_branch: Any) -> str | None:
+    if not isinstance(merkle_branch, list):
+        return None
+    normalized_branch = [
+        value.strip().lower()
+        for value in merkle_branch
+        if isinstance(value, str) and value.strip()
+    ]
+    return _json_sha256_digest(normalized_branch)
+
+
+def _job_cache_digest(
+    *,
+    prevhash: Any,
+    coinb1: Any,
+    coinb2: Any,
+    merkle_branch: Any,
+    version: Any,
+    nbits: Any,
+    ntime: Any,
+) -> str:
+    payload = {
+        "prevhash": _normalize_optional_hex(prevhash),
+        "coinb1Sha256": _sha256_hex_from_hex(coinb1),
+        "coinb2Sha256": _sha256_hex_from_hex(coinb2),
+        "merkleBranchDigest": _merkle_branch_digest(merkle_branch),
+        "version": _normalize_optional_hex(version),
+        "nbits": _normalize_optional_hex(nbits),
+        "ntime": _normalize_optional_hex(ntime),
+    }
+    return _json_sha256_digest(payload)
+
+
 def _isoformat_optional(dt: datetime | None) -> str | None:
     if dt is None:
         return None
@@ -3288,6 +3572,7 @@ def _build_independent_authoritative_header80_reference(
     extranonce2_hex: str,
     ntime_hex: str,
     nonce_hex: str,
+    prevhash_header_hex: str | None = None,
 ) -> dict[str, Any] | None:
     authoritative_context = getattr(cached_job, "authoritative_context", None)
     if not isinstance(authoritative_context, dict):
@@ -3366,7 +3651,13 @@ def _build_independent_authoritative_header80_reference(
         )
         authoritative_field_bytes = {
             "version": bytes.fromhex(version_hex)[::-1],
-            "prevHash": bytes.fromhex(prevhash_hex)[::-1],
+            "prevHash": (
+                bytes.fromhex(prevhash_header_hex)
+                if isinstance(prevhash_header_hex, str)
+                and len(prevhash_header_hex) == 64
+                and _is_hex_string(prevhash_header_hex)
+                else bytes.fromhex(prevhash_hex)[::-1]
+            ),
             "merkleRoot": authoritative_merkle_root,
             "ntime": bytes.fromhex(ntime_hex)[::-1],
             "bits": bytes.fromhex(bits_hex)[::-1],
@@ -5660,6 +5951,7 @@ def _build_share_header_preimage(
     ntime: str,
     nonce: str,
     version_source_order: bool = False,
+    prevhash_header_hex: str | None = None,
 ) -> ShareHeaderPreimage:
     required_hex_fields = {
         "version": getattr(cached_job, "version", None),
@@ -5773,7 +6065,14 @@ def _build_share_header_preimage(
         coinbase = bytes.fromhex(coinb1 + extranonce1_value + extranonce2_value + coinb2)
         version_bytes = bytes.fromhex(version)
         version_le = version_bytes if version_source_order else version_bytes[::-1]
-        prevhash_le = bytes.fromhex(prevhash)[::-1]
+        if (
+            isinstance(prevhash_header_hex, str)
+            and len(prevhash_header_hex) == 64
+            and _is_hex_string(prevhash_header_hex)
+        ):
+            prevhash_le = bytes.fromhex(prevhash_header_hex)
+        else:
+            prevhash_le = bytes.fromhex(prevhash)[::-1]
         ntime_le = bytes.fromhex(submit_ntime)[::-1]
         nbits_le = bytes.fromhex(nbits)[::-1]
         nonce_le = bytes.fromhex(submit_nonce)[::-1]

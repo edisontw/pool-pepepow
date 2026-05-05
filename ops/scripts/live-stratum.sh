@@ -13,6 +13,7 @@ CANDIDATE_OUTCOME_EVENT_LOG="${RUNTIME_DIR}/candidate-outcome-events.jsonl"
 # shellcheck disable=SC2034
 FOLLOWUP_EVENT_LOG="${RUNTIME_DIR}/candidate-followup-events.jsonl"
 SUBMIT_EVIDENCE_LOG="${RUNTIME_DIR}/submit-evidence.jsonl"
+NOTIFY_EVIDENCE_LOG="${RUNTIME_DIR}/notify-evidence.jsonl"
 ACTIVITY_SNAPSHOT="${RUNTIME_DIR}/activity-snapshot.json"
 LAUNCH_ENV_FILE="${RUNTIME_DIR}/launch.env"
 
@@ -322,6 +323,7 @@ candidate_event_log: ${CANDIDATE_EVENT_LOG}
 candidate_outcome_event_log: ${CANDIDATE_OUTCOME_EVENT_LOG}
 candidate_followup_event_log: ${FOLLOWUP_EVENT_LOG}
 submit_evidence_log: ${SUBMIT_EVIDENCE_LOG}
+notify_evidence_log: ${NOTIFY_EVIDENCE_LOG}
 activity_snapshot: ${ACTIVITY_SNAPSHOT}
 launch_env: ${LAUNCH_ENV_FILE}
 EOF
@@ -523,7 +525,7 @@ PY
 }
 
 print_runtime_sizes() {
-  for path in "${LOG_FILE}" "${SHARE_LOG}" "${CANDIDATE_EVENT_LOG}" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${FOLLOWUP_EVENT_LOG}" "${SUBMIT_EVIDENCE_LOG}" "${ACTIVITY_SNAPSHOT}"; do
+  for path in "${LOG_FILE}" "${SHARE_LOG}" "${CANDIDATE_EVENT_LOG}" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${FOLLOWUP_EVENT_LOG}" "${SUBMIT_EVIDENCE_LOG}" "${NOTIFY_EVIDENCE_LOG}" "${ACTIVITY_SNAPSHOT}"; do
     if [[ -f "${path}" ]]; then
       printf 'size_bytes[%s]: %s\n' "$(basename "${path}")" "$(stat -c '%s' "${path}")"
     fi
@@ -763,6 +765,661 @@ candidate_probability_audit_service() {
   fi
 
   tail -n "${count}" "${SHARE_LOG}" | python3 "${SCRIPT_DIR}/candidate_probability_audit.py" "${count}" "${SHARE_LOG}"
+}
+
+share_target_variant_audit_service() {
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+
+  local count log_tail
+  count="${2:-300}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || (( count == 0 || count > 1000 )); then
+    echo "share-target-variant-audit count must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "share_target_variant_audit: none (submit evidence log not found)"
+    return 0
+  fi
+
+  log_tail="$(tail -n 200 "${LOG_FILE}" 2>/dev/null || true)"
+  tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}" | PEPEPOW_STRATUM_LOG_TAIL="${log_tail}" python3 <(cat <<'PY'
+import json
+import math
+import os
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+
+count = int(sys.argv[1])
+snapshot_path = Path(sys.argv[2])
+launch_env_path = Path(sys.argv[3])
+
+DIFF1_PEPEW = int("0000ffff00000000000000000000000000000000000000000000000000000000", 16)
+DIFF1_BTC = int("00000000ffff000000000000000000000000000000000000000000000000000", 16)
+MAX_TARGET = (1 << 256) - 1
+SCALE_DEFAULT = 65536.0
+
+def target_from(diff1, difficulty):
+    if difficulty is None or not math.isfinite(difficulty) or difficulty <= 0:
+        return None
+    return max(1, min(MAX_TARGET, int(diff1 / difficulty)))
+
+def fmt_target(value):
+    return f"{value:064x}" if isinstance(value, int) else None
+
+def as_float(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+def launch_value(name):
+    if not launch_env_path.exists():
+        return None
+    prefix = name + "="
+    try:
+        for raw_line in launch_env_path.read_text(encoding="utf-8").splitlines():
+            if raw_line.startswith(prefix):
+                return raw_line[len(prefix):].strip()
+    except OSError:
+        return None
+    return None
+
+def load_snapshot():
+    try:
+        return json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        rows.append(json.loads(line))
+    except Exception:
+        continue
+
+snapshot = load_snapshot()
+meta = snapshot.get("meta", {}) if isinstance(snapshot, dict) else {}
+sessions = snapshot.get("activeSessions", {}) if isinstance(snapshot, dict) else {}
+active_session = next(iter(sessions.values()), {}) if isinstance(sessions, dict) and sessions else {}
+
+effective = as_float(active_session.get("effectiveShareDifficulty"))
+wire = as_float(active_session.get("minerWireDifficulty"))
+scale = as_float(active_session.get("difficultyScale"))
+if effective is None:
+    for row in reversed(rows):
+        effective = as_float(row.get("difficulty"))
+        if effective is not None:
+            break
+if scale is None:
+    scale = as_float(launch_value("PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE")) or SCALE_DEFAULT
+if wire is None and effective is not None:
+    wire = effective * scale
+assumed = as_float(meta.get("assumedShareDifficulty"))
+vardiff_raw = launch_value("PEPEPOW_POOL_CORE_STRATUM_VARDIFF_ENABLED")
+vardiff_enabled = (vardiff_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+latest_set_diff = None
+for line in os.environ.get("PEPEPOW_STRATUM_LOG_TAIL", "").splitlines():
+    if "mining.set_difficulty" not in line and "Difficulty sent:" not in line:
+        continue
+    match = re.search(r"minerWireDifficulty=([0-9.eE+-]+)", line)
+    if match:
+        latest_set_diff = match.group(1)
+        continue
+    match = re.search(r"difficulty=([0-9.eE+-]+)", line)
+    if match:
+        latest_set_diff = match.group(1)
+
+current_target = target_from(DIFF1_PEPEW, effective)
+btc_variant_target = target_from(DIFF1_BTC, effective)
+missing_scale_target = target_from(DIFF1_PEPEW, effective * scale if effective is not None else None)
+double_scale_target = target_from(DIFF1_PEPEW, effective / scale if effective is not None else None)
+
+variants = {
+    "current_pool_canonical": (current_target, "canonical"),
+    "reversed_byte_current_target": (current_target, "reversed"),
+    "pepew_diff1_canonical": (target_from(DIFF1_PEPEW, effective), "canonical"),
+    "btc_diff1_canonical": (btc_variant_target, "canonical"),
+    "effective_divided_by_65536": (double_scale_target, "canonical"),
+    "effective_multiplied_by_65536": (missing_scale_target, "canonical"),
+}
+
+records = []
+for row in rows:
+    diag = row.get("shareHashDiagnostic")
+    if not isinstance(diag, dict):
+        diag = row
+    hash_hex = diag.get("localComputedHash")
+    if not isinstance(hash_hex, str) or len(hash_hex) != 64:
+        continue
+    try:
+        canonical_int = int(hash_hex, 16)
+        reversed_int = int(bytes.fromhex(hash_hex)[::-1].hex(), 16)
+    except ValueError:
+        continue
+    records.append((row, diag, canonical_int, reversed_int))
+
+counts = Counter()
+for row, _diag, canonical_int, reversed_int in records:
+    for name, (target, order) in variants.items():
+        if target is None:
+            continue
+        value = reversed_int if order == "reversed" else canonical_int
+        if value <= target:
+            counts[name] += 1
+
+print("share_target_variant_audit: ready")
+print("sampleSource: submit-evidence-tail")
+print(f"bounded_tail_requested: {count}")
+print(f"bounded_tail_rows: {len(rows)}")
+print(f"diagnostic_hash_rows: {len(records)}")
+print("--- difficulty semantics ---")
+print(f"effectiveShareDifficulty: {effective}")
+print(f"minerWireDifficulty: {wire}")
+print(f"difficultyScale: {scale}")
+print(f"assumedShareDifficulty: {assumed}")
+print(f"vardiffEnabled: {vardiff_enabled}")
+print(f"latestMiningSetDifficultyTail: {latest_set_diff}")
+print("--- share target variants ---")
+print(f"currentPoolShareTargetUsed: {fmt_target(current_target)}")
+print(f"pepewDiff1TargetAtEffective: {fmt_target(target_from(DIFF1_PEPEW, effective))}")
+print(f"btcDiff1TargetAtEffective: {fmt_target(btc_variant_target)}")
+print(f"targetIf65536ScaleMissing_effectiveTimesScale: {fmt_target(missing_scale_target)}")
+print(f"targetIf65536ScaleDoubleApplied_effectiveDivScale: {fmt_target(double_scale_target)}")
+print("--- sample status counts ---")
+print(f"submitOutcomeCounts: {dict(Counter('accepted' if row.get('rejectReason') is None else 'rejected' for row in rows))}")
+print(f"shareHashValidationCounts: {dict(Counter(row.get('shareHashValidationStatus') for row in rows))}")
+print("--- acceptance-ratio diagnostic ---")
+for name in variants:
+    pct = (counts[name] / len(records) * 100.0) if records else 0.0
+    print(f"{name}: {counts[name]}/{len(records)} ({pct:.2f}%)")
+print("--- recent hash comparison variants ---")
+for row, diag, canonical_int, reversed_int in records[-10:]:
+    current = current_target or 0
+    adjusted = double_scale_target or 0
+    block_target_raw = diag.get("blockTargetUsed")
+    if block_target_raw is None:
+        block_target_raw = diag.get("blockTarget")
+    try:
+        block_target = int(block_target_raw, 16) if isinstance(block_target_raw, str) else None
+    except ValueError:
+        block_target = None
+    print("---")
+    print(f"timestamp: {row.get('timestamp')}")
+    print(f"accepted: {row.get('rejectReason') is None}")
+    print(f"reasonCode: {diag.get('reasonCode') or row.get('rejectReason') or 'pool-share'}")
+    print(f"localComputedHash: {diag.get('localComputedHash')}")
+    print(f"canonicalIntHex: {canonical_int:064x}")
+    print(f"reversedIntHex: {reversed_int:064x}")
+    print(f"meetsCurrentCanonical: {canonical_int <= current}")
+    print(f"meetsCurrentReversed: {reversed_int <= current}")
+    print(f"meets65536AdjustedCanonical: {canonical_int <= adjusted}")
+    print(f"meets65536AdjustedReversed: {reversed_int <= adjusted}")
+    print(f"blockTargetUsed: {block_target_raw}")
+    print(f"meetsDaemonBlockTargetCanonical: {canonical_int <= block_target if block_target is not None else None}")
+    print(f"meetsDaemonBlockTargetReversed: {reversed_int <= block_target if block_target is not None else None}")
+PY
+  ) "${count}" "${ACTIVITY_SNAPSHOT}" "${LAUNCH_ENV_FILE}"
+}
+
+preimage_reconstruction_audit_service() {
+  ensure_runtime_dir
+
+  local count log_tail
+  count="${2:-300}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || (( count == 0 || count > 1000 )); then
+    echo "preimage-reconstruction-audit count must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "preimage_reconstruction_audit: none (submit evidence log not found)"
+    return 0
+  fi
+
+  log_tail="$(tail -n 200 "${LOG_FILE}" 2>/dev/null || true)"
+  tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}" | PEPEPOW_STRATUM_LOG_TAIL="${log_tail}" python3 <(cat <<'PY'
+import json
+import os
+import re
+import sys
+from collections import Counter, defaultdict
+
+count = int(sys.argv[1])
+
+def load_rows():
+    rows = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    return rows
+
+def tri_bool(value):
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "missing"
+
+def hex_equal(left, right):
+    if not isinstance(left, str) or not isinstance(right, str) or not left or not right:
+        return "missing"
+    return "true" if left.lower() == right.lower() else "false"
+
+def present(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value)
+    if isinstance(value, (list, tuple, dict)):
+        return bool(value)
+    return True
+
+def prefix_suffix(value, prefix=16, suffix=16):
+    if not isinstance(value, str) or not value:
+        return "missing"
+    if len(value) <= prefix + suffix:
+        return value
+    return f"{value[:prefix]}..{value[-suffix:]}"
+
+def compact_hash(value):
+    if not isinstance(value, str) or not value:
+        return "missing"
+    return value[:16]
+
+def ntime_as_int(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(value, 16)
+    except ValueError:
+        return None
+
+def parse_log_tail(raw_log):
+    events = []
+    notify_job_ids = []
+    notify_counts = Counter()
+    difficulty_count = 0
+    wire_difficulty_count = 0
+    last_difficulty_index = None
+    notify_without_prior_difficulty = 0
+    duplicated_notify_job_ids = []
+    seen_jobs = set()
+
+    for line in raw_log.splitlines():
+        if "Difficulty sent:" in line or "method=mining.set_difficulty" in line:
+            event_type = "difficulty"
+            difficulty_count += 1
+            if "method=mining.set_difficulty" in line:
+                wire_difficulty_count += 1
+            events.append((event_type, None, line))
+            last_difficulty_index = len(events) - 1
+            continue
+        if "Notify sent:" in line:
+            match = re.search(r"jobId=([^ ]+)", line)
+            job_id = match.group(1) if match else None
+            clean_match = re.search(r"cleanJobs=([^ ]+)", line)
+            clean_jobs = clean_match.group(1) if clean_match else "missing"
+            event_type = "notify"
+            events.append((event_type, job_id, line))
+            notify_counts[clean_jobs] += 1
+            if job_id:
+                notify_job_ids.append(job_id)
+                if job_id in seen_jobs:
+                    duplicated_notify_job_ids.append(job_id)
+                seen_jobs.add(job_id)
+            if last_difficulty_index is None:
+                notify_without_prior_difficulty += 1
+
+    notify_count = sum(notify_counts.values())
+    latest_notify_order = notify_job_ids[-8:]
+    every_notify_after_difficulty = notify_count > 0 and notify_without_prior_difficulty == 0
+    return {
+        "notify_count": notify_count,
+        "clean_notify_counts": dict(notify_counts),
+        "difficulty_count": difficulty_count,
+        "wire_difficulty_count": wire_difficulty_count,
+        "notify_without_prior_difficulty": notify_without_prior_difficulty,
+        "every_notify_has_prior_difficulty_in_tail": every_notify_after_difficulty,
+        "latest_notify_job_ids": latest_notify_order,
+        "duplicated_notify_job_ids": duplicated_notify_job_ids[-8:],
+        "notify_params_mutation_check": "not-available-in-current-log-tail",
+    }
+
+rows = load_rows()
+
+issued_vs_submit = Counter(tri_bool(row.get("issuedVsSubmitReconstructionMatch")) for row in rows)
+header_match = Counter(hex_equal(row.get("header80Hex"), row.get("independentAuthoritativeHeader80Hex")) for row in rows)
+hash_match = Counter(hex_equal(row.get("localComputedHash"), row.get("independentAuthoritativeShareHash")) for row in rows)
+job_status = Counter(row.get("jobStatus") or "missing" for row in rows)
+target_status = Counter(row.get("targetValidationStatus") or "missing" for row in rows)
+share_hash_status = Counter(row.get("shareHashValidationStatus") or "missing" for row in rows)
+reject_reasons = Counter(row.get("rejectReason") or "accepted" for row in rows)
+
+field_names = [
+    "issuedJobCoinb1",
+    "issuedJobCoinb2",
+    "coinbaseLocalHex",
+    "coinbaseHashLocal",
+    "issuedJobMerkleBranch",
+    "merkleRoot",
+    "preimagePrevhash",
+    "preimageNbits",
+    "ntime",
+    "preimageJobNtime",
+    "preimageVersion",
+    "header80Hex",
+    "independentAuthoritativeHeader80Hex",
+    "localComputedHash",
+    "independentAuthoritativeShareHash",
+]
+field_presence = {
+    name: dict(Counter("present" if present(row.get(name)) else "missing" for row in rows))
+    for name in field_names
+}
+
+jobs = defaultdict(list)
+for row in rows:
+    jobs[row.get("jobId") or "missing"].append(row)
+
+job_summaries = []
+for job_id, job_rows in jobs.items():
+    extranonce2_values = [row.get("extranonce2") for row in job_rows if isinstance(row.get("extranonce2"), str)]
+    ntime_values = [row.get("ntime") for row in job_rows if isinstance(row.get("ntime"), str)]
+    job_ntime_values = [row.get("preimageJobNtime") for row in job_rows if isinstance(row.get("preimageJobNtime"), str)]
+    nonce_values = [row.get("nonce") for row in job_rows if isinstance(row.get("nonce"), str)]
+    ntime_ints = [ntime_as_int(value) for value in ntime_values]
+    ntime_ints = [value for value in ntime_ints if value is not None]
+    expected_ex2_hex_len = 8
+    ex2_size_match = Counter(
+        "true" if isinstance(value, str) and len(value) == expected_ex2_hex_len else "false"
+        for value in extranonce2_values
+    )
+    job_ntime_set = set(job_ntime_values)
+    ntime_differs = any(
+        isinstance(row.get("ntime"), str)
+        and isinstance(row.get("preimageJobNtime"), str)
+        and row.get("ntime").lower() != row.get("preimageJobNtime").lower()
+        for row in job_rows
+    )
+    job_summaries.append(
+        {
+            "jobId": job_id,
+            "rows": len(job_rows),
+            "jobStatusCounts": dict(Counter(row.get("jobStatus") or "missing" for row in job_rows)),
+            "uniqueExtranonce2": len(set(extranonce2_values)),
+            "extranonce2SizeMatches8Hex": dict(ex2_size_match),
+            "ntimeMin": f"{min(ntime_ints):08x}" if ntime_ints else "missing",
+            "ntimeMax": f"{max(ntime_ints):08x}" if ntime_ints else "missing",
+            "jobNtimeValues": sorted(job_ntime_set)[-3:] if job_ntime_set else ["missing"],
+            "ntimeDiffersFromJobNtime": ntime_differs,
+            "uniqueNonces": len(set(nonce_values)),
+        }
+    )
+job_summaries.sort(key=lambda item: (-item["rows"], item["jobId"]))
+
+def contrast_rows(predicate, limit=5):
+    return [row for row in rows if predicate(row)][:limit]
+
+accepted_rows = contrast_rows(lambda row: row.get("rejectReason") is None)
+rejected_rows = contrast_rows(lambda row: row.get("rejectReason") == "low-difficulty-share")
+
+def print_contrast(label, selected):
+    print(label)
+    if not selected:
+        print("  none")
+        return
+    for row in selected:
+        print("---")
+        print(f"timestamp: {row.get('timestamp')}")
+        print(f"jobId: {row.get('jobId')}")
+        print(f"jobStatus: {row.get('jobStatus')}")
+        print(f"extranonce2: {row.get('extranonce2')}")
+        print(f"ntime: {row.get('ntime')}")
+        print(f"nonce: {row.get('nonce')}")
+        print(f"header80: {prefix_suffix(row.get('header80Hex'))}")
+        print(f"independentHeader80: {prefix_suffix(row.get('independentAuthoritativeHeader80Hex'))}")
+        print(f"localHashPrefix: {compact_hash(row.get('localComputedHash'))}")
+        print(f"authoritativeHashPrefix: {compact_hash(row.get('independentAuthoritativeShareHash'))}")
+        print(f"issuedVsSubmitReconstructionMatch: {row.get('issuedVsSubmitReconstructionMatch')}")
+        print(f"header80MatchesIndependent: {hex_equal(row.get('header80Hex'), row.get('independentAuthoritativeHeader80Hex'))}")
+        print(f"hashMatchesIndependent: {hex_equal(row.get('localComputedHash'), row.get('independentAuthoritativeShareHash'))}")
+        print(f"shareTargetPrefix: {compact_hash(row.get('shareTarget'))}")
+        print(f"blockTargetPrefix: {compact_hash(row.get('blockTarget'))}")
+
+log_summary = parse_log_tail(os.environ.get("PEPEPOW_STRATUM_LOG_TAIL", ""))
+
+if issued_vs_submit.get("false", 0) or header_match.get("false", 0):
+    likely_class = "B. submit-time reconstruction differs from issued notify"
+elif hash_match.get("false", 0):
+    likely_class = "F. ntime or nonce endian/placement mismatch"
+elif header_match.get("true", 0) == len(rows) and hash_match.get("true", 0) == len(rows):
+    likely_class = "C. independent authoritative path is matching local path, so both may share the same wrong preimage"
+elif job_status.get("previous", 0) > len(rows) * 0.2:
+    likely_class = "D. clean-job / previous-job window mismatch"
+else:
+    missing_critical = [
+        name
+        for name in ("issuedJobCoinb1", "issuedJobCoinb2", "issuedJobMerkleBranch", "header80Hex", "independentAuthoritativeHeader80Hex")
+        if field_presence.get(name, {}).get("missing", 0)
+    ]
+    likely_class = (
+        "H. insufficient evidence; missing " + ", ".join(missing_critical[:3])
+        if missing_critical
+        else "C. independent authoritative path is matching local path, so both may share the same wrong preimage"
+    )
+
+print("preimage_reconstruction_audit: ready")
+print(f"bounded_tail_requested: {count}")
+print(f"bounded_tail_rows: {len(rows)}")
+print("--- reconstruction alignment counters ---")
+print(f"issuedVsSubmitReconstructionMatch: {dict(issued_vs_submit)}")
+print(f"header80EqualsIndependentAuthoritativeHeader80: {dict(header_match)}")
+print(f"localComputedHashEqualsIndependentAuthoritativeShareHash: {dict(hash_match)}")
+print(f"jobStatusCounts: {dict(job_status)}")
+print(f"targetValidationStatusCounts: {dict(target_status)}")
+print(f"shareHashValidationStatusCounts: {dict(share_hash_status)}")
+print(f"rejectReasonCounts: {dict(reject_reasons)}")
+print("--- submit field stability by job ---")
+for item in job_summaries[:10]:
+    print(
+        f"jobId={item['jobId']} rows={item['rows']} statuses={item['jobStatusCounts']} "
+        f"uniqueExtranonce2={item['uniqueExtranonce2']} ex2Size8Hex={item['extranonce2SizeMatches8Hex']} "
+        f"ntimeMin={item['ntimeMin']} ntimeMax={item['ntimeMax']} jobNtimeValues={item['jobNtimeValues']} "
+        f"ntimeDiffersFromJobNtime={item['ntimeDiffersFromJobNtime']} uniqueNonces={item['uniqueNonces']}"
+    )
+print("--- notify / difficulty ordering from stratum.log tail ---")
+for key, value in log_summary.items():
+    print(f"{key}: {value}")
+print("--- reconstruction field presence ---")
+for name in field_names:
+    print(f"{name}: {field_presence[name]}")
+print("--- accepted contrast rows ---")
+print_contrast("accepted", accepted_rows)
+print("--- low-difficulty contrast rows ---")
+print_contrast("low-difficulty-share", rejected_rows)
+print("--- likely mismatch class ---")
+print(likely_class)
+PY
+  ) "${count}"
+}
+
+notify_submit_payload_audit_service() {
+  ensure_runtime_dir
+
+  local count
+  count="${2:-300}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || (( count == 0 || count > 1000 )); then
+    echo "notify-submit-payload-audit count must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "notify_submit_payload_audit: none (submit evidence log not found)"
+    return 0
+  fi
+
+  python3 <(cat <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+count = int(sys.argv[1])
+notify_path = Path(sys.argv[2])
+submit_path = Path(sys.argv[3])
+
+def read_jsonl(path):
+    rows = []
+    if not path.exists():
+        return rows
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    except OSError:
+        return []
+    return rows
+
+def eq_state(left, right):
+    if left is None or right is None:
+        return "missing"
+    if isinstance(left, str) and isinstance(right, str):
+        return "match" if left.lower() == right.lower() else "mismatch"
+    return "match" if left == right else "mismatch"
+
+def matched(row):
+    value = row.get("notifyEvidenceMatched")
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "missing"
+
+def digest_match(row):
+    value = row.get("notifyVsSubmitJobCacheDigestMatch")
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "missing"
+
+def prefix(value, chars=16):
+    if not isinstance(value, str) or not value:
+        return "missing"
+    return value[:chars]
+
+notify_rows = read_jsonl(notify_path)
+submit_rows = read_jsonl(submit_path)
+notify_by_key = {}
+for row in notify_rows:
+    key = (row.get("sessionId"), row.get("jobId"))
+    if key[0] and key[1]:
+        notify_by_key[key] = row
+
+field_pairs = {
+    "prevhash": ("notifyPrevhashSent", "submitPrevhashUsed", "prevhashSent", "preimagePrevhash"),
+    "version": ("notifyVersionSent", "submitVersionUsed", "versionSent", "preimageVersion"),
+    "nbits": ("notifyNbitsSent", "submitNbitsUsed", "nbitsSent", "preimageNbits"),
+    "ntime": ("notifyNtimeSent", "submitNtimeUsed", "ntimeSent", "preimageJobNtime"),
+    "coinbase1": ("notifyCoinbase1Sha256", "submitCoinbase1Sha256", "coinbase1Sha256", None),
+    "coinbase2": ("notifyCoinbase2Sha256", "submitCoinbase2Sha256", "coinbase2Sha256", None),
+    "merkleBranch": ("notifyMerkleBranchDigest", "submitMerkleBranchDigest", "merkleBranchDigest", None),
+    "extranonce1": ("notifyExtranonce1", "submitExtranonce1", "extranonce1", "extranonce1"),
+    "extranonce2Size": ("notifyExtranonce2Size", "submitExtranonce2Size", "extranonce2Size", None),
+}
+
+per_field = {name: Counter() for name in field_pairs}
+examples = []
+contrast = Counter()
+submits_with_tail_notify = 0
+for row in submit_rows:
+    key = (row.get("sessionId"), row.get("jobId"))
+    notify = notify_by_key.get(key)
+    if notify is not None:
+        submits_with_tail_notify += 1
+    outcome = "accepted" if row.get("rejectReason") is None else row.get("rejectReason")
+    any_mismatch = False
+    for name, (notify_field, submit_field, notify_fallback, submit_fallback) in field_pairs.items():
+        left = row.get(notify_field)
+        right = row.get(submit_field)
+        if left is None and notify is not None:
+            left = notify.get(notify_fallback)
+        if right is None and submit_fallback is not None:
+            right = row.get(submit_fallback)
+        state = eq_state(left, right)
+        per_field[name][state] += 1
+        if state == "mismatch":
+            any_mismatch = True
+    contrast[(outcome, "mismatch" if any_mismatch else "no-mismatch")] += 1
+    if any_mismatch and len(examples) < 5:
+        examples.append((row, notify))
+
+jobs_with_notify = {row.get("jobId") for row in notify_rows if row.get("jobId")}
+submit_jobs = {row.get("jobId") for row in submit_rows if row.get("jobId")}
+
+print("notify_submit_payload_audit: ready")
+print(f"bounded_tail_requested: {count}")
+print(f"notifyRows: {len(notify_rows)}")
+print(f"submitRows: {len(submit_rows)}")
+print(f"jobsWithNotifyEvidence: {len(jobs_with_notify)}")
+print(f"submitJobs: {len(submit_jobs)}")
+print(f"submitJobsWithNotifyEvidenceInTail: {len(jobs_with_notify & submit_jobs)}")
+print(f"submitsWithMatchingNotifyEvidenceField: {dict(Counter(matched(row) for row in submit_rows))}")
+print(f"submitsWithNotifyEvidenceInTail: {submits_with_tail_notify}")
+print(f"notifyVsSubmitJobCacheDigestMatch: {dict(Counter(digest_match(row) for row in submit_rows))}")
+print("--- per-field comparison counts ---")
+for name in field_pairs:
+    print(f"{name}: {dict(per_field[name])}")
+print("--- accepted vs low-difficulty contrast by mismatch status ---")
+for key, value in sorted(contrast.items()):
+    print(f"{key[0]}:{key[1]}={value}")
+print("--- latest mismatch examples ---")
+if not examples:
+    print("none")
+else:
+    for row, notify in examples:
+        print("---")
+        print(f"timestamp: {row.get('timestamp')}")
+        print(f"jobId: {row.get('jobId')}")
+        print(f"jobStatus: {row.get('jobStatus')}")
+        print(f"rejectReason: {row.get('rejectReason') or 'accepted'}")
+        print(f"notifyEvidenceMatched: {row.get('notifyEvidenceMatched')}")
+        print(f"notifyEvidenceDigest: {prefix(row.get('notifyEvidenceDigest') or (notify or {}).get('notifyEvidenceDigest'))}")
+        print(f"submitJobCacheDigest: {prefix(row.get('submitJobCacheDigest'))}")
+        for name, (notify_field, submit_field, notify_fallback, submit_fallback) in field_pairs.items():
+            left = row.get(notify_field)
+            right = row.get(submit_field)
+            if left is None and notify is not None:
+                left = notify.get(notify_fallback)
+            if right is None and submit_fallback is not None:
+                right = row.get(submit_fallback)
+            state = eq_state(left, right)
+            if state == "mismatch":
+                print(f"{name}: notify={prefix(str(left), 24)} submit={prefix(str(right), 24)}")
+PY
+  ) "${count}" <(tail -n "${count}" "${NOTIFY_EVIDENCE_LOG}" 2>/dev/null || true) <(tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}" 2>/dev/null || true)
 }
 
 latest_reject_service() {
@@ -1141,6 +1798,15 @@ case "${SUBCOMMAND}" in
   candidate-probability-audit)
     candidate_probability_audit_service "$@"
     ;;
+  share-target-variant-audit)
+    share_target_variant_audit_service "$@"
+    ;;
+  preimage-reconstruction-audit)
+    preimage_reconstruction_audit_service "$@"
+    ;;
+  notify-submit-payload-audit)
+    notify_submit_payload_audit_service "$@"
+    ;;
   latest-reject)
     latest_reject_service
     ;;
@@ -1160,7 +1826,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|logs|paths}" >&2
     exit 1
     ;;
 esac
