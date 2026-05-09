@@ -1354,7 +1354,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 await self._read_json(reader)
                 notify_message = await self._read_json(reader)
                 job_id = notify_message["params"][0]
-                cached_job = service._job_manager.get_job(job_id)
+                cached_job = stratum_ingress._apply_daemon_template_coinbase_dialect(
+                    service._job_manager.get_job(job_id)
+                )
                 assert cached_job is not None
                 target_context = dict(cached_job.target_context)
                 target_context["target"] = "0" * 63 + "1"
@@ -1580,6 +1582,196 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             authoritative_reference["shareHash"],
         )
 
+    def test_pepew_tagged_coinbase_dialect_shapes_script_sig(self):
+        raw_template = SuccessfulTemplateRpcClient().get_block_template()
+        fetched_at = stratum_ingress.utc_now()
+        snapshot = template_jobs._parse_block_template(
+            raw_template,
+            fetched_at=fetched_at,
+        )
+        job = template_jobs.JobRecord(
+            job_id="job-0000000000000001",
+            template_anchor=snapshot.template_anchor,
+            assigned_difficulty=1e-08,
+            target_context=snapshot.target_context,
+            created_at=fetched_at,
+            expires_at=fetched_at,
+            stale_basis="test",
+            source="daemon-template",
+            prevhash=snapshot.prevhash,
+            version=snapshot.version,
+            nbits=snapshot.nbits,
+            ntime=snapshot.ntime,
+            coinb1=snapshot.coinb1,
+            coinb2=snapshot.coinb2,
+            merkle_branch=snapshot.merkle_branch,
+            preimage_context=snapshot.preimage_context,
+            authoritative_context=snapshot.authoritative_context,
+        )
+
+        job = stratum_ingress._apply_daemon_template_coinbase_dialect(job)
+
+        extranonce1 = "aabbccdd"
+        extranonce2 = "00000001"
+        full_coinbase = bytes.fromhex(f"{job.coinb1}{extranonce1}{extranonce2}{job.coinb2}")
+        coinb1_bytes = bytes.fromhex(job.coinb1)
+        script_length_offset = stratum_ingress._script_length_varint_offset(coinb1_bytes)
+        declared_script_length, script_start = stratum_ingress._decode_varint_at(
+            full_coinbase, script_length_offset
+        )
+        assert declared_script_length is not None
+        script_sig = full_coinbase[script_start : script_start + declared_script_length]
+        self.assertGreaterEqual(declared_script_length, 32)
+        self.assertEqual(declared_script_length, len(script_sig))
+        self.assertIn(b"/PEPEPOW/", script_sig)
+        self.assertIn(b"\x06PEPEW/", script_sig)
+        self.assertTrue(bytes.fromhex(job.coinb2).startswith(b"/PEPEPOW/\xff\xff\xff\xff"))
+
+    def test_pepew_tagged_coinbase_submit_reconstruction_uses_issued_bytes(self):
+        raw_template = SuccessfulTemplateRpcClient().get_block_template()
+        fetched_at = stratum_ingress.utc_now()
+        snapshot = template_jobs._parse_block_template(
+            raw_template,
+            fetched_at=fetched_at,
+        )
+        job = template_jobs.JobRecord(
+            job_id="job-0000000000000001",
+            template_anchor=snapshot.template_anchor,
+            assigned_difficulty=1e-08,
+            target_context=snapshot.target_context,
+            created_at=fetched_at,
+            expires_at=fetched_at,
+            stale_basis="test",
+            source="daemon-template",
+            prevhash=snapshot.prevhash,
+            version=snapshot.version,
+            nbits=snapshot.nbits,
+            ntime=snapshot.ntime,
+            coinb1=snapshot.coinb1,
+            coinb2=snapshot.coinb2,
+            merkle_branch=snapshot.merkle_branch,
+            preimage_context=snapshot.preimage_context,
+            authoritative_context=snapshot.authoritative_context,
+        )
+        job = stratum_ingress._apply_daemon_template_coinbase_dialect(job)
+
+        extranonce1 = "aabbccdd"
+        extranonce2 = "00000001"
+        nonce = "11223344"
+        preimage = stratum_ingress._build_share_header_preimage(
+            job,
+            extranonce1=extranonce1,
+            extranonce2=extranonce2,
+            ntime=job.ntime,
+            nonce=nonce,
+        )
+
+        self.assertEqual("preimage-ready", preimage.status)
+        assert preimage.header is not None
+        issued_coinbase_hex = f"{job.coinb1}{extranonce1}{extranonce2}{job.coinb2}"
+        issued_coinbase_hash = stratum_ingress._double_sha256(
+            bytes.fromhex(issued_coinbase_hex)
+        )
+        self.assertEqual(
+            preimage.header[36:68],
+            stratum_ingress._apply_merkle_branch(issued_coinbase_hash, job.merkle_branch),
+        )
+        notify_digest = stratum_ingress._job_cache_digest(
+            prevhash=stratum_protocol.format_prevhash_for_stratum(job.prevhash),
+            coinb1=job.coinb1,
+            coinb2=job.coinb2,
+            merkle_branch=list(job.merkle_branch),
+            version=job.version,
+            nbits=job.nbits,
+            ntime=job.ntime,
+        )
+        submit_digest = stratum_ingress._job_cache_digest(
+            prevhash=stratum_protocol.format_prevhash_for_stratum(job.prevhash),
+            coinb1=job.coinb1,
+            coinb2=job.coinb2,
+            merkle_branch=list(job.merkle_branch),
+            version=job.version,
+            nbits=job.nbits,
+            ntime=job.ntime,
+        )
+        self.assertEqual(notify_digest, submit_digest)
+
+        authoritative_reference = (
+            stratum_ingress._build_independent_authoritative_header80_reference(
+                job,
+                extranonce1_hex=extranonce1,
+                extranonce2_hex=extranonce2,
+                ntime_hex=job.ntime,
+                nonce_hex=nonce,
+            )
+        )
+        self.assertIsNotNone(authoritative_reference)
+        assert authoritative_reference is not None
+        self.assertEqual(preimage.header.hex(), authoritative_reference["header80"].hex())
+
+    def test_swap_prevhash_words_for_pepew_header_matches_reference_fixture(self):
+        prevhash_raw = (
+            "0000000024df37e3b378995b8dbebe2a43e918bbb678e4b388f51fe572d1910f"
+        )
+        self.assertEqual(
+            stratum_ingress._swap_prevhash_words_for_pepew_header(prevhash_raw),
+            "00000000e337df245b9978b32abebe8dbb18e943b3e478b6e51ff5880f91d172",
+        )
+
+    def test_swap_prevhash_words_for_pepew_header_rejects_non_32_byte_hex(self):
+        with self.assertRaisesRegex(ValueError, "prevhash must be 64-character hex"):
+            stratum_ingress._swap_prevhash_words_for_pepew_header("abcd")
+
+    def test_daemon_template_preimage_prevhash_matches_reference_cpu_miner_fixture(self):
+        job = type("FixtureJob", (), {})()
+        job.version = "20004000"
+        job.prevhash = (
+            "0000000024df37e3b378995b8dbebe2a43e918bbb678e4b388f51fe572d1910f"
+        )
+        job.nbits = "1d02f8fc"
+        job.ntime = "69fdb5d9"
+        job.coinb1 = (
+            "01000000010000000000000000000000000000000000000000000000000000000000000000"
+            "ffffffff2103fc0f4404d9b5fd690650455045572f"
+        )
+        job.coinb2 = (
+            "2f50455045504f572fffffffff038058b0b86d000000015180b9ad143b00000019"
+            "76a91438e620c08839f0c964b193e1e283f3f4ecf1f0c088ac00ba1dd20500000019"
+            "76a9146442e3eb21eca73b2237eb45eed1f25e83a0a88488ac00000000"
+        )
+        job.merkle_branch = []
+        reference_header80 = (
+            "0040002000000000e337df245b9978b32abebe8dbb18e943b3e478b6e51ff588"
+            "0f91d172225d252e70ccec9367447afec5a3dd480a43babf2ae84ebe5f4df4f1"
+            "b2a03330d9b5fd69fcf8021d00001d3e"
+        )
+
+        preimage = stratum_ingress._build_share_header_preimage(
+            job,
+            extranonce1="78da73ab",
+            extranonce2="00000000",
+            ntime="69fdb5d9",
+            nonce="3e1d0000",
+            prevhash_header_hex=(
+                "0000000024df37e3b378995b8dbebe2a43e918bbb678e4b388f51fe572d1910f"
+            ),
+        )
+
+        self.assertEqual(preimage.status, "preimage-ready")
+        assert preimage.header is not None
+        self.assertEqual(preimage.header.hex(), reference_header80)
+
+        fallback_preimage = stratum_ingress._build_share_header_preimage(
+            job,
+            extranonce1="78da73ab",
+            extranonce2="00000000",
+            ntime="69fdb5d9",
+            nonce="3e1d0000",
+        )
+        self.assertEqual(fallback_preimage.status, "preimage-ready")
+        assert fallback_preimage.header is not None
+        self.assertEqual(fallback_preimage.header.hex(), reference_header80)
+
     async def test_daemon_template_share_event_exports_resolved_target_validation_status(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -1628,7 +1820,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 await self._read_json(reader)
                 notify_message = await self._read_json(reader)
                 job_id = notify_message["params"][0]
-                cached_job = service._job_manager.get_job(job_id)
+                cached_job = stratum_ingress._apply_daemon_template_coinbase_dialect(
+                    service._job_manager.get_job(job_id)
+                )
                 assert cached_job is not None
                 target_context = dict(cached_job.target_context)
                 target_context["target"] = "0" * 63 + "1"
@@ -1718,7 +1912,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 await self._read_json(reader)
                 notify_message = await self._read_json(reader)
                 job_id = notify_message["params"][0]
-                cached_job = service._job_manager.get_job(job_id)
+                cached_job = stratum_ingress._apply_daemon_template_coinbase_dialect(
+                    service._job_manager.get_job(job_id)
+                )
                 assert cached_job is not None
                 target_context = dict(cached_job.target_context)
                 target_context["target"] = "f" * 64
@@ -2623,7 +2819,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(difficulty_message["params"], [65.536])
 
                 job_id = notify_message["params"][0]
-                cached_job = service._job_manager.get_job(job_id)
+                cached_job = stratum_ingress._apply_daemon_template_coinbase_dialect(
+                    service._job_manager.get_job(job_id)
+                )
                 assert cached_job is not None
                 target_context = dict(cached_job.target_context)
                 target_context["target"] = "0" * 63 + "1"
@@ -2646,6 +2844,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                         extranonce2=extranonce2,
                         ntime=notify_message["params"][7],
                         nonce=candidate_nonce,
+                        prevhash_header_hex=notify_message["params"][1],
                     )
                     self.assertEqual(preimage.status, "preimage-ready")
                     assert preimage.header is not None
@@ -4404,6 +4603,7 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             self.assertEqual(rec["issuedJobCoinb1"], "01")
             self.assertEqual(rec["issuedJobCoinb2"], "ff")
             self.assertEqual(rec["issuedJobMerkleBranch"], [])
+            self.assertEqual(rec["coinbaseLocalHex"], "01aabbccdd00000001ff")
             self.assertEqual(rec["refinedReasonCode"], "ntime-mismatch")
             self.assertIn("variantTargetMatches", rec)
             variants = rec["variantTargetMatches"]

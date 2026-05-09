@@ -10,7 +10,7 @@ import re
 import signal
 from collections import OrderedDict, deque
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,10 @@ SYNTHETIC_COINB1 = "0100000001"
 SYNTHETIC_COINB2 = "ffffffff"
 SYNTHETIC_VERSION = "20000000"
 SYNTHETIC_NBITS = "1d00ffff"
+COINBASE_DIALECT_ENV = "PEPEPOW_POOL_CORE_COINBASE_DIALECT"
+PEPEW_TAGGED_COINBASE_DIALECT = "pepew-tagged"
+PEPEW_SCRIPT_SEPARATOR = b"\x06PEPEW/"
+PEPEW_COINBASE_TAG = b"/PEPEPOW/"
 SUBMIT_DUPLICATE_WINDOW_SECONDS = 900
 REJECT_LOG_SUPPRESS_REASONS = frozenset({"unknown-job", "stale-job"})
 INTERNAL_JOB_ID_PATTERN = re.compile(r"^job-([0-9a-f]{16})$")
@@ -915,7 +919,9 @@ class StratumIngressService:
             )
 
         submit_job_id = _extract_submit_job_id(params)
-        cached_job = self._job_manager.get_job(submit_job_id, now=observed_at)
+        cached_job = _apply_daemon_template_coinbase_dialect(
+            self._job_manager.get_job(submit_job_id, now=observed_at)
+        )
         job_status = _classify_submit_job_id(
             submit_job_id,
             current_job_id=state.current_job_id,
@@ -1157,6 +1163,7 @@ class StratumIngressService:
             preimage.header.hex() if preimage.header is not None else diag.get("header80Hex")
         )
         reconstructed_coinbase_hash = coinbase_sum.get("coinbaseHash")
+        reconstructed_coinbase_hex = coinbase_sum.get("coinbaseLocalHex")
         reconstructed_merkle_root = merkle_sum.get("merkleRoot")
         if (
             preimage.header is not None
@@ -1164,15 +1171,17 @@ class StratumIngressService:
             and len(preimage.header) >= 68
         ):
             reconstructed_merkle_root = preimage.header[36:68].hex()
-        if reconstructed_coinbase_hash is None:
+        if reconstructed_coinbase_hash is None or reconstructed_coinbase_hex is None:
             coinb1 = _normalize_optional_hex(getattr(cached_job, "coinb1", None))
             coinb2 = _normalize_optional_hex(getattr(cached_job, "coinb2", None))
             extranonce1 = _normalize_optional_hex(submitted_extranonce1)
             extranonce2 = _normalize_optional_hex(submitted_extranonce2)
             if None not in (coinb1, coinb2, extranonce1, extranonce2):
-                reconstructed_coinbase_hash = _double_sha256(
-                    bytes.fromhex(f"{coinb1}{extranonce1}{extranonce2}{coinb2}")
-                ).hex()
+                reconstructed_coinbase_hex = f"{coinb1}{extranonce1}{extranonce2}{coinb2}"
+                if reconstructed_coinbase_hash is None:
+                    reconstructed_coinbase_hash = _double_sha256(
+                        bytes.fromhex(reconstructed_coinbase_hex)
+                    ).hex()
         authoritative_header_hex = None
         authoritative_share_hash = None
         if isinstance(authoritative_reference, dict):
@@ -1233,9 +1242,10 @@ class StratumIngressService:
             "issuedJobCoinb2": submit_coinb2,
             "issuedJobMerkleBranch": submit_merkle_branch,
             "coinbaseHashLocal": reconstructed_coinbase_hash,
-            "coinbaseLocalHex": coinbase_sum.get("coinbaseLocalHex"),
+            "coinbaseLocalHex": reconstructed_coinbase_hex,
             "merkleRoot": reconstructed_merkle_root,
             "header80Hex": reconstructed_header_hex,
+            "pythonPoolHeader80Hex": reconstructed_header_hex,
             "matrixSeed": diag.get("matrixSeed") or diag.get("matrixSeedBlake3"),
             "headerHashBlake3": diag.get("headerHashBlake3"),
             "localComputedHash": diag.get("localComputedHash"),
@@ -1277,6 +1287,12 @@ class StratumIngressService:
                 notify_evidence.get("prevhashSent")
                 if isinstance(notify_evidence, dict)
                 else None
+            ),
+            "pythonPoolPrevhashHeaderBeforeFix": getattr(cached_job, "prevhash", None),
+            "pythonPoolPrevhashHeaderUsed": (
+                diag.get("pythonPoolPrevhashHeaderUsed")
+                or notify_prevhash_header_hex
+                or getattr(cached_job, "prevhash", None)
             ),
             "submitPrevhashUsed": notify_prevhash_header_hex
             or getattr(cached_job, "prevhash", None),
@@ -1665,6 +1681,23 @@ class StratumIngressService:
         if not target_context_check.candidate_possible:
             return ShareHashCheck(status=None, reject_reason=None)
 
+        cached_prevhash_raw = getattr(cached_job, "prevhash", None)
+        notify_prevhash_header_hex = self._notify_prevhash_for_submit(
+            state=state,
+            job_id=getattr(cached_job, "job_id", None) or params[1],
+        )
+        prevhash_header_used = None
+        normalized_notify_prevhash = _normalize_optional_hex(notify_prevhash_header_hex)
+        if normalized_notify_prevhash is not None:
+            try:
+                prevhash_header_used = _swap_prevhash_words_for_pepew_header(
+                    normalized_notify_prevhash
+                )
+            except ValueError:
+                prevhash_header_used = None
+        if prevhash_header_used is None:
+            prevhash_header_used = _normalize_optional_hex(cached_prevhash_raw)
+
         preimage = _build_share_header_preimage(
             cached_job,
             extranonce1=state.extranonce1,
@@ -1672,10 +1705,7 @@ class StratumIngressService:
             ntime=params[3],
             nonce=params[4],
             version_source_order=getattr(self._config, "pepepow_header_version_source_order_enabled", False) is True,
-            prevhash_header_hex=self._notify_prevhash_for_submit(
-                state=state,
-                job_id=getattr(cached_job, "job_id", None) or params[1],
-            ),
+            prevhash_header_hex=notify_prevhash_header_hex,
         )
         if preimage.reject_reason is not None:
             return ShareHashCheck(
@@ -1696,6 +1726,8 @@ class StratumIngressService:
                         detail=preimage.detail,
                     ),
                     detail=preimage.detail,
+                    prevhash_header_before_fix=cached_prevhash_raw,
+                    prevhash_header_used=prevhash_header_used,
                 ),
             )
 
@@ -1716,6 +1748,8 @@ class StratumIngressService:
                     comparison_stage="template-context",
                     reason_code="template-context-mismatch",
                     detail="daemon-template job is missing target for local hash check",
+                    prevhash_header_before_fix=cached_prevhash_raw,
+                    prevhash_header_used=prevhash_header_used,
                 ),
             )
         if not _is_hex_string(target_value):
@@ -1732,6 +1766,8 @@ class StratumIngressService:
                     comparison_stage="template-context",
                     reason_code="template-context-mismatch",
                     detail="daemon-template target must be hex for local hash check",
+                    prevhash_header_before_fix=cached_prevhash_raw,
+                    prevhash_header_used=prevhash_header_used,
                 ),
             )
 
@@ -1784,6 +1820,10 @@ class StratumIngressService:
                     "localComputedHash": share_hash.hex(),
                     "localComputedHashReversed": _reverse_hex_bytes(share_hash.hex()),
                     "localComputedHashOrder": "canonical-big-endian-target-compare",
+                    "pythonPoolPrevhashHeaderBeforeFix": _normalize_optional_hex(
+                        cached_prevhash_raw
+                    ),
+                    "pythonPoolPrevhashHeaderUsed": prevhash_header_used,
                     **threshold_summary,
                 },
             )
@@ -1798,6 +1838,10 @@ class StratumIngressService:
                     "localComputedHash": share_hash.hex(),
                     "localComputedHashReversed": _reverse_hex_bytes(share_hash.hex()),
                     "localComputedHashOrder": "canonical-big-endian-target-compare",
+                    "pythonPoolPrevhashHeaderBeforeFix": _normalize_optional_hex(
+                        cached_prevhash_raw
+                    ),
+                    "pythonPoolPrevhashHeaderUsed": prevhash_header_used,
                     **threshold_summary,
                 },
             )
@@ -1806,20 +1850,22 @@ class StratumIngressService:
             status="low-difficulty-share",
             reject_reason="low-difficulty-share",
             valid=False,
-            diagnostic=_build_share_hash_diagnostic(
-                cached_job,
-                extranonce1=state.extranonce1,
-                extranonce2=params[2],
-                ntime=params[3],
-                nonce=params[4],
-                comparison_stage="share-hash-compare",
-                reason_code="low-difficulty-share",
-                detail="local share hash exceeded effective share target",
-                header=preimage.header,
-                share_hash=share_hash,
-                target_value=threshold_summary["shareTargetUsed"],
-            )
-            | threshold_summary,
+                diagnostic=_build_share_hash_diagnostic(
+                    cached_job,
+                    extranonce1=state.extranonce1,
+                    extranonce2=params[2],
+                    ntime=params[3],
+                    nonce=params[4],
+                    comparison_stage="share-hash-compare",
+                    reason_code="low-difficulty-share",
+                    detail="local share hash exceeded effective share target",
+                    header=preimage.header,
+                    share_hash=share_hash,
+                    target_value=threshold_summary["shareTargetUsed"],
+                    prevhash_header_before_fix=cached_prevhash_raw,
+                    prevhash_header_used=prevhash_header_used,
+                )
+                | threshold_summary,
         )
 
     def _maybe_submit_prepared_candidate(
@@ -2481,6 +2527,7 @@ class StratumIngressService:
             now=observed_at,
             assigned_difficulty=assigned_difficulty,
         )
+        job = _apply_daemon_template_coinbase_dialect(job)
         state.last_notified_anchor = job.template_anchor
         self._record_notify_probe(
             state,
@@ -3388,6 +3435,8 @@ def _build_share_hash_diagnostic(
     header: bytes | None = None,
     share_hash: bytes | None = None,
     target_value: str | None = None,
+    prevhash_header_before_fix: str | None = None,
+    prevhash_header_used: str | None = None,
 ) -> dict[str, Any]:
     target_context = (
         cached_job.target_context if isinstance(getattr(cached_job, "target_context", None), dict) else {}
@@ -3484,11 +3533,18 @@ def _build_share_hash_diagnostic(
             else None
         ),
         "header80Hex": header_hex,
+        "pythonPoolHeader80Hex": header_hex,
         "localComputedHash": share_hash.hex() if share_hash is not None else None,
         "localComputedHashReversed": (
             _reverse_hex_bytes(share_hash.hex()) if share_hash is not None else None
         ),
         "localComputedHashOrder": "canonical-big-endian-target-compare",
+        "pythonPoolPrevhashHeaderBeforeFix": _normalize_optional_hex(
+            prevhash_header_before_fix
+        ),
+        "pythonPoolPrevhashHeaderUsed": _normalize_optional_hex(
+            prevhash_header_used
+        ),
         "comparedTarget": normalized_target,
         "matrixSeedBlake3": matrix_seed_blake3,
         "headerHashBlake3": header_hash_blake3,
@@ -3607,6 +3663,11 @@ def _build_independent_authoritative_header80_reference(
         extranonce_bytes = bytes.fromhex(extranonce1_hex) + bytes.fromhex(
             extranonce2_hex
         )
+        post_extranonce_script_sig_bytes = bytes.fromhex(
+            authoritative_segments.get("postExtranonceScriptSigBytes", {}).get(
+                "hex", ""
+            )
+        )
         sequence_bytes = bytes.fromhex(
             authoritative_segments["postScriptSigSequence"]["hex"]
         )
@@ -3641,6 +3702,7 @@ def _build_independent_authoritative_header80_reference(
             + length_varint_bytes
             + script_sig_template_bytes
             + extranonce_bytes
+            + post_extranonce_script_sig_bytes
             + sequence_bytes
             + output_count_bytes
             + output_bytes
@@ -3649,15 +3711,17 @@ def _build_independent_authoritative_header80_reference(
         authoritative_merkle_root = _build_merkle_root_from_transaction_hashes(
             _double_sha256(authoritative_coinbase), transaction_hashes
         )
+        prevhash_for_header = _normalize_optional_hex(prevhash_header_hex)
+        if prevhash_for_header is not None:
+            prevhash_for_header = _swap_prevhash_words_for_pepew_header(
+                prevhash_for_header
+            )
+        else:
+            prevhash_for_header = prevhash_hex
+
         authoritative_field_bytes = {
             "version": bytes.fromhex(version_hex)[::-1],
-            "prevHash": (
-                bytes.fromhex(prevhash_header_hex)
-                if isinstance(prevhash_header_hex, str)
-                and len(prevhash_header_hex) == 64
-                and _is_hex_string(prevhash_header_hex)
-                else bytes.fromhex(prevhash_hex)[::-1]
-            ),
+            "prevHash": bytes.fromhex(prevhash_for_header),
             "merkleRoot": authoritative_merkle_root,
             "ntime": bytes.fromhex(ntime_hex)[::-1],
             "bits": bytes.fromhex(bits_hex)[::-1],
@@ -3759,9 +3823,10 @@ def _build_header80_mismatch_diagnostic(
         field_name: header[offset : offset + size]
         for field_name, offset, size in HEADER80_FIELD_LAYOUT
     }
+    prevhash_for_header = _swap_prevhash_words_for_pepew_header(prevhash_hex)
     source_order_field_bytes = {
         "version": bytes.fromhex(version_hex),
-        "prevHash": bytes.fromhex(prevhash_hex),
+        "prevHash": bytes.fromhex(prevhash_for_header),
         "merkleRoot": expected_field_bytes["merkleRoot"][::-1],
         "ntime": bytes.fromhex(ntime),
         "bits": bytes.fromhex(bits_hex),
@@ -3892,6 +3957,133 @@ def _encode_varint_local(value: int) -> bytes:
     if value <= 0xFFFFFFFF:
         return b"\xfe" + value.to_bytes(4, "little")
     return b"\xff" + value.to_bytes(8, "little")
+
+
+def _swap_prevhash_words_for_pepew_header(prevhash_hex: str) -> str:
+    normalized = _normalize_optional_hex(prevhash_hex)
+    if normalized is None or len(normalized) != 64 or not _is_hex_string(normalized):
+        raise ValueError("prevhash must be 64-character hex")
+    words = [normalized[index : index + 8] for index in range(0, 64, 8)]
+    return "".join(bytes.fromhex(word)[::-1].hex() for word in words)
+
+
+def _configured_coinbase_dialect() -> str:
+    return (
+        os.environ.get(COINBASE_DIALECT_ENV, PEPEW_TAGGED_COINBASE_DIALECT)
+        .strip()
+        .lower()
+    )
+
+
+def _apply_daemon_template_coinbase_dialect(job: Any) -> Any:
+    if getattr(job, "source", None) != "daemon-template":
+        return job
+    if (
+        isinstance(getattr(job, "preimage_context", None), dict)
+        and job.preimage_context.get("coinbaseDialect") == PEPEW_TAGGED_COINBASE_DIALECT
+    ):
+        return job
+    if _configured_coinbase_dialect() not in {
+        PEPEW_TAGGED_COINBASE_DIALECT,
+        "pepew",
+        "tagged",
+    }:
+        return job
+
+    coinb1_hex = _normalize_optional_hex(getattr(job, "coinb1", None))
+    coinb2_hex = _normalize_optional_hex(getattr(job, "coinb2", None))
+    target_context = getattr(job, "target_context", None)
+    curtime = target_context.get("curtime") if isinstance(target_context, dict) else None
+    if coinb1_hex is None or coinb2_hex is None or not isinstance(curtime, int):
+        return job
+
+    try:
+        coinb1_bytes = bytes.fromhex(coinb1_hex)
+        coinb2_bytes = bytes.fromhex(coinb2_hex)
+        prefix_end = _script_length_varint_offset(coinb1_bytes)
+        declared_script_length, after_varint = _decode_varint_at(
+            coinb1_bytes, prefix_end
+        )
+        if declared_script_length is None:
+            return job
+        script_prefix = coinb1_bytes[after_varint:]
+        if declared_script_length < len(script_prefix):
+            return job
+        remaining_script_bytes = declared_script_length - len(script_prefix)
+        if remaining_script_bytes < 0:
+            return job
+        timestamp_push = b"\x04" + int(curtime).to_bytes(4, byteorder="little")
+        script_template = script_prefix + timestamp_push + PEPEW_SCRIPT_SEPARATOR
+        new_script_length = (
+            len(script_template) + remaining_script_bytes + len(PEPEW_COINBASE_TAG)
+        )
+        new_coinb1 = (
+            coinb1_bytes[:prefix_end]
+            + _encode_varint_local(new_script_length)
+            + script_template
+        )
+        new_coinb2 = PEPEW_COINBASE_TAG + coinb2_bytes
+    except (OverflowError, ValueError):
+        return job
+
+    new_preimage_context = getattr(job, "preimage_context", None)
+    if isinstance(getattr(job, "preimage_context", None), dict):
+        new_preimage_context = {
+            **job.preimage_context,
+            "coinbaseDialect": PEPEW_TAGGED_COINBASE_DIALECT,
+            "coinbaseScriptSigLength": new_script_length,
+            "coinbaseTagHex": PEPEW_COINBASE_TAG.hex(),
+            "coinb1Length": len(new_coinb1.hex()),
+            "coinb2Length": len(new_coinb2.hex()),
+        }
+
+    new_authoritative_context = getattr(job, "authoritative_context", None)
+    if isinstance(getattr(job, "authoritative_context", None), dict):
+        context = dict(job.authoritative_context)
+        segments = context.get("coinbaseSegmentSummaries")
+        if isinstance(segments, dict):
+            segments = dict(segments)
+            segments["coinbaseLengthVarint"] = {
+                **segments.get("coinbaseLengthVarint", {}),
+                "hex": _encode_varint_local(new_script_length).hex(),
+                "declaredScriptSigBytes": new_script_length,
+            }
+            segments["scriptSigTemplateBytes"] = {
+                **segments.get("scriptSigTemplateBytes", {}),
+                "hexLength": len(script_template) * 2,
+                "hex": script_template.hex(),
+                "digest": hashlib.sha256(script_template).hexdigest()[:24],
+            }
+            segments["postExtranonceScriptSigBytes"] = {
+                "hexLength": len(PEPEW_COINBASE_TAG) * 2,
+                "hex": PEPEW_COINBASE_TAG.hex(),
+                "digest": hashlib.sha256(PEPEW_COINBASE_TAG).hexdigest()[:24],
+            }
+            context["coinbaseSegmentSummaries"] = segments
+        context["coinbaseDialect"] = PEPEW_TAGGED_COINBASE_DIALECT
+        context["coinb1HexLength"] = len(new_coinb1.hex())
+        context["coinb2HexLength"] = len(new_coinb2.hex())
+        context["coinb1Digest"] = hashlib.sha256(new_coinb1).hexdigest()[:24]
+        context["coinb2Digest"] = hashlib.sha256(new_coinb2).hexdigest()[:24]
+        new_authoritative_context = context
+
+    new_coinb1_hex = new_coinb1.hex()
+    new_coinb2_hex = new_coinb2.hex()
+    if is_dataclass(job):
+        return replace(
+            job,
+            coinb1=new_coinb1_hex,
+            coinb2=new_coinb2_hex,
+            preimage_context=new_preimage_context,
+            authoritative_context=new_authoritative_context,
+        )
+
+    job.coinb1 = new_coinb1_hex
+    job.coinb2 = new_coinb2_hex
+    job.coinbase_dialect = PEPEW_TAGGED_COINBASE_DIALECT
+    job.preimage_context = new_preimage_context
+    job.authoritative_context = new_authoritative_context
+    return job
 
 
 def _script_length_varint_offset(coinb1_bytes: bytes) -> int:
@@ -4437,8 +4629,20 @@ def _build_local_coinbase_segment_summaries(
     coinb2_bytes = bytes.fromhex(coinb2_hex)
     prefix_end = _script_length_varint_offset(coinb1_bytes)
     declared_script_length, after_varint = _decode_varint_at(coinb1_bytes, prefix_end)
-    output_count, after_output_count = _decode_varint_at(coinb2_bytes, 4)
     total_extranonce_bytes = (len(extranonce1_hex) + len(extranonce2_hex)) // 2
+    script_template_bytes = coinb1_bytes[after_varint:]
+    post_extranonce_script_bytes = b""
+    if declared_script_length is not None:
+        post_extranonce_length = max(
+            0,
+            declared_script_length
+            - len(script_template_bytes)
+            - total_extranonce_bytes,
+        )
+        post_extranonce_script_bytes = coinb2_bytes[:post_extranonce_length]
+    sequence_offset_in_coinb2 = len(post_extranonce_script_bytes)
+    sequence_end = sequence_offset_in_coinb2 + 4
+    output_count, after_output_count = _decode_varint_at(coinb2_bytes, sequence_end)
     return {
         "coinbasePrefixBytes": {
             "offset": 0,
@@ -4453,9 +4657,9 @@ def _build_local_coinbase_segment_summaries(
         },
         "scriptSigTemplateBytes": {
             "offset": after_varint,
-            "hexLength": len(coinb1_bytes[after_varint:]) * 2,
-            "hex": coinb1_bytes[after_varint:].hex(),
-            "digest": hashlib.sha256(coinb1_bytes[after_varint:]).hexdigest()[:24],
+            "hexLength": len(script_template_bytes) * 2,
+            "hex": script_template_bytes.hex(),
+            "digest": hashlib.sha256(script_template_bytes).hexdigest()[:24],
         },
         "extranonceRegion": {
             "offset": len(coinb1_bytes),
@@ -4463,13 +4667,21 @@ def _build_local_coinbase_segment_summaries(
             "extranonce2HexLength": len(extranonce2_hex),
             "totalBytes": total_extranonce_bytes,
         },
-        "postScriptSigSequence": {
+        "postExtranonceScriptSigBytes": {
             "offset": len(coinb1_bytes) + total_extranonce_bytes,
-            "hex": coinb2_bytes[:4].hex(),
+            "hexLength": len(post_extranonce_script_bytes) * 2,
+            "hex": post_extranonce_script_bytes.hex(),
+            "digest": hashlib.sha256(post_extranonce_script_bytes).hexdigest()[:24],
+        },
+        "postScriptSigSequence": {
+            "offset": len(coinb1_bytes)
+            + total_extranonce_bytes
+            + len(post_extranonce_script_bytes),
+            "hex": coinb2_bytes[sequence_offset_in_coinb2:sequence_end].hex(),
         },
         "outputCountVarint": {
-            "offset": len(coinb1_bytes) + total_extranonce_bytes + 4,
-            "hex": coinb2_bytes[4:after_output_count].hex(),
+            "offset": len(coinb1_bytes) + total_extranonce_bytes + sequence_end,
+            "hex": coinb2_bytes[sequence_end:after_output_count].hex(),
             "value": output_count,
         },
         "coinbaseTail": {
@@ -4867,7 +5079,9 @@ def _build_final_header80_probe_diagnostic(
         )
         authoritative_field_bytes = {
             "version": bytes.fromhex(version_hex)[::-1],
-            "prevHash": bytes.fromhex(prevhash_hex)[::-1],
+            "prevHash": bytes.fromhex(
+                _swap_prevhash_words_for_pepew_header(prevhash_hex)
+            ),
             "merkleRoot": authoritative_merkle_root,
             "ntime": bytes.fromhex(ntime_hex)[::-1],
             "bits": bytes.fromhex(bits_hex)[::-1],
@@ -6065,14 +6279,14 @@ def _build_share_header_preimage(
         coinbase = bytes.fromhex(coinb1 + extranonce1_value + extranonce2_value + coinb2)
         version_bytes = bytes.fromhex(version)
         version_le = version_bytes if version_source_order else version_bytes[::-1]
-        if (
-            isinstance(prevhash_header_hex, str)
-            and len(prevhash_header_hex) == 64
-            and _is_hex_string(prevhash_header_hex)
-        ):
-            prevhash_le = bytes.fromhex(prevhash_header_hex)
+        prevhash_for_header = _normalize_optional_hex(prevhash_header_hex)
+        if prevhash_for_header is not None:
+            prevhash_for_header = _swap_prevhash_words_for_pepew_header(
+                prevhash_for_header
+            )
         else:
-            prevhash_le = bytes.fromhex(prevhash)[::-1]
+            prevhash_for_header = _swap_prevhash_words_for_pepew_header(prevhash)
+        prevhash_le = bytes.fromhex(prevhash_for_header)
         ntime_le = bytes.fromhex(submit_ntime)[::-1]
         nbits_le = bytes.fromhex(nbits)[::-1]
         nonce_le = bytes.fromhex(submit_nonce)[::-1]

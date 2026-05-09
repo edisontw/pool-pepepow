@@ -57,8 +57,21 @@ Runtime paths:
 - `/home/ubuntu/pool-pepepow/.runtime/live-stratum/stratum.pid`
 - `/home/ubuntu/pool-pepepow/.runtime/live-stratum/stratum.log`
 - `/home/ubuntu/pool-pepepow/.runtime/live-stratum/share-events.jsonl`
+- `/home/ubuntu/pool-pepepow/.runtime/live-stratum/submit-evidence.jsonl`
 - `/home/ubuntu/pool-pepepow/.runtime/live-stratum/activity-snapshot.json`
 - `/home/ubuntu/pool-pepepow/.runtime/live-stratum/launch.env`
+
+Operator note:
+
+- managed production `live-stratum.sh` owns `.runtime/live-stratum/launch.env`,
+  `.runtime/live-stratum/share-events.jsonl`,
+  `.runtime/live-stratum/submit-evidence.jsonl`, and the public bind
+  `0.0.0.0:39333`
+- temporary parity, trace, or reference-miner harnesses must use a separate
+  runtime root such as `/tmp/pepepow-parity-runtime`,
+  `/tmp/pepepow-trace-runtime`, or
+  `/home/ubuntu/.tmp/pepepow-parity-runtime`
+- do not point temporary localhost harnesses at `.runtime/live-stratum`
 
 Example:
 

@@ -34,6 +34,26 @@ detect_default_host() {
   printf '127.0.0.1\n'
 }
 
+detect_node_bin() {
+  local candidate
+  for candidate in \
+    "${NODE_BIN:-}" \
+    "/home/ubuntu/.local/node-v16.20.2-linux-arm64/bin/node" \
+    "/home/ubuntu/.local/node-v22.21.1-linux-arm64/bin/node" \
+    "$(command -v node 2>/dev/null || true)" \
+    "$(command -v nodejs 2>/dev/null || true)" \
+    "/home/ubuntu/.windsurf-server/bin/16cc024632923bc387171d59cf5638057d4c8918/node" \
+    "/home/ubuntu/.antigravity-server/bin/1.16.5-1504c8cc4b34dbfbb4a97ebe954b3da2b5634516/node" \
+    "/home/ubuntu/.cache/ms-playwright-go/1.50.1/node"
+  do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 PORT=""
 PUBLIC_HOST=""
 BIND_HOST=""
@@ -66,6 +86,8 @@ VARDIFF_RETARGET_INTERVAL_SECONDS=""
 VARDIFF_MIN_SHARES=""
 VARDIFF_FAST_SHARE_INTERVAL_SECONDS=""
 VARDIFF_SLOW_SHARE_INTERVAL_SECONDS=""
+LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND="false"
+LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND_REASON=""
 
 set_effective_defaults() {
   local detected_rpc_host detected_rpc_port
@@ -111,6 +133,46 @@ ensure_runtime_dir() {
   mkdir -p "${RUNTIME_DIR}"
 }
 
+is_localhost_host() {
+  local host
+  host="${1:-}"
+  case "${host}" in
+    127.0.0.1|localhost|::1)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+set_launch_env_suspicious_localhost_bind() {
+  local bind_host bind_port public_host
+  bind_host="${1:-}"
+  bind_port="${2:-}"
+  public_host="${3:-}"
+  LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND="false"
+  LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND_REASON=""
+
+  if is_localhost_host "${bind_host}" && [[ "${bind_port}" != "39333" ]]; then
+    LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND="true"
+    LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND_REASON="cached launch.env bind ${bind_host}:${bind_port:-unknown} looks like a temporary localhost test listener"
+    return
+  fi
+
+  if is_localhost_host "${bind_host}" && is_localhost_host "${public_host}"; then
+    LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND="true"
+    LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND_REASON="cached launch.env endpoint stratum+tcp://${public_host:-unknown}:${bind_port:-unknown} looks like a temporary localhost test endpoint"
+  fi
+}
+
+warn_if_suspicious_launch_env() {
+  if [[ "${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND}" == "true" ]]; then
+    echo "warning: ${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND_REASON}" >&2
+    echo "warning: ignoring cached localhost bind/public endpoint unless you explicitly override PEPEPOW_POOL_CORE_STRATUM_BIND_HOST/PORT/HOST" >&2
+  fi
+}
+
 load_launch_env_if_present() {
   local loaded_bind_host loaded_port loaded_public_host
   local loaded_share_difficulty loaded_job_interval loaded_snapshot_interval
@@ -138,6 +200,7 @@ load_launch_env_if_present() {
   loaded_bind_host="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_BIND_HOST)"
   loaded_port="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_BIND_PORT)"
   loaded_public_host="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_HOST)"
+  set_launch_env_suspicious_localhost_bind "${loaded_bind_host}" "${loaded_port}" "${loaded_public_host}"
   loaded_share_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY)"
   loaded_estimated_hashrate_share_difficulty="$(launch_env_value PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY)"
   loaded_job_interval="$(launch_env_value PEPEPOW_POOL_CORE_SYNTHETIC_JOB_INTERVAL_SECONDS)"
@@ -168,13 +231,13 @@ load_launch_env_if_present() {
   loaded_vardiff_fast_share_interval="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_FAST_SHARE_INTERVAL_SECONDS)"
   loaded_vardiff_slow_share_interval="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_VARDIFF_SLOW_SHARE_INTERVAL_SECONDS)"
 
-  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST+x}" && -n "${loaded_bind_host}" ]]; then
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_HOST+x}" && -n "${loaded_bind_host}" && "${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND}" != "true" ]]; then
     BIND_HOST="${loaded_bind_host}"
   fi
-  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_PORT+x}" && -n "${loaded_port}" ]]; then
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_BIND_PORT+x}" && -n "${loaded_port}" && "${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND}" != "true" ]]; then
     PORT="${loaded_port}"
   fi
-  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_HOST+x}" && -n "${loaded_public_host}" ]]; then
+  if [[ -z "${PEPEPOW_POOL_CORE_STRATUM_HOST+x}" && -n "${loaded_public_host}" && "${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND}" != "true" ]]; then
     PUBLIC_HOST="${loaded_public_host}"
   fi
   if [[ -z "${PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY+x}" && -n "${loaded_share_difficulty}" ]]; then
@@ -327,6 +390,9 @@ notify_evidence_log: ${NOTIFY_EVIDENCE_LOG}
 activity_snapshot: ${ACTIVITY_SNAPSHOT}
 launch_env: ${LAUNCH_ENV_FILE}
 EOF
+  if [[ "${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND}" == "true" ]]; then
+    printf 'warning: %s\n' "${LAUNCH_ENV_SUSPICIOUS_LOCALHOST_BIND_REASON}"
+  fi
 }
 
 is_process_alive() {
@@ -1422,6 +1488,379 @@ PY
   ) "${count}" <(tail -n "${count}" "${NOTIFY_EVIDENCE_LOG}" 2>/dev/null || true) <(tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}" 2>/dev/null || true)
 }
 
+header_convention_audit_service() {
+  ensure_runtime_dir
+
+  local count
+  count="${2:-100}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || (( count == 0 || count > 1000 )); then
+    echo "header-convention-audit count must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "header_convention_audit: none (submit evidence log not found)"
+    return 0
+  fi
+
+  python3 <(cat <<'PY'
+import hashlib
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+count = int(sys.argv[1])
+pool_core_dir = Path(sys.argv[2])
+notify_path = Path(sys.argv[3])
+submit_path = Path(sys.argv[4])
+sys.path.insert(0, str(pool_core_dir))
+
+from pepepow_pow import blake3_hash, hoohash_v110
+
+VARIANT_NAMES = (
+    "current_pool",
+    "notify_wire_header",
+    "block_header_internal",
+    "merkle_reversed_only",
+    "nonce_reversed_only",
+    "ntime_nonce_reversed",
+    "hoohash_input_reversed_header80",
+)
+
+def read_jsonl(path):
+    rows = []
+    if not path.exists():
+        return rows
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    except OSError:
+        return []
+    return rows
+
+def hx(value, length=None):
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    if not value:
+        return None
+    if length is not None and len(value) != length:
+        return None
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return None
+    return value
+
+def bytes_from_hex(value, length=None):
+    value = hx(value, length)
+    if value is None:
+        return None
+    return bytes.fromhex(value)
+
+def reverse_hex_bytes(value, length=None):
+    raw = bytes_from_hex(value, length)
+    if raw is None:
+        return None
+    return raw[::-1]
+
+def double_sha256(payload):
+    return hashlib.sha256(hashlib.sha256(payload).digest()).digest()
+
+def hoohash_header80(header):
+    if not isinstance(header, (bytes, bytearray)) or len(header) != 80:
+        return None
+    header = bytes(header)
+    masked_header = header[:76] + (b"\x00" * 4)
+    header_hash = blake3_hash(header)
+    matrix_seed = blake3_hash(masked_header)
+    nonce = int.from_bytes(header[76:80], byteorder="little", signed=False)
+    return hoohash_v110(matrix_seed, header_hash, nonce)[::-1].hex()
+
+def apply_merkle_current(coinbase_hash, branches):
+    root = coinbase_hash
+    for sibling_hash in branches:
+        sibling = bytes_from_hex(sibling_hash, 64)
+        if sibling is None:
+            return None
+        root = double_sha256(root + sibling[::-1])
+    return root
+
+def apply_merkle_wire(coinbase_hash, branches):
+    root = coinbase_hash
+    for sibling_hash in branches:
+        sibling = bytes_from_hex(sibling_hash, 64)
+        if sibling is None:
+            return None
+        root = double_sha256(root + sibling)
+    return root
+
+def branches_for(row):
+    value = row.get("issuedJobMerkleBranch")
+    if isinstance(value, list):
+        return value
+    return []
+
+def coinbase_hash_for(row):
+    coinb1 = hx(row.get("issuedJobCoinb1"))
+    coinb2 = hx(row.get("issuedJobCoinb2"))
+    extranonce1 = hx(row.get("extranonce1"))
+    extranonce2 = hx(row.get("extranonce2"))
+    if None in (coinb1, coinb2, extranonce1, extranonce2):
+        return None
+    return double_sha256(bytes.fromhex(coinb1 + extranonce1 + extranonce2 + coinb2))
+
+def merkle_current_for(row):
+    logged = bytes_from_hex(row.get("merkleRoot"), 64)
+    if logged is not None:
+        return logged
+    coinbase_hash = coinbase_hash_for(row)
+    if coinbase_hash is None:
+        return None
+    return apply_merkle_current(coinbase_hash, branches_for(row))
+
+def merkle_wire_for(row):
+    coinbase_hash = coinbase_hash_for(row)
+    if coinbase_hash is None:
+        return None
+    return apply_merkle_wire(coinbase_hash, branches_for(row))
+
+def assemble(*parts):
+    if any(part is None for part in parts):
+        return None
+    header = b"".join(parts)
+    return header if len(header) == 80 else None
+
+def build_headers(row):
+    current = bytes_from_hex(row.get("header80Hex"), 160)
+    version_wire = bytes_from_hex(row.get("notifyVersionSent") or row.get("submitVersionUsed") or row.get("preimageVersion"), 8)
+    prevhash_wire = bytes_from_hex(row.get("notifyPrevhashSent") or row.get("submitPrevhashUsed"), 64)
+    nbits_wire = bytes_from_hex(row.get("notifyNbitsSent") or row.get("submitNbitsUsed") or row.get("preimageNbits"), 8)
+    ntime_wire = bytes_from_hex(row.get("submitNtimeUsed") or row.get("notifyNtimeSent") or row.get("ntime"), 8)
+    nonce_wire = bytes_from_hex(row.get("nonce"), 8)
+    merkle_current = merkle_current_for(row)
+    merkle_wire = merkle_wire_for(row)
+    prevhash_internal = reverse_hex_bytes(row.get("preimagePrevhash"), 64) or prevhash_wire
+
+    headers = {
+        "current_pool": current,
+        "notify_wire_header": assemble(
+            version_wire,
+            prevhash_wire,
+            merkle_wire,
+            ntime_wire,
+            nbits_wire,
+            nonce_wire,
+        ),
+        "block_header_internal": assemble(
+            version_wire[::-1] if version_wire is not None else None,
+            prevhash_internal,
+            merkle_current,
+            ntime_wire[::-1] if ntime_wire is not None else None,
+            nbits_wire[::-1] if nbits_wire is not None else None,
+            nonce_wire[::-1] if nonce_wire is not None else None,
+        ),
+        "merkle_reversed_only": (
+            current[:36] + current[36:68][::-1] + current[68:] if current is not None else None
+        ),
+        "nonce_reversed_only": (
+            current[:76] + current[76:80][::-1] if current is not None else None
+        ),
+        "ntime_nonce_reversed": (
+            current[:68] + current[68:72][::-1] + current[72:76] + current[76:80][::-1]
+            if current is not None else None
+        ),
+        "hoohash_input_reversed_header80": current[::-1] if current is not None else None,
+    }
+    return headers
+
+def prefix_suffix(value, chars=16):
+    if isinstance(value, bytes):
+        value = value.hex()
+    if not isinstance(value, str) or not value:
+        return "missing"
+    if len(value) <= chars * 2:
+        return value
+    return f"{value[:chars]}..{value[-chars:]}"
+
+def short(value, chars=16):
+    if not isinstance(value, str) or not value:
+        return "missing"
+    return value[:chars]
+
+def is_accepted(row):
+    return row.get("rejectReason") is None
+
+def is_lowdiff(row):
+    return row.get("rejectReason") == "low-difficulty-share"
+
+def pass_state(hash_hex, target_hex):
+    target = hx(target_hex, 64)
+    if hash_hex is None or target is None:
+        return None
+    try:
+        return int(hash_hex, 16) <= int(target, 16)
+    except ValueError:
+        return None
+
+def classify_variant(name, stats, current_stats):
+    total = stats["hash_rows"]
+    if total == 0:
+        return "no-data"
+    ratio = stats["pass"] / total
+    if ratio >= 0.90:
+        return "near all-pass"
+    lowdiff_total = stats["lowdiff_total"]
+    lowdiff_ratio = stats["lowdiff_pass"] / lowdiff_total if lowdiff_total else 0.0
+    accepted_floor = 1 if stats["accepted_total"] else 0
+    if (
+        name != "current_pool"
+        and lowdiff_ratio >= 0.50
+        and stats["accepted_pass"] >= accepted_floor
+    ):
+        return "plausibly miner-like"
+    return "near random"
+
+notify_rows = read_jsonl(notify_path)
+submit_rows = read_jsonl(submit_path)
+notify_by_key = {
+    (row.get("sessionId"), row.get("jobId")): row
+    for row in notify_rows
+    if row.get("sessionId") and row.get("jobId")
+}
+
+records = []
+for row in submit_rows:
+    notify = notify_by_key.get((row.get("sessionId"), row.get("jobId")))
+    if notify is not None:
+        for key, notify_key in (
+            ("notifyVersionSent", "versionSent"),
+            ("notifyPrevhashSent", "prevhashSent"),
+            ("notifyNbitsSent", "nbitsSent"),
+            ("notifyNtimeSent", "ntimeSent"),
+        ):
+            row.setdefault(key, notify.get(notify_key))
+    headers = build_headers(row)
+    hashes = {name: hoohash_header80(header) for name, header in headers.items()}
+    target = row.get("shareTarget")
+    passes = {name: pass_state(hash_hex, target) for name, hash_hex in hashes.items()}
+    if any(value is not None for value in passes.values()):
+        records.append((row, headers, hashes, passes))
+
+stats = {
+    name: Counter(
+        {
+            "total": len(records),
+            "hash_rows": 0,
+            "pass": 0,
+            "accepted_total": 0,
+            "accepted_pass": 0,
+            "lowdiff_total": 0,
+            "lowdiff_pass": 0,
+        }
+    )
+    for name in VARIANT_NAMES
+}
+examples = {name: [] for name in VARIANT_NAMES}
+for row, _headers, hashes, passes in records:
+    for name in VARIANT_NAMES:
+        if hashes.get(name) is not None:
+            stats[name]["hash_rows"] += 1
+        if is_accepted(row):
+            stats[name]["accepted_total"] += 1
+        if is_lowdiff(row):
+            stats[name]["lowdiff_total"] += 1
+        if passes.get(name) is True:
+            stats[name]["pass"] += 1
+            if is_accepted(row):
+                stats[name]["accepted_pass"] += 1
+            if is_lowdiff(row):
+                stats[name]["lowdiff_pass"] += 1
+                if name != "current_pool" and len(examples[name]) < 3:
+                    examples[name].append(row)
+
+current_stats = stats["current_pool"]
+ranked = sorted(
+    (name for name in VARIANT_NAMES if name != "current_pool"),
+    key=lambda name: (
+        stats[name]["lowdiff_pass"] - current_stats["lowdiff_pass"],
+        stats[name]["pass"],
+    ),
+    reverse=True,
+)
+best = None
+for name in ranked:
+    if classify_variant(name, stats[name], current_stats) == "plausibly miner-like":
+        best = name
+        break
+contrast_variant = best or (ranked[0] if ranked else "notify_wire_header")
+
+print("header_convention_audit: ready")
+print(f"bounded_tail_requested: {count}")
+print(f"notifyRows: {len(notify_rows)}")
+print(f"submitRows: {len(submit_rows)}")
+print(f"hashableRows: {len(records)}")
+print("--- variants ---")
+for name in VARIANT_NAMES:
+    item = stats[name]
+    denom = item["hash_rows"]
+    ratio = (item["pass"] / denom * 100.0) if denom else 0.0
+    print(f"{name}:")
+    print(f"  pass: {item['pass']}/{denom}")
+    print(f"  acceptedRowsPass: {item['accepted_pass']}/{item['accepted_total']}")
+    print(f"  lowDifficultyRejectedRowsPass: {item['lowdiff_pass']}/{item['lowdiff_total']}")
+    print(f"  passRatio: {ratio:.2f}%")
+    print(f"  interpretation: {classify_variant(name, item, current_stats)}")
+    if name != "current_pool":
+        print("  firstRejectedRowsThatWouldPass:")
+        if not examples[name]:
+            print("    none")
+        for row in examples[name]:
+            print(
+                "    "
+                f"jobId={row.get('jobId')} extranonce2={row.get('extranonce2')} "
+                f"ntime={row.get('ntime')} nonce={row.get('nonce')}"
+            )
+print("--- best variant ---")
+print(f"bestVariant: {best or 'none'}")
+if best is None:
+    print("bestVariantReason: no single bounded variant produced a miner-like pass profile")
+else:
+    gain = stats[best]["lowdiff_pass"] - current_stats["lowdiff_pass"]
+    print(f"bestVariantReason: lowDifficultyRejectedRowsPassGain={gain}")
+
+accepted_rows = [record for record in records if is_accepted(record[0])][:3]
+rejected_rows = [record for record in records if is_lowdiff(record[0])][:3]
+print("--- compact row contrast ---")
+print(f"contrastVariant: {contrast_variant}")
+for label, selected in (("accepted", accepted_rows), ("low-difficulty-rejected", rejected_rows)):
+    if not selected:
+        print(f"{label}: none")
+        continue
+    for row, headers, hashes, _passes in selected:
+        current_header = headers.get("current_pool")
+        variant_header = headers.get(contrast_variant)
+        print("---")
+        print(f"rowType: {label}")
+        print(f"jobId: {row.get('jobId')}")
+        print(f"extranonce2: {row.get('extranonce2')}")
+        print(f"ntime: {row.get('ntime')}")
+        print(f"nonce: {row.get('nonce')}")
+        print(f"currentHeader80: {prefix_suffix(current_header)}")
+        print(f"variantHeader80: {prefix_suffix(variant_header)}")
+        print(f"currentHashPrefix: {short(hashes.get('current_pool'))}")
+        print(f"variantHashPrefix: {short(hashes.get(contrast_variant))}")
+        print(f"shareTargetPrefix: {short(row.get('shareTarget'))}")
+PY
+  ) "${count}" "${POOL_CORE_DIR}" <(tail -n "${count}" "${NOTIFY_EVIDENCE_LOG}" 2>/dev/null || true) <(tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}" 2>/dev/null || true)
+}
+
 latest_reject_service() {
   ensure_runtime_dir
 
@@ -1593,10 +2032,153 @@ replay_evidence_service() {
   python3 "${POOL_CORE_DIR}/tools/replay_submit_evidence.py" "${SUBMIT_EVIDENCE_LOG}" --latest "${count}"
 }
 
+miner_hash_correlation_service() {
+  ensure_runtime_dir
+
+  local miner_log count
+  miner_log="${2:-}"
+  count="${3:-300}"
+  if [[ -z "${miner_log}" ]]; then
+    echo "miner-hash-correlation requires a hoo_gpu -P log path" >&2
+    return 1
+  fi
+  if [[ ! -f "${miner_log}" ]]; then
+    echo "miner-hash-correlation: miner log not found: ${miner_log}" >&2
+    return 1
+  fi
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || [[ "${count}" -lt 1 ]] || [[ "${count}" -gt 1000 ]]; then
+    echo "miner-hash-correlation tail-lines must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "miner-hash-correlation: submit evidence log not found: ${SUBMIT_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+
+  tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}" | python3 "${SCRIPT_DIR}/miner_hash_correlation.py" "${miner_log}" "${count}"
+}
+
+single_submit_preimage_trace_service() {
+  ensure_runtime_dir
+
+  local miner_log count
+  miner_log="${2:-}"
+  count="${3:-300}"
+  shift 3 || true
+  if [[ -z "${miner_log}" ]]; then
+    echo "single-submit-preimage-trace requires a hoo_gpu -P log path" >&2
+    return 1
+  fi
+  if [[ ! -f "${miner_log}" ]]; then
+    echo "single-submit-preimage-trace: miner log not found: ${miner_log}" >&2
+    return 1
+  fi
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || [[ "${count}" -lt 1 ]] || [[ "${count}" -gt 1000 ]]; then
+    echo "single-submit-preimage-trace tail-lines must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "single-submit-preimage-trace: submit evidence log not found: ${SUBMIT_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+  if [[ ! -f "${NOTIFY_EVIDENCE_LOG}" ]]; then
+    echo "single-submit-preimage-trace: notify evidence log not found: ${NOTIFY_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+
+  python3 "${SCRIPT_DIR}/single_submit_preimage_trace.py" \
+    "${miner_log}" \
+    "${count}" \
+    <(tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}") \
+    <(tail -n "${count}" "${NOTIFY_EVIDENCE_LOG}") \
+    "${POOL_CORE_DIR}" \
+    "$@"
+}
+
+nomp_parity_audit_service() {
+  ensure_runtime_dir
+
+  local miner_log count
+  miner_log="${2:-}"
+  count="${3:-300}"
+  if [[ -z "${miner_log}" ]]; then
+    echo "nomp-parity-audit requires a hoo_gpu -P log path" >&2
+    return 1
+  fi
+  if [[ ! -f "${miner_log}" ]]; then
+    echo "nomp-parity-audit: miner log not found: ${miner_log}" >&2
+    return 1
+  fi
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || [[ "${count}" -lt 1 ]] || [[ "${count}" -gt 1000 ]]; then
+    echo "nomp-parity-audit tail-lines must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "nomp-parity-audit: submit evidence log not found: ${SUBMIT_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+  if [[ ! -f "${NOTIFY_EVIDENCE_LOG}" ]]; then
+    echo "nomp-parity-audit: notify evidence log not found: ${NOTIFY_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+
+  python3 "${SCRIPT_DIR}/nomp_parity_audit.py" \
+    "${miner_log}" \
+    "${count}" \
+    <(tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}") \
+    <(tail -n "${count}" "${NOTIFY_EVIDENCE_LOG}") \
+    "${POOL_CORE_DIR}"
+}
+
+js_nomp_oracle_service() {
+  ensure_runtime_dir
+
+  local miner_log count nomp_root node_bin
+  miner_log="${2:-}"
+  count="${3:-300}"
+  nomp_root="${REPO_ROOT}/.runtime/reference/nomp-pepepow-debug"
+  if [[ -z "${miner_log}" ]]; then
+    echo "js-nomp-oracle requires a hoo_gpu -P log path" >&2
+    return 1
+  fi
+  if [[ ! -f "${miner_log}" ]]; then
+    echo "js-nomp-oracle: miner log not found: ${miner_log}" >&2
+    return 1
+  fi
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || [[ "${count}" -lt 1 ]] || [[ "${count}" -gt 1000 ]]; then
+    echo "js-nomp-oracle tail-lines must be an integer from 1 to 1000" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "js-nomp-oracle: submit evidence log not found: ${SUBMIT_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+  if [[ ! -f "${NOTIFY_EVIDENCE_LOG}" ]]; then
+    echo "js-nomp-oracle: notify evidence log not found: ${NOTIFY_EVIDENCE_LOG}" >&2
+    return 1
+  fi
+  if [[ ! -d "${nomp_root}" ]]; then
+    echo "js-nomp-oracle: NOMP reference tree not found: ${nomp_root}" >&2
+    return 1
+  fi
+  if ! node_bin="$(detect_node_bin)"; then
+    echo "js-nomp-oracle: no node runtime found on host" >&2
+    return 1
+  fi
+
+  "${node_bin}" "${SCRIPT_DIR}/js_nomp_oracle.js" \
+    "${miner_log}" \
+    "${count}" \
+    <(tail -n "${count}" "${SUBMIT_EVIDENCE_LOG}") \
+    <(tail -n "${count}" "${NOTIFY_EVIDENCE_LOG}") \
+    "${nomp_root}"
+}
+
 start_service() {
   set_effective_defaults
   ensure_runtime_dir
   load_launch_env_if_present
+  warn_if_suspicious_launch_env
   remove_stale_pid_file_if_needed
 
   local pid
@@ -1734,6 +2316,7 @@ status_service() {
   set_effective_defaults
   ensure_runtime_dir
   load_launch_env_if_present
+  warn_if_suspicious_launch_env
 
   local pid status
   pid="$(read_pid_file)"
@@ -1762,6 +2345,10 @@ logs_service() {
 }
 
 restart_service() {
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+  warn_if_suspicious_launch_env
   stop_service
   set_effective_defaults
   start_service
@@ -1807,6 +2394,9 @@ case "${SUBCOMMAND}" in
   notify-submit-payload-audit)
     notify_submit_payload_audit_service "$@"
     ;;
+  header-convention-audit)
+    header_convention_audit_service "$@"
+    ;;
   latest-reject)
     latest_reject_service
     ;;
@@ -1815,6 +2405,18 @@ case "${SUBCOMMAND}" in
     ;;
   replay-evidence)
     replay_evidence_service "$@"
+    ;;
+  miner-hash-correlation)
+    miner_hash_correlation_service "$@"
+    ;;
+  single-submit-preimage-trace)
+    single_submit_preimage_trace_service "$@"
+    ;;
+  nomp-parity-audit)
+    nomp_parity_audit_service "$@"
+    ;;
+  js-nomp-oracle)
+    js_nomp_oracle_service "$@"
     ;;
   logs)
     logs_service
@@ -1826,7 +2428,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
