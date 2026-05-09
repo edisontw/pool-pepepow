@@ -1864,17 +1864,21 @@ PY
 latest_reject_service() {
   ensure_runtime_dir
 
+  local tail_count
+  tail_count=200
+
   if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
     echo "latest_reject: none (log not found)"
     return 0
   fi
 
-  python3 - "${SUBMIT_EVIDENCE_LOG}" <<'PY'
+  python3 - "${tail_count}" <(tail -n "${tail_count}" -- "${SUBMIT_EVIDENCE_LOG}" 2>/dev/null || true) <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
+tail_count = int(sys.argv[1])
+path = Path(sys.argv[2])
 try:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 except Exception as exc:
@@ -1892,7 +1896,7 @@ for line in reversed(lines):
         continue
 
 if reject_record is None:
-    print("latest_reject: none (no rejected daemon-template submissions found)")
+    print(f"latest_reject: none (no rejected daemon-template submissions found in last {tail_count} entries)")
     sys.exit(0)
 
 r = reject_record
@@ -1947,16 +1951,15 @@ submit_evidence_service() {
     return 0
   fi
 
-  python3 - "${SUBMIT_EVIDENCE_LOG}" "${count}" <<'PY'
+  python3 - "${count}" <(tail -n "${count}" -- "${SUBMIT_EVIDENCE_LOG}") <<'PY'
 import json
 import sys
 from pathlib import Path
-from collections import Counter
 
-path = Path(sys.argv[1])
-count = int(sys.argv[2])
+count = int(sys.argv[1])
+tail_path = Path(sys.argv[2])
 try:
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [line.rstrip("\n") for line in tail_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 except Exception as exc:
     print(f"submit_evidence: error_reading_log: {exc}")
     sys.exit(0)
@@ -1966,50 +1969,39 @@ if not lines:
     sys.exit(0)
 
 selected = lines[-count:]
+print(f"latest_evidence_entries: {len(selected)}")
+preferred_keys = [
+    "timestamp",
+    "jobId",
+    "wallet",
+    "worker",
+    "candidateBlockHash",
+    "candidatePrepStatus",
+    "submitblockDryRunStatus",
+    "realSubmitblockEnabled",
+    "submitblockRealSubmitStatus",
+    "submitblockAttempted",
+    "submitblockSent",
+    "submitblockDaemonResult",
+    "submitblockException",
+]
+large_hex_keys = {"coinbaseLocalHex", "header80Hex"}
 
-# Summary counts
-all_records = []
-for line in lines:
-    try:
-        all_records.append(json.loads(line))
-    except Exception:
-        continue
-
-summary = {
-    "total": len(all_records),
-    "shareHashValidationStatus": Counter(r.get("shareHashValidationStatus", "none") for r in all_records),
-    "targetValidationStatus": Counter(r.get("targetValidationStatus", "none") for r in all_records),
-}
-
-last_seen = {}
-if all_records:
-    last = all_records[-1]
-    last_seen = {
-        "remote": last.get("remoteAddress"),
-        "job": last.get("jobId"),
-        "wallet": last.get("wallet"),
-    }
-
-print(f"submit_evidence_total: {summary['total']}")
-print("counts_by_share_hash_status:")
-for k, v in sorted(summary['shareHashValidationStatus'].items()):
-    print(f"  {k}: {v}")
-print("counts_by_target_status:")
-for k, v in sorted(summary['targetValidationStatus'].items()):
-    print(f"  {k}: {v}")
-print(f"last_seen_remote: {last_seen.get('remote')}")
-print(f"last_seen_job: {last_seen.get('job')}")
-print(f"last_seen_wallet: {last_seen.get('wallet')}")
-
-print(f"\nlatest_evidence_entries: {len(selected)}")
 for raw_line in selected:
     try:
         payload = json.loads(raw_line)
     except Exception:
         continue
     print("---")
+    printed_keys = set()
+    for key in preferred_keys:
+        if key in payload:
+            print(f"{key}: {payload.get(key)}")
+            printed_keys.add(key)
     for k, v in payload.items():
-        if k in ("coinbaseLocalHex", "header80Hex") and isinstance(v, str) and len(v) > 128:
+        if k in printed_keys:
+            continue
+        if k in large_hex_keys and isinstance(v, str) and len(v) > 128:
             print(f"{k}: {v[:64]}...{v[-64:]} ({len(v)//2} bytes)")
         else:
             print(f"{k}: {v}")

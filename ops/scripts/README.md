@@ -106,6 +106,18 @@ Long-run note:
 - `stratum.log` is rotated to `stratum.log.1` on `start` when it exceeds
   `PEPEPOW_LIVE_STRATUM_LOG_ROTATE_BYTES` (default `33554432`)
 
+Candidate follow-up helper ordering:
+
+- `candidate-followup --record` is the write step; it appends follow-up records
+  to the append-only candidate follow-up and outcome logs
+- `candidate-outcomes` and `candidate-followup-events` are read views over those
+  append-only logs
+- run `candidate-followup --record` to completion before reading
+  `candidate-outcomes` or `candidate-followup-events`
+- running these helpers concurrently can show temporary stale or incomplete
+  views while the write step is still appending records
+- this does not imply candidate prep, dry-run follow-up, or submitblock failure
+
 ## `stratum_smoke_report.py`
 
 Purpose:
