@@ -73,6 +73,20 @@ Operator note:
   `/home/ubuntu/.tmp/pepepow-parity-runtime`
 - do not point temporary localhost harnesses at `.runtime/live-stratum`
 
+Temporary parity harness example:
+
+```bash
+PARITY_RUNTIME_ROOT=/tmp/pepepow-parity-runtime
+mkdir -p "${PARITY_RUNTIME_ROOT}"
+export PARITY_RUNTIME_ROOT
+# Keep .runtime/live-stratum reserved for managed production live-stratum.sh.
+python3 - <<'PY'
+from pathlib import Path
+runtime = Path(__import__("os").environ["PARITY_RUNTIME_ROOT"])
+print(f"using temporary runtime root: {runtime}")
+PY
+```
+
 Example:
 
 ```bash
