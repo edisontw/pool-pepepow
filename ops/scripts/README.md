@@ -51,6 +51,9 @@ Purpose:
 - rotate `stratum.log` on start when it grows beyond the configured size guard
 - audit candidate probability from a bounded tail of `share-events.jsonl` with
   `candidate-probability-audit [tail-lines]`
+- find one candidate’s bounded submit evidence from `submit-evidence.jsonl`
+  with `submit-evidence-find <candidate_hash> [tail_lines]` (default tail
+  window: `5000`)
 
 Runtime paths:
 

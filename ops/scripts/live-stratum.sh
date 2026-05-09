@@ -2008,6 +2008,87 @@ for raw_line in selected:
 PY
 }
 
+submit_evidence_find_service() {
+  ensure_runtime_dir
+
+  local candidate_hash tail_lines
+  candidate_hash="${2:-}"
+  tail_lines="${3:-5000}"
+  if [[ -z "${candidate_hash}" ]]; then
+    echo "usage: $0 submit-evidence-find <candidate_hash> [tail_lines]" >&2
+    return 1
+  fi
+  if [[ ! "${tail_lines}" =~ ^[0-9]+$ ]] || [[ "${tail_lines}" -lt 1 ]]; then
+    echo "submit-evidence-find tail_lines must be a positive integer" >&2
+    return 1
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "submit_evidence_find: none (submit evidence log not found)"
+    return 0
+  fi
+
+  tail -n "${tail_lines}" -- "${SUBMIT_EVIDENCE_LOG}" \
+    | { rg -F -- "${candidate_hash}" || true; } \
+    | python3 - "${candidate_hash}" "${tail_lines}" <<'PY'
+import json
+import sys
+
+candidate_hash = sys.argv[1]
+tail_lines = int(sys.argv[2])
+preferred_keys = [
+    "timestamp",
+    "jobId",
+    "worker",
+    "wallet",
+    "candidateBlockHash",
+    "localComputedHash",
+    "candidatePossible",
+    "meetsBlockTarget",
+    "shareHashValidationStatus",
+    "targetValidationStatus",
+    "submitblockAttempted",
+    "submitblockSent",
+    "submitblockRealSubmitStatus",
+    "submitblockDaemonResult",
+    "submitblockException",
+    "realSubmitblockEnabled",
+]
+
+def value_or_null(payload, key):
+    return payload.get(key, None)
+
+matches = []
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+    if not raw_line:
+        continue
+    try:
+        payload = json.loads(raw_line)
+    except Exception:
+        continue
+    candidate_block_hash = payload.get("candidateBlockHash")
+    local_computed_hash = payload.get("localComputedHash")
+    if candidate_block_hash != candidate_hash and local_computed_hash != candidate_hash:
+        continue
+    matches.append(payload)
+
+if not matches:
+    print(
+        "submit_evidence_find: no match found for "
+        f"{candidate_hash} in last {tail_lines} lines"
+    )
+    sys.exit(0)
+
+print(f"submit_evidence_find: {len(matches)} match(es)")
+print(f"candidate_hash: {candidate_hash}")
+print(f"bounded_tail_lines: {tail_lines}")
+for payload in matches:
+    print("---")
+    for key in preferred_keys:
+        print(f"{key}: {value_or_null(payload, key)}")
+PY
+}
+
 replay_evidence_service() {
   ensure_runtime_dir
   local count
@@ -2395,6 +2476,9 @@ case "${SUBCOMMAND}" in
   submit-evidence)
     submit_evidence_service "$@"
     ;;
+  submit-evidence-find)
+    submit_evidence_find_service "$@"
+    ;;
   replay-evidence)
     replay_evidence_service "$@"
     ;;
@@ -2420,7 +2504,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
