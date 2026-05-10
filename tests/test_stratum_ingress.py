@@ -592,6 +592,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             "submitblockAttempted": True,
             "submitblockSent": True,
             "submitblockSubmittedAt": "2026-04-18T06:31:00Z",
+            "submitblockDaemonResult": None,
+            "submitblockDaemonError": None,
+            "submitblockDaemonAcceptedLikely": True,
         }
 
         payload = pool_core_daemon_rpc.build_candidate_outcome_event(candidate_event)
@@ -603,6 +606,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["submitblockAttempted"])
         self.assertTrue(payload["submitblockSent"])
         self.assertEqual(payload["submitblockSubmittedAt"], "2026-04-18T06:31:00Z")
+        self.assertIsNone(payload["submitblockDaemonResult"])
+        self.assertIsNone(payload["submitblockDaemonError"])
+        self.assertTrue(payload["submitblockDaemonAcceptedLikely"])
 
     def test_build_candidate_outcome_event_maps_recorded_followup_states(self):
         candidate_event = {
@@ -635,6 +641,24 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     payload["candidateOutcomeStatus"], expected_outcome_status
                 )
                 self.assertEqual(payload["followupStatus"], followup_status)
+
+    def test_summarize_submitblock_daemon_response_classifies_null_and_reject_string(self):
+        self.assertEqual(
+            stratum_ingress._summarize_submitblock_daemon_response(None),
+            {
+                "daemon_result": None,
+                "daemon_error": None,
+                "daemon_accepted_likely": True,
+            },
+        )
+        self.assertEqual(
+            stratum_ingress._summarize_submitblock_daemon_response("duplicate"),
+            {
+                "daemon_result": "duplicate",
+                "daemon_error": None,
+                "daemon_accepted_likely": False,
+            },
+        )
 
     def test_extract_template_outputs_ignores_empty_object(self):
         outputs = template_jobs._extract_template_outputs(
@@ -2159,7 +2183,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             tmp_path = Path(tmp_dir)
             rpc_client = SuccessfulTemplateRpcClient(
                 allow_submitblock=True,
-                submitblock_result="inconclusive",
+                submitblock_result="high-hash",
             )
             config = self._make_config(
                 tmp_path,
@@ -2245,7 +2269,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(diag["submitblockSent"])
                 self.assertEqual(diag["submitblockRealSubmitStatus"], "submit-sent")
                 self.assertEqual(diag["submitblockRpcMethod"], "submitblock")
-                self.assertEqual(diag["submitblockDaemonResult"], "inconclusive")
+                self.assertEqual(diag["submitblockDaemonResult"], "high-hash")
+                self.assertIsNone(diag["submitblockDaemonError"])
+                self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
                 self.assertIsInstance(diag["submitblockSubmittedAt"], str)
                 self.assertEqual(
                     rpc_client.submitblock_calls,
@@ -2262,11 +2288,23 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     candidate_event["submitblockRealSubmitStatus"], "submit-sent"
                 )
                 self.assertEqual(
-                    candidate_event["submitblockDaemonResult"], "inconclusive"
+                    candidate_event["submitblockDaemonResult"], "high-hash"
                 )
+                self.assertIsNone(candidate_event["submitblockDaemonError"])
+                self.assertFalse(candidate_event["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(
                     candidate_event["submitblockPayloadHash"],
                     diag["submitblockPayloadHash"],
+                )
+                candidate_outcome_event = json.loads(
+                    self._read_candidate_outcome_events(config)[0]
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockDaemonResult"], "high-hash"
+                )
+                self.assertIsNone(candidate_outcome_event["submitblockDaemonError"])
+                self.assertFalse(
+                    candidate_outcome_event["submitblockDaemonAcceptedLikely"]
                 )
                 await self._wait_for(
                     lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
@@ -2509,6 +2547,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(diag["submitblockAttempted"])
                 self.assertFalse(diag["submitblockSent"])
                 self.assertEqual(diag["submitblockRealSubmitStatus"], "submit-error")
+                self.assertIsNone(diag["submitblockDaemonResult"])
+                self.assertEqual(diag["submitblockDaemonError"], "submitblock failed")
+                self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(diag["submitblockException"], "submitblock failed")
                 self.assertEqual(len(rpc_client.submitblock_calls), 1)
 
@@ -2521,12 +2562,28 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     candidate_event["submitblockRealSubmitStatus"], "submit-error"
                 )
+                self.assertIsNone(candidate_event["submitblockDaemonResult"])
+                self.assertEqual(
+                    candidate_event["submitblockDaemonError"], "submitblock failed"
+                )
+                self.assertFalse(candidate_event["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(
                     candidate_event["submitblockException"], "submitblock failed"
                 )
                 self.assertEqual(
                     candidate_event["submitblockPayloadHash"],
                     diag["submitblockPayloadHash"],
+                )
+                candidate_outcome_event = json.loads(
+                    self._read_candidate_outcome_events(config)[0]
+                )
+                self.assertIsNone(candidate_outcome_event["submitblockDaemonResult"])
+                self.assertEqual(
+                    candidate_outcome_event["submitblockDaemonError"],
+                    "submitblock failed",
+                )
+                self.assertFalse(
+                    candidate_outcome_event["submitblockDaemonAcceptedLikely"]
                 )
 
                 await self._wait_for(

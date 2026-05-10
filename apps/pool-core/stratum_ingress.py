@@ -1928,6 +1928,7 @@ class StratumIngressService:
                     attempted=True,
                     sent=False,
                     submitted_at=submitted_at,
+                    daemon_error=str(exc),
                     exception_text=str(exc),
                 )
             )
@@ -1938,7 +1939,7 @@ class StratumIngressService:
                 attempted=True,
                 sent=True,
                 submitted_at=submitted_at,
-                daemon_result=daemon_result,
+                **_summarize_submitblock_daemon_response(daemon_result),
             )
         )
 
@@ -2011,6 +2012,10 @@ class StratumIngressService:
             "submitblockPayloadHash": threshold_summary.get("submitblockPayloadHash"),
             "submitblockPayloadBytes": threshold_summary.get("submitblockPayloadBytes"),
             "submitblockDaemonResult": threshold_summary.get("submitblockDaemonResult"),
+            "submitblockDaemonError": threshold_summary.get("submitblockDaemonError"),
+            "submitblockDaemonAcceptedLikely": threshold_summary.get(
+                "submitblockDaemonAcceptedLikely"
+            ),
             "submitblockException": threshold_summary.get("submitblockException"),
             "shareHashUsed": threshold_summary.get("shareHashUsed"),
             "blockTargetUsed": threshold_summary.get("blockTargetUsed"),
@@ -3193,6 +3198,8 @@ def _submitblock_status_result(
     sent: bool = False,
     submitted_at: str | None = None,
     daemon_result: Any = None,
+    daemon_error: str | None = None,
+    daemon_accepted_likely: bool | None = None,
     exception_text: str | None = None,
 ) -> dict[str, Any]:
     return {
@@ -3201,7 +3208,23 @@ def _submitblock_status_result(
         "submitblockRealSubmitStatus": status,
         "submitblockSubmittedAt": submitted_at,
         "submitblockDaemonResult": daemon_result,
+        "submitblockDaemonError": daemon_error,
+        "submitblockDaemonAcceptedLikely": daemon_accepted_likely,
         "submitblockException": exception_text,
+    }
+
+
+def _summarize_submitblock_daemon_response(daemon_result: Any) -> dict[str, Any]:
+    accepted_likely: bool | None = None
+    if daemon_result is None:
+        accepted_likely = True
+    elif isinstance(daemon_result, str):
+        accepted_likely = False
+
+    return {
+        "daemon_result": daemon_result,
+        "daemon_error": None,
+        "daemon_accepted_likely": accepted_likely,
     }
 
 

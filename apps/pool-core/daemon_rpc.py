@@ -261,6 +261,11 @@ def build_candidate_outcome_event(
         "submitblockAttempted": candidate_event.get("submitblockAttempted"),
         "submitblockSent": candidate_event.get("submitblockSent"),
         "submitblockSubmittedAt": candidate_event.get("submitblockSubmittedAt"),
+        "submitblockDaemonResult": candidate_event.get("submitblockDaemonResult"),
+        "submitblockDaemonError": candidate_event.get("submitblockDaemonError"),
+        "submitblockDaemonAcceptedLikely": candidate_event.get(
+            "submitblockDaemonAcceptedLikely"
+        ),
         "candidateOutcomeStatus": candidate_outcome_status(
             merged_followup.get("followupStatus")
         ),
