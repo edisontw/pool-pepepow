@@ -1801,7 +1801,7 @@ class StratumIngressService:
                 )
             )
             threshold_summary.update(
-                self._maybe_submit_prepared_candidate(threshold_summary)
+                self._maybe_submit_prepared_candidate(cached_job, threshold_summary)
             )
             self._append_candidate_evidence(
                 cached_job=cached_job,
@@ -1870,6 +1870,7 @@ class StratumIngressService:
 
     def _maybe_submit_prepared_candidate(
         self,
+        cached_job: Any,
         threshold_summary: dict[str, Any],
     ) -> dict[str, Any]:
         if not self._config.enable_real_submitblock:
@@ -1911,10 +1912,43 @@ class StratumIngressService:
             )
 
         rpc_client = getattr(self._job_manager, "_rpc_client", None)
-        if rpc_client is None or not hasattr(rpc_client, "submitblock"):
+        if (
+            rpc_client is None
+            or not hasattr(rpc_client, "submitblock")
+            or not hasattr(rpc_client, "get_best_block_hash")
+        ):
             return self._record_submitblock_status(
                 _submitblock_status_result(
                     status="submit-skipped-missing-rpc-client"
+                )
+            )
+
+        candidate_prevhash = _normalize_optional_hex(getattr(cached_job, "prevhash", None))
+        try:
+            daemon_best_block_hash = _normalize_optional_hex(
+                rpc_client.get_best_block_hash()
+            )
+        except Exception as exc:
+            return self._record_submitblock_status(
+                _submitblock_status_result(
+                    status="submit-skipped-best-block-hash-unavailable",
+                    daemon_error=str(exc),
+                    daemon_accepted_likely=False,
+                    submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_daemon_best_block_hash=None,
+                )
+            )
+        if (
+            candidate_prevhash is None
+            or daemon_best_block_hash is None
+            or candidate_prevhash != daemon_best_block_hash
+        ):
+            return self._record_submitblock_status(
+                _submitblock_status_result(
+                    status="submit-skipped-stale-prevblk",
+                    daemon_accepted_likely=False,
+                    submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_daemon_best_block_hash=daemon_best_block_hash,
                 )
             )
 
@@ -1930,6 +1964,8 @@ class StratumIngressService:
                     submitted_at=submitted_at,
                     daemon_error=str(exc),
                     exception_text=str(exc),
+                    submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_daemon_best_block_hash=daemon_best_block_hash,
                 )
             )
 
@@ -1939,6 +1975,8 @@ class StratumIngressService:
                 attempted=True,
                 sent=True,
                 submitted_at=submitted_at,
+                submitblock_candidate_prevhash=candidate_prevhash,
+                submitblock_daemon_best_block_hash=daemon_best_block_hash,
                 **_summarize_submitblock_daemon_response(daemon_result),
             )
         )
@@ -2015,6 +2053,12 @@ class StratumIngressService:
             "submitblockDaemonError": threshold_summary.get("submitblockDaemonError"),
             "submitblockDaemonAcceptedLikely": threshold_summary.get(
                 "submitblockDaemonAcceptedLikely"
+            ),
+            "submitblockCandidatePrevhash": threshold_summary.get(
+                "submitblockCandidatePrevhash"
+            ),
+            "submitblockDaemonBestBlockHash": threshold_summary.get(
+                "submitblockDaemonBestBlockHash"
             ),
             "submitblockException": threshold_summary.get("submitblockException"),
             "shareHashUsed": threshold_summary.get("shareHashUsed"),
@@ -3201,6 +3245,8 @@ def _submitblock_status_result(
     daemon_error: str | None = None,
     daemon_accepted_likely: bool | None = None,
     exception_text: str | None = None,
+    submitblock_candidate_prevhash: str | None = None,
+    submitblock_daemon_best_block_hash: str | None = None,
 ) -> dict[str, Any]:
     return {
         "submitblockAttempted": attempted,
@@ -3210,6 +3256,8 @@ def _submitblock_status_result(
         "submitblockDaemonResult": daemon_result,
         "submitblockDaemonError": daemon_error,
         "submitblockDaemonAcceptedLikely": daemon_accepted_likely,
+        "submitblockCandidatePrevhash": submitblock_candidate_prevhash,
+        "submitblockDaemonBestBlockHash": submitblock_daemon_best_block_hash,
         "submitblockException": exception_text,
     }
 

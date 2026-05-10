@@ -67,6 +67,14 @@ class DaemonRpcClient:
     def submitblock(self, block_hex: str) -> Any:
         return self.call("submitblock", [block_hex])
 
+    def get_best_block_hash(self) -> str:
+        result = self.call("getbestblockhash")
+        if not isinstance(result, str) or not result:
+            raise DaemonRpcResponseError(
+                "getbestblockhash returned an invalid hash"
+            )
+        return result
+
     def get_block_hash(self, height: int) -> str:
         result = self.call("getblockhash", [height])
         if not isinstance(result, str) or not result:
@@ -265,6 +273,12 @@ def build_candidate_outcome_event(
         "submitblockDaemonError": candidate_event.get("submitblockDaemonError"),
         "submitblockDaemonAcceptedLikely": candidate_event.get(
             "submitblockDaemonAcceptedLikely"
+        ),
+        "submitblockCandidatePrevhash": candidate_event.get(
+            "submitblockCandidatePrevhash"
+        ),
+        "submitblockDaemonBestBlockHash": candidate_event.get(
+            "submitblockDaemonBestBlockHash"
         ),
         "candidateOutcomeStatus": candidate_outcome_status(
             merged_followup.get("followupStatus")

@@ -48,10 +48,12 @@ class SuccessfulTemplateRpcClient:
         *,
         allow_submitblock: bool = False,
         submitblock_result: object = None,
+        best_block_hash: str | None = None,
     ) -> None:
         self.submitblock_calls: list[tuple[object, ...]] = []
         self._allow_submitblock = allow_submitblock
         self._submitblock_result = submitblock_result
+        self._best_block_hash = best_block_hash or ("1" * 64)
 
     def get_block_template(self) -> dict[str, object]:
         return {
@@ -78,6 +80,9 @@ class SuccessfulTemplateRpcClient:
         if not self._allow_submitblock:
             raise AssertionError("submitblock must not be called during dry-run prep")
         return self._submitblock_result
+
+    def get_best_block_hash(self) -> str:
+        return self._best_block_hash
 
 
 class PartialTemplateRpcClient(SuccessfulTemplateRpcClient):
@@ -2293,6 +2298,14 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(candidate_event["submitblockDaemonError"])
                 self.assertFalse(candidate_event["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(
+                    candidate_event["submitblockCandidatePrevhash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
+                    candidate_event["submitblockDaemonBestBlockHash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
                     candidate_event["submitblockPayloadHash"],
                     diag["submitblockPayloadHash"],
                 )
@@ -2305,6 +2318,14 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(candidate_outcome_event["submitblockDaemonError"])
                 self.assertFalse(
                     candidate_outcome_event["submitblockDaemonAcceptedLikely"]
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockCandidatePrevhash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockDaemonBestBlockHash"],
+                    "1" * 64,
                 )
                 await self._wait_for(
                     lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
@@ -2459,6 +2480,159 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     snapshot_meta["realSubmitblockLastStatus"],
                     "submit-skipped-send-budget-exhausted",
                 )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_submit_with_stale_prevhash_skips_submitblock_and_preserves_budget(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = SuccessfulTemplateRpcClient(
+                allow_submitblock=True,
+                submitblock_result="should-not-send",
+                best_block_hash="2" * 64,
+            )
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                diag = share_event["shareHashDiagnostic"]
+                self.assertFalse(diag["submitblockAttempted"])
+                self.assertFalse(diag["submitblockSent"])
+                self.assertEqual(
+                    diag["submitblockRealSubmitStatus"],
+                    "submit-skipped-stale-prevblk",
+                )
+                self.assertIsNone(diag["submitblockDaemonResult"])
+                self.assertIsNone(diag["submitblockDaemonError"])
+                self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
+                self.assertEqual(diag["submitblockCandidatePrevhash"], "1" * 64)
+                self.assertEqual(diag["submitblockDaemonBestBlockHash"], "2" * 64)
+                self.assertEqual(rpc_client.submitblock_calls, [])
+
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertEqual(
+                    candidate_event["submitblockRealSubmitStatus"],
+                    "submit-skipped-stale-prevblk",
+                )
+                self.assertFalse(candidate_event["submitblockAttempted"])
+                self.assertFalse(candidate_event["submitblockSent"])
+                self.assertIsNone(candidate_event["submitblockDaemonResult"])
+                self.assertIsNone(candidate_event["submitblockDaemonError"])
+                self.assertFalse(candidate_event["submitblockDaemonAcceptedLikely"])
+                self.assertEqual(candidate_event["submitblockCandidatePrevhash"], "1" * 64)
+                self.assertEqual(
+                    candidate_event["submitblockDaemonBestBlockHash"],
+                    "2" * 64,
+                )
+
+                candidate_outcome_event = json.loads(
+                    self._read_candidate_outcome_events(config)[0]
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockRealSubmitStatus"],
+                    "submit-skipped-stale-prevblk",
+                )
+                self.assertFalse(candidate_outcome_event["submitblockAttempted"])
+                self.assertFalse(candidate_outcome_event["submitblockSent"])
+                self.assertIsNone(candidate_outcome_event["submitblockDaemonResult"])
+                self.assertIsNone(candidate_outcome_event["submitblockDaemonError"])
+                self.assertFalse(
+                    candidate_outcome_event["submitblockDaemonAcceptedLikely"]
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockCandidatePrevhash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
+                    candidate_outcome_event["submitblockDaemonBestBlockHash"],
+                    "2" * 64,
+                )
+
+                await self._wait_for(
+                    lambda: self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                        "realSubmitblockLastStatus"
+                    )
+                    == "submit-skipped-stale-prevblk"
+                )
+                snapshot_meta = self._load_json(config.activity_snapshot_output_path)["meta"]
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudget"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockSendBudgetRemaining"], 1)
+                self.assertEqual(snapshot_meta["realSubmitblockAttemptCount"], 0)
+                self.assertEqual(snapshot_meta["realSubmitblockSentCount"], 0)
+                self.assertEqual(snapshot_meta["realSubmitblockErrorCount"], 0)
             finally:
                 if writer is not None:
                     writer.close()
