@@ -16,6 +16,7 @@ SUBMIT_EVIDENCE_LOG="${RUNTIME_DIR}/submit-evidence.jsonl"
 NOTIFY_EVIDENCE_LOG="${RUNTIME_DIR}/notify-evidence.jsonl"
 ACTIVITY_SNAPSHOT="${RUNTIME_DIR}/activity-snapshot.json"
 LAUNCH_ENV_FILE="${RUNTIME_DIR}/launch.env"
+SYSTEMD_UNIT_NAME="pepepow-pool-stratum.service"
 
 SUBCOMMAND="${1:-status}"
 
@@ -439,6 +440,49 @@ listener_details() {
 
 port_is_listening() {
   [[ -n "$(listener_details)" ]]
+}
+
+current_process_in_systemd_unit() {
+  grep -Fq "/${SYSTEMD_UNIT_NAME}" "/proc/$$/cgroup" 2>/dev/null
+}
+
+systemd_unit_active() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-active --quiet "${SYSTEMD_UNIT_NAME}"
+}
+
+systemd_main_pid() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl show -p MainPID --value "${SYSTEMD_UNIT_NAME}" 2>/dev/null || true
+}
+
+systemd_owns_live_stratum() {
+  local main_pid
+  if ! systemd_unit_active; then
+    return 1
+  fi
+  main_pid="$(systemd_main_pid)"
+  if [[ -z "${main_pid}" || "${main_pid}" == "0" ]]; then
+    return 1
+  fi
+  is_process_alive "${main_pid}" && is_managed_stratum_pid "${main_pid}"
+}
+
+guard_manual_service_mutation() {
+  local action="${1:-control}"
+  if current_process_in_systemd_unit; then
+    return 0
+  fi
+  if ! systemd_owns_live_stratum; then
+    return 0
+  fi
+
+  local main_pid
+  main_pid="$(systemd_main_pid)"
+  echo "refusing to ${action} live-stratum directly while ${SYSTEMD_UNIT_NAME} owns pid ${main_pid}" >&2
+  echo "use: ${0} systemd-restart" >&2
+  echo "or:  systemctl restart ${SYSTEMD_UNIT_NAME}" >&2
+  return 1
 }
 
 rotate_log_if_needed() {
@@ -2345,6 +2389,7 @@ stop_service() {
   ensure_runtime_dir
   load_launch_env_if_present
   remove_stale_pid_file_if_needed
+  guard_manual_service_mutation "stop"
 
   local pid
   pid="$(read_pid_file)"
@@ -2422,9 +2467,31 @@ restart_service() {
   ensure_runtime_dir
   load_launch_env_if_present
   warn_if_suspicious_launch_env
+  guard_manual_service_mutation "restart"
   stop_service
   set_effective_defaults
   start_service
+}
+
+systemd_restart_service() {
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+  warn_if_suspicious_launch_env
+  write_launch_env
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl is not available; wrote ${LAUNCH_ENV_FILE} only" >&2
+    return 1
+  fi
+
+  echo "prepared ${LAUNCH_ENV_FILE} for ${SYSTEMD_UNIT_NAME}"
+  if ! systemctl restart "${SYSTEMD_UNIT_NAME}"; then
+    echo "failed to restart ${SYSTEMD_UNIT_NAME}; launch env is prepared for the next operator-approved restart" >&2
+    return 1
+  fi
+
+  systemctl status "${SYSTEMD_UNIT_NAME}" --no-pager --lines=15 || true
 }
 
 case "${SUBCOMMAND}" in
@@ -2436,6 +2503,9 @@ case "${SUBCOMMAND}" in
     ;;
   restart)
     restart_service
+    ;;
+  systemd-restart)
+    systemd_restart_service
     ;;
   status)
     status_service
@@ -2504,7 +2574,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
