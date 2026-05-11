@@ -8,6 +8,7 @@ import math
 import os
 import re
 import signal
+import time
 from collections import OrderedDict, deque
 from contextlib import suppress
 from dataclasses import dataclass, field, is_dataclass, replace
@@ -1923,7 +1924,11 @@ class StratumIngressService:
                 )
             )
 
-        candidate_prevhash = _normalize_optional_hex(getattr(cached_job, "prevhash", None))
+        candidate_prevhash = _normalize_optional_hex(
+            getattr(cached_job, "prevhash", None)
+        )
+        checked_at = utc_now()
+        best_block_hash_started_at = time.perf_counter()
         try:
             daemon_best_block_hash = _normalize_optional_hex(
                 rpc_client.get_best_block_hash()
@@ -1943,6 +1948,30 @@ class StratumIngressService:
             or daemon_best_block_hash is None
             or candidate_prevhash != daemon_best_block_hash
         ):
+            LOGGER.info(
+                "submitblock-prevhash-guard %s",
+                json.dumps(
+                    {
+                        "checkedAt": _isoformat_optional(checked_at),
+                        "daemonBestBlockObservedAt": _isoformat_optional(utc_now()),
+                        "jobId": getattr(cached_job, "job_id", None),
+                        "templateAnchor": getattr(cached_job, "template_anchor", None),
+                        "candidatePrevhash": candidate_prevhash,
+                        "daemonBestBlockHash": daemon_best_block_hash,
+                        "guardStatus": "submit-skipped-stale-prevblk",
+                        "realSubmitEnabled": self._config.enable_real_submitblock,
+                        "bestBlockHashRpcLatencyMs": int(
+                            max(
+                                0.0,
+                                (time.perf_counter() - best_block_hash_started_at)
+                                * 1000,
+                            )
+                        ),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
             return self._record_submitblock_status(
                 _submitblock_status_result(
                     status="submit-skipped-stale-prevblk",
@@ -2577,6 +2606,23 @@ class StratumIngressService:
             assigned_difficulty=assigned_difficulty,
         )
         job = _apply_daemon_template_coinbase_dialect(job)
+        LOGGER.info(
+            "job-issued-from-template %s",
+            json.dumps(
+                {
+                    "jobId": state.current_job_id,
+                    "templateAnchor": job.template_anchor,
+                    "jobCreatedAt": _isoformat_optional(job.created_at),
+                    "prevhash": job.prevhash,
+                    "height": _optional_int((job.target_context or {}).get("height")),
+                    "curtime": (job.target_context or {}).get("curtime"),
+                    "previousJobId": state.previous_job_id,
+                    "replacedCurrentJob": replaced_current_job,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
         state.last_notified_anchor = job.template_anchor
         self._record_notify_probe(
             state,

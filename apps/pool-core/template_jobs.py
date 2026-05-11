@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -322,6 +323,7 @@ class TemplateJobManager:
 
         current_time = utc_now()
         self._last_attempt_at = current_time
+        rpc_started_at = time.perf_counter()
         try:
             raw_template = await asyncio.to_thread(self._rpc_client.get_block_template)
             template = _parse_block_template(raw_template, fetched_at=current_time)
@@ -339,6 +341,24 @@ class TemplateJobManager:
         self._rpc_status = RPC_STATUS_REACHABLE
         self._fetch_status = FETCH_STATUS_OK
         self._dirty = True
+        LOGGER.info(
+            "template-refresh-success %s",
+            json.dumps(
+                {
+                    "fetchedAt": isoformat(template.fetched_at),
+                    "previousblockhash": template.prevhash,
+                    "height": _optional_int(template.target_context.get("height")),
+                    "curtime": template.target_context.get("curtime"),
+                    "templateAnchor": template.template_anchor,
+                    "fetchStatus": self._fetch_status,
+                    "rpcLatencyMs": int(
+                        max(0.0, (time.perf_counter() - rpc_started_at) * 1000)
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
 
     def _effective_mode(self) -> str:
         if self._configured_mode == TEMPLATE_MODE_SYNTHETIC:

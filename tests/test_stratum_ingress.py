@@ -1130,6 +1130,101 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(issued_job)
         self.assertEqual(issued_job.assigned_difficulty, 0.2)
 
+    async def test_template_refresh_success_logs_template_fields(self):
+        config = self._make_config(
+            Path(tempfile.mkdtemp()),
+            template_mode="daemon-template",
+        )
+        manager = template_jobs.TemplateJobManager(
+            config,
+            rpc_client=SuccessfulTemplateRpcClient(),
+        )
+
+        with self.assertLogs("pepepow.template_jobs", level="INFO") as cm:
+            await manager._refresh_once()
+
+        payload = self._extract_structured_log(
+            cm.output,
+            "template-refresh-success ",
+        )
+        self.assertEqual(payload["previousblockhash"], "1" * 64)
+        self.assertEqual(payload["height"], 123456)
+        self.assertEqual(payload["curtime"], 1713225600)
+        self.assertEqual(payload["fetchStatus"], "ok")
+        self.assertIn("templateAnchor", payload)
+        self.assertIn("fetchedAt", payload)
+        self.assertIn("rpcLatencyMs", payload)
+
+    async def test_new_notify_message_logs_job_issued_from_template(self):
+        config = self._make_config(Path(tempfile.mkdtemp()), template_mode="daemon-template")
+        service = StratumIngressService(
+            config,
+            rpc_client=SuccessfulTemplateRpcClient(),
+        )
+        await service._job_manager._refresh_once()
+        state = stratum_ingress.new_connection_state()
+
+        with self.assertLogs("pepepow.stratum_ingress", level="INFO") as cm:
+            notify_message = service._new_notify_message(state)
+
+        payload = self._extract_structured_log(
+            cm.output,
+            "job-issued-from-template ",
+        )
+        self.assertEqual(payload["jobId"], notify_message["params"][0])
+        self.assertEqual(payload["prevhash"], "1" * 64)
+        self.assertEqual(payload["height"], 123456)
+        self.assertEqual(payload["curtime"], 1713225600)
+        self.assertEqual(payload["previousJobId"], None)
+        self.assertEqual(payload["replacedCurrentJob"], False)
+        self.assertIn("templateAnchor", payload)
+        self.assertIn("jobCreatedAt", payload)
+
+    async def test_real_submit_stale_prevhash_logs_guard_timing(self):
+        config = self._make_config(
+            Path(tempfile.mkdtemp()),
+            template_mode="daemon-template",
+            enable_real_submitblock=True,
+        )
+        service = StratumIngressService(
+            config,
+            rpc_client=SuccessfulTemplateRpcClient(best_block_hash="2" * 64),
+        )
+        await service._job_manager._refresh_once()
+        state = stratum_ingress.new_connection_state()
+        notify_message = service._new_notify_message(state)
+        cached_job = service._job_manager.get_job(notify_message["params"][0])
+        self.assertIsNotNone(cached_job)
+
+        with self.assertLogs("pepepow.stratum_ingress", level="INFO") as cm:
+            status = service._maybe_submit_prepared_candidate(
+                cached_job,
+                {
+                    "candidatePrepStatus": "candidate-prepared-complete",
+                    "submitblockDryRunReady": True,
+                    "submitblockPayloadHex": "00",
+                    "submitblockRpcMethod": "submitblock",
+                },
+            )
+
+        self.assertEqual(
+            status["submitblockRealSubmitStatus"],
+            "submit-skipped-stale-prevblk",
+        )
+        payload = self._extract_structured_log(
+            cm.output,
+            "submitblock-prevhash-guard ",
+        )
+        self.assertEqual(payload["jobId"], cached_job.job_id)
+        self.assertEqual(payload["templateAnchor"], cached_job.template_anchor)
+        self.assertEqual(payload["candidatePrevhash"], "1" * 64)
+        self.assertEqual(payload["daemonBestBlockHash"], "2" * 64)
+        self.assertEqual(payload["guardStatus"], "submit-skipped-stale-prevblk")
+        self.assertEqual(payload["realSubmitEnabled"], True)
+        self.assertIn("checkedAt", payload)
+        self.assertIn("daemonBestBlockObservedAt", payload)
+        self.assertIn("bestBlockHashRpcLatencyMs", payload)
+
     def test_submit_validation_uses_newly_issued_job_difficulty_after_vardiff(self):
         service = StratumIngressService(
             self._make_config(Path(tempfile.mkdtemp()), stratum_vardiff_enabled=True)
@@ -4733,6 +4828,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             stratum_vardiff_fast_share_interval_seconds=8.0,
             stratum_vardiff_slow_share_interval_seconds=25.0,
         )
+
+    def _extract_structured_log(
+        self,
+        output: list[str],
+        prefix: str,
+    ) -> dict[str, object]:
+        for line in output:
+            if prefix in line:
+                return json.loads(line.split(prefix, 1)[1])
+        self.fail(f"missing structured log with prefix {prefix!r}")
 
 
 if __name__ == "__main__":
