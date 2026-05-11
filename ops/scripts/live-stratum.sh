@@ -2076,12 +2076,11 @@ submit_evidence_find_service() {
   fi
 
   tail -n "${tail_lines}" -- "${SUBMIT_EVIDENCE_LOG}" \
-    | { rg -F -- "${candidate_hash}" || true; } \
-    | python3 - "${candidate_hash}" "${tail_lines}" <<'PY'
+    | python3 -c '
 import json
 import sys
 
-candidate_hash = sys.argv[1]
+candidate_hash = sys.argv[1].strip().lower()
 tail_lines = int(sys.argv[2])
 preferred_keys = [
     "timestamp",
@@ -2105,6 +2104,15 @@ preferred_keys = [
     "submitblockException",
     "realSubmitblockEnabled",
 ]
+hash_match_keys = [
+    "candidateBlockHash",
+    "blockHash",
+    "submitblockCandidateHash",
+    "submitblockPayloadHash",
+    "shareHash",
+    "localComputedHash",
+    "independentAuthoritativeShareHash",
+]
 
 def value_or_null(payload, key):
     return payload.get(key, None)
@@ -2118,9 +2126,13 @@ for raw_line in sys.stdin:
         payload = json.loads(raw_line)
     except Exception:
         continue
-    candidate_block_hash = payload.get("candidateBlockHash")
-    local_computed_hash = payload.get("localComputedHash")
-    if candidate_block_hash != candidate_hash and local_computed_hash != candidate_hash:
+    found_match = False
+    for key in hash_match_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip().lower() == candidate_hash:
+            found_match = True
+            break
+    if not found_match:
         continue
     matches.append(payload)
 
@@ -2138,7 +2150,11 @@ for payload in matches:
     print("---")
     for key in preferred_keys:
         print(f"{key}: {value_or_null(payload, key)}")
-PY
+    print(
+        "matchedHashField: "
+        f"{next((key for key in hash_match_keys if isinstance(payload.get(key), str) and payload.get(key).strip().lower() == candidate_hash), None)}"
+    )
+' "${candidate_hash}" "${tail_lines}"
 }
 
 replay_evidence_service() {
