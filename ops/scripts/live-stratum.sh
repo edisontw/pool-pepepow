@@ -2026,7 +2026,11 @@ preferred_keys = [
     "submitblockRealSubmitStatus",
     "submitblockAttempted",
     "submitblockSent",
+    "submitblockSubmittedAt",
     "submitblockDaemonResult",
+    "submitblockDaemonError",
+    "submitblockDaemonAcceptedLikely",
+    "submitblockDaemonBestBlockHash",
     "submitblockException",
 ]
 large_hex_keys = {"coinbaseLocalHex", "header80Hex"}
@@ -2093,7 +2097,11 @@ preferred_keys = [
     "submitblockAttempted",
     "submitblockSent",
     "submitblockRealSubmitStatus",
+    "submitblockSubmittedAt",
     "submitblockDaemonResult",
+    "submitblockDaemonError",
+    "submitblockDaemonAcceptedLikely",
+    "submitblockDaemonBestBlockHash",
     "submitblockException",
     "realSubmitblockEnabled",
 ]

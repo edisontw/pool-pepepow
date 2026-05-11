@@ -4969,6 +4969,60 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
 
             self.assertFalse(evidence_path.exists())
 
+    def test_reject_evidence_persists_submitblock_daemon_fields(self):
+        """submit evidence keeps direct submitblock daemon outcomes for bounded ops lookup."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job()
+            state = self._make_state()
+            assessment = self._make_rejected_assessment(job)
+            assessment.share_hash_diagnostic.update(
+                {
+                    "realSubmitblockEnabled": True,
+                    "submitblockDryRunReady": True,
+                    "submitblockDryRunStatus": "dry-run-prepared-complete",
+                    "submitblockRpcMethod": "submitblock",
+                    "submitblockPayloadHash": "11" * 32,
+                    "submitblockPayloadBytes": 243,
+                    "submitblockRpcParamsShape": "[candidateBlockHex]",
+                    "submitblockAttempted": True,
+                    "submitblockSent": True,
+                    "submitblockRealSubmitStatus": "submit-sent",
+                    "submitblockSubmittedAt": "2026-05-11T12:46:46Z",
+                    "submitblockDaemonResult": "high-hash",
+                    "submitblockDaemonError": None,
+                    "submitblockDaemonAcceptedLikely": False,
+                    "submitblockCandidatePrevhash": "22" * 32,
+                    "submitblockDaemonBestBlockHash": "33" * 32,
+                    "submitblockException": None,
+                }
+            )
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(len(records), 1)
+            rec = records[0]
+            self.assertTrue(rec["realSubmitblockEnabled"])
+            self.assertTrue(rec["submitblockAttempted"])
+            self.assertTrue(rec["submitblockSent"])
+            self.assertEqual(rec["submitblockRealSubmitStatus"], "submit-sent")
+            self.assertEqual(rec["submitblockSubmittedAt"], "2026-05-11T12:46:46Z")
+            self.assertEqual(rec["submitblockDaemonResult"], "high-hash")
+            self.assertNotIn("submitblockDaemonError", rec)
+            self.assertFalse(rec["submitblockDaemonAcceptedLikely"])
+            self.assertEqual(rec["submitblockCandidatePrevhash"], "22" * 32)
+            self.assertEqual(rec["submitblockDaemonBestBlockHash"], "33" * 32)
+            self.assertNotIn("submitblockException", rec)
+
 
 class LowDifficultyShareLogThrottleTests(unittest.TestCase):
     def _make_service(self, *, low_diff_share_full_log_every_n: int) -> StratumIngressService:

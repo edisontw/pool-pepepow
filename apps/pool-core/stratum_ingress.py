@@ -1271,6 +1271,27 @@ class StratumIngressService:
             "rejectReason": assessment.reject_reason,
             "rejectDetail": assessment.detail,
             "jobContext": assessment.job_status,
+            "realSubmitblockEnabled": diag.get("realSubmitblockEnabled"),
+            "submitblockDryRunReady": diag.get("submitblockDryRunReady"),
+            "submitblockDryRunStatus": diag.get("submitblockDryRunStatus"),
+            "submitblockRpcMethod": diag.get("submitblockRpcMethod"),
+            "submitblockPayloadHash": diag.get("submitblockPayloadHash"),
+            "submitblockPayloadBytes": diag.get("submitblockPayloadBytes"),
+            "submitblockRpcParamsShape": diag.get("submitblockRpcParamsShape"),
+            "submitblockAttempted": diag.get("submitblockAttempted"),
+            "submitblockSent": diag.get("submitblockSent"),
+            "submitblockRealSubmitStatus": diag.get("submitblockRealSubmitStatus"),
+            "submitblockSubmittedAt": diag.get("submitblockSubmittedAt"),
+            "submitblockDaemonResult": diag.get("submitblockDaemonResult"),
+            "submitblockDaemonError": diag.get("submitblockDaemonError"),
+            "submitblockDaemonAcceptedLikely": diag.get(
+                "submitblockDaemonAcceptedLikely"
+            ),
+            "submitblockCandidatePrevhash": diag.get("submitblockCandidatePrevhash"),
+            "submitblockDaemonBestBlockHash": diag.get(
+                "submitblockDaemonBestBlockHash"
+            ),
+            "submitblockException": diag.get("submitblockException"),
             "notifyEvidenceMatched": isinstance(notify_evidence, dict),
             "notifyEvidenceDigest": (
                 notify_evidence.get("notifyEvidenceDigest")
