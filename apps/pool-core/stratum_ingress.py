@@ -1840,6 +1840,7 @@ class StratumIngressService:
                     ntime_hex=str(params[3]).strip(),
                     nonce_hex=str(params[4]).strip(),
                     block_target_hex=f"{block_target_int:064x}",
+                    submitblock_prevhash_hex=notify_prevhash_header_hex,
                 )
             )
             threshold_summary.update(
@@ -3286,6 +3287,7 @@ def _prepare_candidate_artifact(
     ntime_hex: str,
     nonce_hex: str,
     block_target_hex: str,
+    submitblock_prevhash_hex: str | None = None,
 ) -> dict[str, Any]:
     authoritative_context = (
         cached_job.authoritative_context
@@ -3294,6 +3296,11 @@ def _prepare_candidate_artifact(
     )
     coinb1_hex = _normalize_optional_hex(getattr(cached_job, "coinb1", None))
     coinb2_hex = _normalize_optional_hex(getattr(cached_job, "coinb2", None))
+    submitblock_header = _build_submitblock_header(
+        header,
+        submitblock_prevhash_hex=submitblock_prevhash_hex,
+        job_prevhash_hex=getattr(cached_job, "prevhash", None),
+    )
     transaction_data_hexes = authoritative_context.get("transactionDataHexes")
     template_transaction_count = (
         cached_job.preimage_context.get("templateTransactionCount")
@@ -3308,6 +3315,7 @@ def _prepare_candidate_artifact(
     ):
         artifact = {
             "candidateBlockHeaderHex": header.hex(),
+            "submitblockHeaderHex": submitblock_header.hex(),
             "candidateBlockHash": share_hash.hex(),
             "shareHashUsed": share_hash.hex(),
             "blockTargetUsed": block_target_hex,
@@ -3331,6 +3339,7 @@ def _prepare_candidate_artifact(
     coinbase_hex = coinb1_hex + extranonce1_hex + extranonce2_hex + coinb2_hex
     artifact = {
         "candidateBlockHeaderHex": header.hex(),
+        "submitblockHeaderHex": submitblock_header.hex(),
         "candidateBlockHash": share_hash.hex(),
         "shareHashUsed": share_hash.hex(),
         "blockTargetUsed": block_target_hex,
@@ -3350,7 +3359,7 @@ def _prepare_candidate_artifact(
     }
     if template_transaction_count == 0:
         artifact["candidateBlockHex"] = (
-            header.hex()
+            submitblock_header.hex()
             + _encode_varint_local(1).hex()
             + coinbase_hex
         )
@@ -3376,7 +3385,7 @@ def _prepare_candidate_artifact(
         }
 
     artifact["candidateBlockHex"] = (
-        header.hex()
+        submitblock_header.hex()
         + _encode_varint_local(1 + template_transaction_count).hex()
         + coinbase_hex
         + "".join(str(raw_tx) for raw_tx in transaction_data_hexes)
@@ -3391,7 +3400,9 @@ def _prepare_candidate_artifact(
 
 def _prepare_submitblock_dry_run(candidate_artifact: dict[str, Any]) -> dict[str, Any]:
     payload_hex = candidate_artifact.get("candidateBlockHex")
-    header_hex = candidate_artifact.get("candidateBlockHeaderHex")
+    header_hex = candidate_artifact.get("submitblockHeaderHex") or candidate_artifact.get(
+        "candidateBlockHeaderHex"
+    )
     missing_data = candidate_artifact.get("missingData")
     missing_list = list(missing_data) if isinstance(missing_data, list) else []
     payload_prevhash_raw = _extract_header_prevhash_raw_hex(payload_hex)
@@ -4284,6 +4295,26 @@ def _extract_header_prevhash_canonical_hex(header_or_block_hex: Any) -> str | No
         return _swap_prevhash_words_for_pepew_header(prevhash_raw)
     except ValueError:
         return None
+
+
+def _build_submitblock_header(
+    header: bytes,
+    *,
+    submitblock_prevhash_hex: str | None,
+    job_prevhash_hex: str | None,
+) -> bytes:
+    if len(header) != 80:
+        return header
+    prevhash_raw = _normalize_optional_hex(submitblock_prevhash_hex)
+    if prevhash_raw is None:
+        job_prevhash = _normalize_optional_hex(job_prevhash_hex)
+        if job_prevhash is None:
+            return header
+        try:
+            prevhash_raw = _swap_prevhash_words_for_pepew_header(job_prevhash)
+        except ValueError:
+            return header
+    return header[:4] + bytes.fromhex(prevhash_raw) + header[36:]
 
 
 def _configured_coinbase_dialect() -> str:

@@ -2391,8 +2391,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(diag["submitblockPrevhashGuardPayloadMatchedJob"])
                 self.assertEqual(diag["submitblockJobPrevhash"], "1" * 64)
                 self.assertEqual(
+                    diag["submitblockPayloadPrevhashRaw"],
+                    notify_message["params"][1],
+                )
+                self.assertEqual(
                     diag["submitblockPayloadPrevhash"],
                     "1" * 64,
+                )
+                self.assertEqual(
+                    diag["submitblockHeaderPrevhashRaw"],
+                    notify_message["params"][1],
                 )
                 self.assertEqual(
                     diag["submitblockHeaderPrevhash"],
@@ -2724,7 +2732,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(diag["submitblockCandidatePrevhash"], "1" * 64)
                 self.assertEqual(diag["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(
+                    diag["submitblockPayloadPrevhashRaw"],
+                    notify_message["params"][1],
+                )
                 self.assertEqual(diag["submitblockPayloadPrevhash"], "1" * 64)
+                self.assertEqual(
+                    diag["submitblockHeaderPrevhashRaw"],
+                    notify_message["params"][1],
+                )
                 self.assertEqual(diag["submitblockHeaderPrevhash"], "1" * 64)
                 self.assertEqual(diag["submitblockDaemonBestBlockHash"], "2" * 64)
                 self.assertTrue(diag["submitblockPrevhashGuardEvaluated"])
@@ -2909,7 +2925,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     "submitblockJobPrevhash",
                 )
                 self.assertEqual(diag["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(
+                    diag["submitblockPayloadPrevhashRaw"],
+                    notify_message["params"][1],
+                )
                 self.assertEqual(diag["submitblockPayloadPrevhash"], "1" * 64)
+                self.assertEqual(
+                    diag["submitblockHeaderPrevhashRaw"],
+                    notify_message["params"][1],
+                )
                 self.assertTrue(diag["submitblockPrevhashGuardMatchedBestBlock"])
                 self.assertEqual(len(rpc_client.submitblock_calls), 1)
 
