@@ -618,19 +618,148 @@ from pathlib import Path
 path = Path(sys.argv[1])
 payload = json.loads(path.read_text(encoding="utf-8"))
 meta = payload.get("meta", {})
+template_fetch_status = meta.get("templateFetchStatus")
+template_daemon_rpc_reachable = meta.get("templateDaemonRpcReachable")
+real_submit_enabled = meta.get("realSubmitblockEnabled")
+real_submit_attempt_count = meta.get("realSubmitblockAttemptCount")
+real_submit_sent_count = meta.get("realSubmitblockSentCount")
+real_submit_error_count = meta.get("realSubmitblockErrorCount")
 print("drill_status: ready")
 print(f"template_mode_effective: {meta.get('templateModeEffective')}")
-print(f"template_fetch_status: {meta.get('templateFetchStatus')}")
-print(f"template_daemon_rpc_reachable: {meta.get('templateDaemonRpcReachable')}")
-print(f"real_submit_enabled: {meta.get('realSubmitblockEnabled')}")
+print(f"template_fetch_status: {template_fetch_status}")
+print(f"template_daemon_rpc_reachable: {template_daemon_rpc_reachable}")
+print(f"real_submit_enabled: {real_submit_enabled}")
 print(f"real_submit_send_budget: {meta.get('realSubmitblockSendBudget')}")
 print(f"real_submit_send_budget_remaining: {meta.get('realSubmitblockSendBudgetRemaining')}")
-print(f"real_submit_attempt_count: {meta.get('realSubmitblockAttemptCount')}")
-print(f"real_submit_sent_count: {meta.get('realSubmitblockSentCount')}")
-print(f"real_submit_error_count: {meta.get('realSubmitblockErrorCount')}")
+print(f"real_submit_attempt_count: {real_submit_attempt_count}")
+print(f"real_submit_sent_count: {real_submit_sent_count}")
+print(f"real_submit_error_count: {real_submit_error_count}")
 print(f"real_submit_last_status: {meta.get('realSubmitblockLastStatus')}")
 print(f"real_submit_last_attempt_at: {meta.get('realSubmitblockLastAttemptAt')}")
 print(f"real_submit_last_error: {meta.get('realSubmitblockLastError')}")
+
+needs_hint = (
+    real_submit_enabled is True
+    or any((real_submit_attempt_count, real_submit_sent_count, real_submit_error_count))
+    or template_fetch_status != "ok"
+    or template_daemon_rpc_reachable is not True
+)
+if needs_hint:
+    print("submit_safety_audit_hint: run './ops/scripts/live-stratum.sh submit-safety-audit'")
+PY
+}
+
+submit_safety_audit_service() {
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+
+  local config_real_submit_enabled config_real_submit_max_sends
+  local main_pid listener_line
+  config_real_submit_enabled="$(launch_env_value PEPEPOW_ENABLE_REAL_SUBMITBLOCK)"
+  config_real_submit_max_sends="$(launch_env_value PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS)"
+  main_pid="$(systemd_main_pid)"
+  listener_line="$(listener_details | head -n 1)"
+
+  python3 - "${ACTIVITY_SNAPSHOT}" "${config_real_submit_enabled}" "${config_real_submit_max_sends}" "${main_pid}" "${listener_line}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+snapshot_path = Path(sys.argv[1])
+config_enabled_raw = sys.argv[2]
+config_max_sends = sys.argv[3]
+systemd_main_pid_raw = sys.argv[4]
+listener_line = sys.argv[5]
+
+
+def normalize_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def render_bool(value):
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "unknown"
+
+
+meta = {}
+if snapshot_path.exists():
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+    except Exception:
+        meta = {}
+
+process_enabled = normalize_bool(meta.get("realSubmitblockEnabled"))
+config_enabled = normalize_bool(config_enabled_raw)
+template_mode = meta.get("templateModeEffective")
+template_fetch_status = meta.get("templateFetchStatus")
+template_rpc_reachable = meta.get("templateDaemonRpcReachable")
+attempt_count = meta.get("realSubmitblockAttemptCount")
+sent_count = meta.get("realSubmitblockSentCount")
+error_count = meta.get("realSubmitblockErrorCount")
+
+systemd_main_pid = systemd_main_pid_raw.strip() or "unknown"
+if systemd_main_pid == "0":
+    systemd_main_pid = "unknown"
+
+listener_pid = "unknown"
+match = re.search(r'pid=(\d+)', listener_line)
+if match:
+    listener_pid = match.group(1)
+
+if listener_pid == "unknown" or systemd_main_pid == "unknown":
+    listener_owned_by_systemd = None
+else:
+    listener_owned_by_systemd = listener_pid == systemd_main_pid
+
+if config_enabled is None or process_enabled is None:
+    aligned = None
+else:
+    aligned = config_enabled == process_enabled
+
+if process_enabled is True:
+    safety_status = "warning-real-submit-enabled"
+elif listener_owned_by_systemd is False:
+    safety_status = "warning-listener-not-systemd-owned"
+elif aligned is False:
+    safety_status = "warning-runtime-config-mismatch"
+elif (
+    config_enabled is False
+    and process_enabled is False
+    and listener_owned_by_systemd is True
+):
+    safety_status = "ok-default-off"
+else:
+    safety_status = "unknown"
+
+print("submit_safety_audit: ready")
+print(f"config_real_submit_enabled={config_enabled_raw or 'unknown'}")
+print(f"config_real_submit_max_sends={config_max_sends or 'unknown'}")
+print(f"process_real_submit_enabled={render_bool(process_enabled)}")
+print(f"process_real_submit_attempt_count={attempt_count}")
+print(f"process_real_submit_sent_count={sent_count}")
+print(f"process_real_submit_error_count={error_count}")
+print(f"template_mode_effective={template_mode}")
+print(f"template_fetch_status={template_fetch_status}")
+print(f"template_daemon_rpc_reachable={template_rpc_reachable}")
+print(f"systemd_main_pid={systemd_main_pid}")
+print(f"stratum_listener_pid={listener_pid}")
+print(f"listener_owned_by_systemd={render_bool(listener_owned_by_systemd)}")
+print(f"real_submit_config_process_aligned={render_bool(aligned)}")
+print(f"safety_status={safety_status}")
 PY
 }
 
@@ -2537,6 +2666,9 @@ case "${SUBCOMMAND}" in
   drill-status)
     drill_status_service
     ;;
+  submit-safety-audit)
+    submit_safety_audit_service
+    ;;
   candidate-events)
     candidate_events_service "$@"
     ;;
@@ -2598,7 +2730,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
