@@ -1220,6 +1220,11 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["candidatePrevhash"], "1" * 64)
         self.assertEqual(payload["daemonBestBlockHash"], "2" * 64)
         self.assertEqual(payload["guardStatus"], "submit-skipped-stale-prevblk")
+        self.assertEqual(payload["guardComparedField"], "submitblockJobPrevhash")
+        self.assertEqual(payload["guardComparedValue"], "1" * 64)
+        self.assertEqual(payload["guardMatchedBestBlock"], False)
+        self.assertIsNone(payload["payloadPrevhash"])
+        self.assertIsNone(payload["headerPrevhash"])
         self.assertEqual(payload["realSubmitEnabled"], True)
         self.assertIn("checkedAt", payload)
         self.assertIn("daemonBestBlockObservedAt", payload)
@@ -2373,6 +2378,26 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(diag["submitblockDaemonError"])
                 self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
                 self.assertIsInstance(diag["submitblockSubmittedAt"], str)
+                self.assertTrue(diag["submitblockPrevhashGuardEvaluated"])
+                self.assertEqual(
+                    diag["submitblockPrevhashGuardComparedField"],
+                    "submitblockJobPrevhash",
+                )
+                self.assertEqual(
+                    diag["submitblockPrevhashGuardComparedValue"],
+                    "1" * 64,
+                )
+                self.assertTrue(diag["submitblockPrevhashGuardMatchedBestBlock"])
+                self.assertTrue(diag["submitblockPrevhashGuardPayloadMatchedJob"])
+                self.assertEqual(diag["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(
+                    diag["submitblockPayloadPrevhash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
+                    diag["submitblockHeaderPrevhash"],
+                    "1" * 64,
+                )
                 self.assertEqual(
                     rpc_client.submitblock_calls,
                     [(diag["candidateArtifact"]["candidateBlockHex"],)],
@@ -2396,9 +2421,33 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     candidate_event["submitblockCandidatePrevhash"],
                     "1" * 64,
                 )
+                self.assertEqual(candidate_event["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(
+                    candidate_event["submitblockPayloadPrevhash"],
+                    "1" * 64,
+                )
+                self.assertEqual(
+                    candidate_event["submitblockHeaderPrevhash"],
+                    "1" * 64,
+                )
                 self.assertEqual(
                     candidate_event["submitblockDaemonBestBlockHash"],
                     "1" * 64,
+                )
+                self.assertTrue(candidate_event["submitblockPrevhashGuardEvaluated"])
+                self.assertEqual(
+                    candidate_event["submitblockPrevhashGuardComparedField"],
+                    "submitblockJobPrevhash",
+                )
+                self.assertEqual(
+                    candidate_event["submitblockPrevhashGuardComparedValue"],
+                    "1" * 64,
+                )
+                self.assertTrue(
+                    candidate_event["submitblockPrevhashGuardMatchedBestBlock"]
+                )
+                self.assertTrue(
+                    candidate_event["submitblockPrevhashGuardPayloadMatchedJob"]
                 )
                 self.assertEqual(
                     candidate_event["submitblockPayloadHash"],
@@ -2674,7 +2723,21 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(diag["submitblockDaemonError"])
                 self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(diag["submitblockCandidatePrevhash"], "1" * 64)
+                self.assertEqual(diag["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(diag["submitblockPayloadPrevhash"], "1" * 64)
+                self.assertEqual(diag["submitblockHeaderPrevhash"], "1" * 64)
                 self.assertEqual(diag["submitblockDaemonBestBlockHash"], "2" * 64)
+                self.assertTrue(diag["submitblockPrevhashGuardEvaluated"])
+                self.assertEqual(
+                    diag["submitblockPrevhashGuardComparedField"],
+                    "submitblockJobPrevhash",
+                )
+                self.assertEqual(
+                    diag["submitblockPrevhashGuardComparedValue"],
+                    "1" * 64,
+                )
+                self.assertFalse(diag["submitblockPrevhashGuardMatchedBestBlock"])
+                self.assertTrue(diag["submitblockPrevhashGuardPayloadMatchedJob"])
                 self.assertEqual(rpc_client.submitblock_calls, [])
 
                 candidate_event = json.loads(self._read_candidate_events(config)[0])
@@ -2688,9 +2751,29 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(candidate_event["submitblockDaemonError"])
                 self.assertFalse(candidate_event["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(candidate_event["submitblockCandidatePrevhash"], "1" * 64)
+                self.assertEqual(candidate_event["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(
+                    candidate_event["submitblockPayloadPrevhash"],
+                    "1" * 64,
+                )
                 self.assertEqual(
                     candidate_event["submitblockDaemonBestBlockHash"],
                     "2" * 64,
+                )
+                self.assertTrue(candidate_event["submitblockPrevhashGuardEvaluated"])
+                self.assertEqual(
+                    candidate_event["submitblockPrevhashGuardComparedField"],
+                    "submitblockJobPrevhash",
+                )
+                self.assertEqual(
+                    candidate_event["submitblockPrevhashGuardComparedValue"],
+                    "1" * 64,
+                )
+                self.assertFalse(
+                    candidate_event["submitblockPrevhashGuardMatchedBestBlock"]
+                )
+                self.assertTrue(
+                    candidate_event["submitblockPrevhashGuardPayloadMatchedJob"]
                 )
 
                 candidate_outcome_event = json.loads(
@@ -2820,6 +2903,14 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(diag["submitblockDaemonError"], "submitblock failed")
                 self.assertFalse(diag["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(diag["submitblockException"], "submitblock failed")
+                self.assertTrue(diag["submitblockPrevhashGuardEvaluated"])
+                self.assertEqual(
+                    diag["submitblockPrevhashGuardComparedField"],
+                    "submitblockJobPrevhash",
+                )
+                self.assertEqual(diag["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(diag["submitblockPayloadPrevhash"], "1" * 64)
+                self.assertTrue(diag["submitblockPrevhashGuardMatchedBestBlock"])
                 self.assertEqual(len(rpc_client.submitblock_calls), 1)
 
                 await self._wait_for(
@@ -2838,6 +2929,19 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(candidate_event["submitblockDaemonAcceptedLikely"])
                 self.assertEqual(
                     candidate_event["submitblockException"], "submitblock failed"
+                )
+                self.assertTrue(candidate_event["submitblockPrevhashGuardEvaluated"])
+                self.assertEqual(
+                    candidate_event["submitblockPrevhashGuardComparedField"],
+                    "submitblockJobPrevhash",
+                )
+                self.assertEqual(candidate_event["submitblockJobPrevhash"], "1" * 64)
+                self.assertEqual(
+                    candidate_event["submitblockPayloadPrevhash"],
+                    "1" * 64,
+                )
+                self.assertTrue(
+                    candidate_event["submitblockPrevhashGuardMatchedBestBlock"]
                 )
                 self.assertEqual(
                     candidate_event["submitblockPayloadHash"],
@@ -4999,7 +5103,17 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
                     "submitblockDaemonError": None,
                     "submitblockDaemonAcceptedLikely": False,
                     "submitblockCandidatePrevhash": "22" * 32,
+                    "submitblockJobPrevhash": "22" * 32,
+                    "submitblockPayloadPrevhashRaw": "44" * 32,
+                    "submitblockPayloadPrevhash": "55" * 32,
+                    "submitblockHeaderPrevhashRaw": "66" * 32,
+                    "submitblockHeaderPrevhash": "77" * 32,
                     "submitblockDaemonBestBlockHash": "33" * 32,
+                    "submitblockPrevhashGuardEvaluated": True,
+                    "submitblockPrevhashGuardComparedField": "submitblockJobPrevhash",
+                    "submitblockPrevhashGuardComparedValue": "22" * 32,
+                    "submitblockPrevhashGuardMatchedBestBlock": False,
+                    "submitblockPrevhashGuardPayloadMatchedJob": False,
                     "submitblockException": None,
                 }
             )
@@ -5020,7 +5134,20 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             self.assertNotIn("submitblockDaemonError", rec)
             self.assertFalse(rec["submitblockDaemonAcceptedLikely"])
             self.assertEqual(rec["submitblockCandidatePrevhash"], "22" * 32)
+            self.assertEqual(rec["submitblockJobPrevhash"], "22" * 32)
+            self.assertEqual(rec["submitblockPayloadPrevhashRaw"], "44" * 32)
+            self.assertEqual(rec["submitblockPayloadPrevhash"], "55" * 32)
+            self.assertEqual(rec["submitblockHeaderPrevhashRaw"], "66" * 32)
+            self.assertEqual(rec["submitblockHeaderPrevhash"], "77" * 32)
             self.assertEqual(rec["submitblockDaemonBestBlockHash"], "33" * 32)
+            self.assertEqual(rec["submitblockPrevhashGuardEvaluated"], True)
+            self.assertEqual(
+                rec["submitblockPrevhashGuardComparedField"],
+                "submitblockJobPrevhash",
+            )
+            self.assertEqual(rec["submitblockPrevhashGuardComparedValue"], "22" * 32)
+            self.assertEqual(rec["submitblockPrevhashGuardMatchedBestBlock"], False)
+            self.assertEqual(rec["submitblockPrevhashGuardPayloadMatchedJob"], False)
             self.assertNotIn("submitblockException", rec)
 
 

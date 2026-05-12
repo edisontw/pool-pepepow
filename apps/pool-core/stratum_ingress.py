@@ -1288,8 +1288,28 @@ class StratumIngressService:
                 "submitblockDaemonAcceptedLikely"
             ),
             "submitblockCandidatePrevhash": diag.get("submitblockCandidatePrevhash"),
+            "submitblockJobPrevhash": diag.get("submitblockJobPrevhash"),
+            "submitblockPayloadPrevhashRaw": diag.get("submitblockPayloadPrevhashRaw"),
+            "submitblockPayloadPrevhash": diag.get("submitblockPayloadPrevhash"),
+            "submitblockHeaderPrevhashRaw": diag.get("submitblockHeaderPrevhashRaw"),
+            "submitblockHeaderPrevhash": diag.get("submitblockHeaderPrevhash"),
             "submitblockDaemonBestBlockHash": diag.get(
                 "submitblockDaemonBestBlockHash"
+            ),
+            "submitblockPrevhashGuardEvaluated": diag.get(
+                "submitblockPrevhashGuardEvaluated"
+            ),
+            "submitblockPrevhashGuardComparedField": diag.get(
+                "submitblockPrevhashGuardComparedField"
+            ),
+            "submitblockPrevhashGuardComparedValue": diag.get(
+                "submitblockPrevhashGuardComparedValue"
+            ),
+            "submitblockPrevhashGuardMatchedBestBlock": diag.get(
+                "submitblockPrevhashGuardMatchedBestBlock"
+            ),
+            "submitblockPrevhashGuardPayloadMatchedJob": diag.get(
+                "submitblockPrevhashGuardPayloadMatchedJob"
             ),
             "submitblockException": diag.get("submitblockException"),
             "notifyEvidenceMatched": isinstance(notify_evidence, dict),
@@ -1948,6 +1968,25 @@ class StratumIngressService:
         candidate_prevhash = _normalize_optional_hex(
             getattr(cached_job, "prevhash", None)
         )
+        payload_prevhash_raw = _normalize_optional_hex(
+            threshold_summary.get("submitblockPayloadPrevhashRaw")
+        )
+        payload_prevhash = _normalize_optional_hex(
+            threshold_summary.get("submitblockPayloadPrevhash")
+        )
+        header_prevhash_raw = _normalize_optional_hex(
+            threshold_summary.get("submitblockHeaderPrevhashRaw")
+        )
+        header_prevhash = _normalize_optional_hex(
+            threshold_summary.get("submitblockHeaderPrevhash")
+        )
+        guard_compared_field = "submitblockJobPrevhash"
+        guard_compared_value = candidate_prevhash
+        payload_matched_job = (
+            payload_prevhash == candidate_prevhash
+            if payload_prevhash is not None and candidate_prevhash is not None
+            else None
+        )
         checked_at = utc_now()
         best_block_hash_started_at = time.perf_counter()
         try:
@@ -1961,13 +2000,28 @@ class StratumIngressService:
                     daemon_error=str(exc),
                     daemon_accepted_likely=False,
                     submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_job_prevhash=candidate_prevhash,
+                    submitblock_payload_prevhash_raw=payload_prevhash_raw,
+                    submitblock_payload_prevhash=payload_prevhash,
+                    submitblock_header_prevhash_raw=header_prevhash_raw,
+                    submitblock_header_prevhash=header_prevhash,
                     submitblock_daemon_best_block_hash=None,
+                    submitblock_prevhash_guard_evaluated=True,
+                    submitblock_prevhash_guard_compared_field=guard_compared_field,
+                    submitblock_prevhash_guard_compared_value=guard_compared_value,
+                    submitblock_prevhash_guard_matched_best_block=None,
+                    submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
                 )
             )
+        guard_matched_best_block = (
+            guard_compared_value == daemon_best_block_hash
+            if guard_compared_value is not None and daemon_best_block_hash is not None
+            else None
+        )
         if (
-            candidate_prevhash is None
+            guard_compared_value is None
             or daemon_best_block_hash is None
-            or candidate_prevhash != daemon_best_block_hash
+            or guard_compared_value != daemon_best_block_hash
         ):
             LOGGER.info(
                 "submitblock-prevhash-guard %s",
@@ -1977,6 +2031,14 @@ class StratumIngressService:
                         "daemonBestBlockObservedAt": _isoformat_optional(utc_now()),
                         "jobId": getattr(cached_job, "job_id", None),
                         "templateAnchor": getattr(cached_job, "template_anchor", None),
+                        "payloadPrevhashRaw": payload_prevhash_raw,
+                        "payloadPrevhash": payload_prevhash,
+                        "headerPrevhashRaw": header_prevhash_raw,
+                        "headerPrevhash": header_prevhash,
+                        "guardComparedField": guard_compared_field,
+                        "guardComparedValue": guard_compared_value,
+                        "guardPayloadMatchedJob": payload_matched_job,
+                        "guardMatchedBestBlock": guard_matched_best_block,
                         "candidatePrevhash": candidate_prevhash,
                         "daemonBestBlockHash": daemon_best_block_hash,
                         "guardStatus": "submit-skipped-stale-prevblk",
@@ -1998,7 +2060,17 @@ class StratumIngressService:
                     status="submit-skipped-stale-prevblk",
                     daemon_accepted_likely=False,
                     submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_job_prevhash=candidate_prevhash,
+                    submitblock_payload_prevhash_raw=payload_prevhash_raw,
+                    submitblock_payload_prevhash=payload_prevhash,
+                    submitblock_header_prevhash_raw=header_prevhash_raw,
+                    submitblock_header_prevhash=header_prevhash,
                     submitblock_daemon_best_block_hash=daemon_best_block_hash,
+                    submitblock_prevhash_guard_evaluated=True,
+                    submitblock_prevhash_guard_compared_field=guard_compared_field,
+                    submitblock_prevhash_guard_compared_value=guard_compared_value,
+                    submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
+                    submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
                 )
             )
 
@@ -2015,7 +2087,17 @@ class StratumIngressService:
                     daemon_error=str(exc),
                     exception_text=str(exc),
                     submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_job_prevhash=candidate_prevhash,
+                    submitblock_payload_prevhash_raw=payload_prevhash_raw,
+                    submitblock_payload_prevhash=payload_prevhash,
+                    submitblock_header_prevhash_raw=header_prevhash_raw,
+                    submitblock_header_prevhash=header_prevhash,
                     submitblock_daemon_best_block_hash=daemon_best_block_hash,
+                    submitblock_prevhash_guard_evaluated=True,
+                    submitblock_prevhash_guard_compared_field=guard_compared_field,
+                    submitblock_prevhash_guard_compared_value=guard_compared_value,
+                    submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
+                    submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
                 )
             )
 
@@ -2026,7 +2108,17 @@ class StratumIngressService:
                 sent=True,
                 submitted_at=submitted_at,
                 submitblock_candidate_prevhash=candidate_prevhash,
+                submitblock_job_prevhash=candidate_prevhash,
+                submitblock_payload_prevhash_raw=payload_prevhash_raw,
+                submitblock_payload_prevhash=payload_prevhash,
+                submitblock_header_prevhash_raw=header_prevhash_raw,
+                submitblock_header_prevhash=header_prevhash,
                 submitblock_daemon_best_block_hash=daemon_best_block_hash,
+                submitblock_prevhash_guard_evaluated=True,
+                submitblock_prevhash_guard_compared_field=guard_compared_field,
+                submitblock_prevhash_guard_compared_value=guard_compared_value,
+                submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
+                submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
                 **_summarize_submitblock_daemon_response(daemon_result),
             )
         )
@@ -2107,8 +2199,36 @@ class StratumIngressService:
             "submitblockCandidatePrevhash": threshold_summary.get(
                 "submitblockCandidatePrevhash"
             ),
+            "submitblockJobPrevhash": threshold_summary.get("submitblockJobPrevhash"),
+            "submitblockPayloadPrevhashRaw": threshold_summary.get(
+                "submitblockPayloadPrevhashRaw"
+            ),
+            "submitblockPayloadPrevhash": threshold_summary.get(
+                "submitblockPayloadPrevhash"
+            ),
+            "submitblockHeaderPrevhashRaw": threshold_summary.get(
+                "submitblockHeaderPrevhashRaw"
+            ),
+            "submitblockHeaderPrevhash": threshold_summary.get(
+                "submitblockHeaderPrevhash"
+            ),
             "submitblockDaemonBestBlockHash": threshold_summary.get(
                 "submitblockDaemonBestBlockHash"
+            ),
+            "submitblockPrevhashGuardEvaluated": threshold_summary.get(
+                "submitblockPrevhashGuardEvaluated"
+            ),
+            "submitblockPrevhashGuardComparedField": threshold_summary.get(
+                "submitblockPrevhashGuardComparedField"
+            ),
+            "submitblockPrevhashGuardComparedValue": threshold_summary.get(
+                "submitblockPrevhashGuardComparedValue"
+            ),
+            "submitblockPrevhashGuardMatchedBestBlock": threshold_summary.get(
+                "submitblockPrevhashGuardMatchedBestBlock"
+            ),
+            "submitblockPrevhashGuardPayloadMatchedJob": threshold_summary.get(
+                "submitblockPrevhashGuardPayloadMatchedJob"
             ),
             "submitblockException": threshold_summary.get("submitblockException"),
             "shareHashUsed": threshold_summary.get("shareHashUsed"),
@@ -3271,8 +3391,13 @@ def _prepare_candidate_artifact(
 
 def _prepare_submitblock_dry_run(candidate_artifact: dict[str, Any]) -> dict[str, Any]:
     payload_hex = candidate_artifact.get("candidateBlockHex")
+    header_hex = candidate_artifact.get("candidateBlockHeaderHex")
     missing_data = candidate_artifact.get("missingData")
     missing_list = list(missing_data) if isinstance(missing_data, list) else []
+    payload_prevhash_raw = _extract_header_prevhash_raw_hex(payload_hex)
+    payload_prevhash = _extract_header_prevhash_canonical_hex(payload_hex)
+    header_prevhash_raw = _extract_header_prevhash_raw_hex(header_hex)
+    header_prevhash = _extract_header_prevhash_canonical_hex(header_hex)
     if not isinstance(payload_hex, str) or not payload_hex:
         return {
             "submitblockDryRunReady": False,
@@ -3287,6 +3412,10 @@ def _prepare_submitblock_dry_run(candidate_artifact: dict[str, Any]) -> dict[str
             "submitblockPayloadBytes": None,
             "submitblockRpcParamsShape": "[candidateBlockHex]",
             "submitblockRpcParams": None,
+            "submitblockPayloadPrevhashRaw": payload_prevhash_raw,
+            "submitblockPayloadPrevhash": payload_prevhash,
+            "submitblockHeaderPrevhashRaw": header_prevhash_raw,
+            "submitblockHeaderPrevhash": header_prevhash,
             "missingData": missing_list or ["candidate-block-hex"],
         }
     return {
@@ -3298,6 +3427,10 @@ def _prepare_submitblock_dry_run(candidate_artifact: dict[str, Any]) -> dict[str
         "submitblockPayloadBytes": len(bytes.fromhex(payload_hex)),
         "submitblockRpcParamsShape": "[candidateBlockHex]",
         "submitblockRpcParams": [payload_hex],
+        "submitblockPayloadPrevhashRaw": payload_prevhash_raw,
+        "submitblockPayloadPrevhash": payload_prevhash,
+        "submitblockHeaderPrevhashRaw": header_prevhash_raw,
+        "submitblockHeaderPrevhash": header_prevhash,
         "missingData": [],
     }
 
@@ -3313,7 +3446,17 @@ def _submitblock_status_result(
     daemon_accepted_likely: bool | None = None,
     exception_text: str | None = None,
     submitblock_candidate_prevhash: str | None = None,
+    submitblock_job_prevhash: str | None = None,
+    submitblock_payload_prevhash_raw: str | None = None,
+    submitblock_payload_prevhash: str | None = None,
+    submitblock_header_prevhash_raw: str | None = None,
+    submitblock_header_prevhash: str | None = None,
     submitblock_daemon_best_block_hash: str | None = None,
+    submitblock_prevhash_guard_evaluated: bool = False,
+    submitblock_prevhash_guard_compared_field: str | None = None,
+    submitblock_prevhash_guard_compared_value: str | None = None,
+    submitblock_prevhash_guard_matched_best_block: bool | None = None,
+    submitblock_prevhash_guard_payload_matched_job: bool | None = None,
 ) -> dict[str, Any]:
     return {
         "submitblockAttempted": attempted,
@@ -3324,7 +3467,25 @@ def _submitblock_status_result(
         "submitblockDaemonError": daemon_error,
         "submitblockDaemonAcceptedLikely": daemon_accepted_likely,
         "submitblockCandidatePrevhash": submitblock_candidate_prevhash,
+        "submitblockJobPrevhash": submitblock_job_prevhash,
+        "submitblockPayloadPrevhashRaw": submitblock_payload_prevhash_raw,
+        "submitblockPayloadPrevhash": submitblock_payload_prevhash,
+        "submitblockHeaderPrevhashRaw": submitblock_header_prevhash_raw,
+        "submitblockHeaderPrevhash": submitblock_header_prevhash,
         "submitblockDaemonBestBlockHash": submitblock_daemon_best_block_hash,
+        "submitblockPrevhashGuardEvaluated": submitblock_prevhash_guard_evaluated,
+        "submitblockPrevhashGuardComparedField": (
+            submitblock_prevhash_guard_compared_field
+        ),
+        "submitblockPrevhashGuardComparedValue": (
+            submitblock_prevhash_guard_compared_value
+        ),
+        "submitblockPrevhashGuardMatchedBestBlock": (
+            submitblock_prevhash_guard_matched_best_block
+        ),
+        "submitblockPrevhashGuardPayloadMatchedJob": (
+            submitblock_prevhash_guard_payload_matched_job
+        ),
         "submitblockException": exception_text,
     }
 
@@ -4103,6 +4264,26 @@ def _swap_prevhash_words_for_pepew_header(prevhash_hex: str) -> str:
         raise ValueError("prevhash must be 64-character hex")
     words = [normalized[index : index + 8] for index in range(0, 64, 8)]
     return "".join(bytes.fromhex(word)[::-1].hex() for word in words)
+
+
+def _extract_header_prevhash_raw_hex(header_or_block_hex: Any) -> str | None:
+    normalized = _normalize_optional_hex(header_or_block_hex)
+    if normalized is None or len(normalized) < 72:
+        return None
+    prevhash_raw = normalized[8:72]
+    if len(prevhash_raw) != 64 or not _is_hex_string(prevhash_raw):
+        return None
+    return prevhash_raw
+
+
+def _extract_header_prevhash_canonical_hex(header_or_block_hex: Any) -> str | None:
+    prevhash_raw = _extract_header_prevhash_raw_hex(header_or_block_hex)
+    if prevhash_raw is None:
+        return None
+    try:
+        return _swap_prevhash_words_for_pepew_header(prevhash_raw)
+    except ValueError:
+        return None
 
 
 def _configured_coinbase_dialect() -> str:
