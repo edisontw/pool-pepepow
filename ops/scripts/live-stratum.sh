@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 POOL_CORE_DIR="${REPO_ROOT}/apps/pool-core"
-RUNTIME_DIR="${REPO_ROOT}/.runtime/live-stratum"
+RUNTIME_DIR="${PEPEPOW_LIVE_STRATUM_RUNTIME_DIR:-${REPO_ROOT}/.runtime/live-stratum}"
 PID_FILE="${RUNTIME_DIR}/stratum.pid"
 LOG_FILE="${RUNTIME_DIR}/stratum.log"
 SHARE_LOG="${RUNTIME_DIR}/share-events.jsonl"
