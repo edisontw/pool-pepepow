@@ -1311,6 +1311,14 @@ class StratumIngressService:
             "submitblockPrevhashGuardPayloadMatchedJob": diag.get(
                 "submitblockPrevhashGuardPayloadMatchedJob"
             ),
+            "candidatePrevHash": diag.get("candidatePrevHash"),
+            "daemonBestHashAtSubmitDecision": diag.get(
+                "daemonBestHashAtSubmitDecision"
+            ),
+            "templateAgeSeconds": diag.get("templateAgeSeconds"),
+            "candidateAgeSecondsAtSubmitDecision": diag.get(
+                "candidateAgeSecondsAtSubmitDecision"
+            ),
             "submitblockException": diag.get("submitblockException"),
             "notifyEvidenceMatched": isinstance(notify_evidence, dict),
             "notifyEvidenceDigest": (
@@ -1830,6 +1838,7 @@ class StratumIngressService:
         )
         threshold_summary["shareDifficultyUsed"] = effective_difficulty
         if threshold_summary["meetsBlockTarget"]:
+            threshold_summary["candidatePreparedAt"] = _isoformat_optional(utc_now())
             threshold_summary.update(
                 _prepare_candidate_artifact(
                     cached_job,
@@ -1916,9 +1925,28 @@ class StratumIngressService:
         cached_job: Any,
         threshold_summary: dict[str, Any],
     ) -> dict[str, Any]:
+        checked_at = utc_now()
+        candidate_prevhash = _normalize_optional_hex(
+            getattr(cached_job, "prevhash", None)
+        )
+        template_age_seconds = _age_seconds_later_from_earlier(
+            checked_at,
+            getattr(cached_job, "created_at", None),
+        )
+        candidate_age_seconds_at_submit_decision = _age_seconds_later_from_earlier(
+            checked_at,
+            threshold_summary.get("candidatePreparedAt"),
+        )
         if not self._config.enable_real_submitblock:
             return self._record_submitblock_status(
-                _submitblock_status_result(status="submit-disabled-flag-off")
+                _submitblock_status_result(
+                    status="submit-disabled-flag-off",
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
+                )
             )
         if (
             self._submit_validation_counts["realSubmitblockSentCount"]
@@ -1926,19 +1954,34 @@ class StratumIngressService:
         ):
             return self._record_submitblock_status(
                 _submitblock_status_result(
-                    status="submit-skipped-send-budget-exhausted"
+                    status="submit-skipped-send-budget-exhausted",
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
         if threshold_summary.get("candidatePrepStatus") != "candidate-prepared-complete":
             return self._record_submitblock_status(
                 _submitblock_status_result(
-                    status="submit-skipped-incomplete-candidate"
+                    status="submit-skipped-incomplete-candidate",
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
         if not threshold_summary.get("submitblockDryRunReady"):
             return self._record_submitblock_status(
                 _submitblock_status_result(
-                    status="submit-skipped-incomplete-dry-run"
+                    status="submit-skipped-incomplete-dry-run",
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
         payload_hex = threshold_summary.get("submitblockPayloadHex")
@@ -1950,7 +1993,12 @@ class StratumIngressService:
         ):
             return self._record_submitblock_status(
                 _submitblock_status_result(
-                    status="submit-skipped-missing-payload"
+                    status="submit-skipped-missing-payload",
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
 
@@ -1962,13 +2010,15 @@ class StratumIngressService:
         ):
             return self._record_submitblock_status(
                 _submitblock_status_result(
-                    status="submit-skipped-missing-rpc-client"
+                    status="submit-skipped-missing-rpc-client",
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
 
-        candidate_prevhash = _normalize_optional_hex(
-            getattr(cached_job, "prevhash", None)
-        )
         payload_prevhash_raw = _normalize_optional_hex(
             threshold_summary.get("submitblockPayloadPrevhashRaw")
         )
@@ -1988,7 +2038,6 @@ class StratumIngressService:
             if payload_prevhash is not None and candidate_prevhash is not None
             else None
         )
-        checked_at = utc_now()
         best_block_hash_started_at = time.perf_counter()
         try:
             daemon_best_block_hash = _normalize_optional_hex(
@@ -2012,6 +2061,11 @@ class StratumIngressService:
                     submitblock_prevhash_guard_compared_value=guard_compared_value,
                     submitblock_prevhash_guard_matched_best_block=None,
                     submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
+                    candidate_prev_hash=candidate_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
         guard_matched_best_block = (
@@ -2072,6 +2126,12 @@ class StratumIngressService:
                     submitblock_prevhash_guard_compared_value=guard_compared_value,
                     submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
                     submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
+                    candidate_prev_hash=candidate_prevhash,
+                    daemon_best_hash_at_submit_decision=daemon_best_block_hash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
 
@@ -2099,6 +2159,12 @@ class StratumIngressService:
                     submitblock_prevhash_guard_compared_value=guard_compared_value,
                     submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
                     submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
+                    candidate_prev_hash=candidate_prevhash,
+                    daemon_best_hash_at_submit_decision=daemon_best_block_hash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
                 )
             )
 
@@ -2120,6 +2186,12 @@ class StratumIngressService:
                 submitblock_prevhash_guard_compared_value=guard_compared_value,
                 submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
                 submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
+                candidate_prev_hash=candidate_prevhash,
+                daemon_best_hash_at_submit_decision=daemon_best_block_hash,
+                template_age_seconds=template_age_seconds,
+                candidate_age_seconds_at_submit_decision=(
+                    candidate_age_seconds_at_submit_decision
+                ),
                 **_summarize_submitblock_daemon_response(daemon_result),
             )
         )
@@ -2165,7 +2237,8 @@ class StratumIngressService:
         if not isinstance(candidate_artifact, dict):
             candidate_artifact = {}
         payload = {
-            "timestamp": _isoformat_optional(utc_now()),
+            "timestamp": threshold_summary.get("candidatePreparedAt")
+            or _isoformat_optional(utc_now()),
             "jobId": getattr(cached_job, "job_id", None),
             "templateAnchor": getattr(cached_job, "template_anchor", None),
             "wallet": wallet,
@@ -2231,6 +2304,8 @@ class StratumIngressService:
             "submitblockPrevhashGuardPayloadMatchedJob": threshold_summary.get(
                 "submitblockPrevhashGuardPayloadMatchedJob"
             ),
+            "candidatePrevHash": threshold_summary.get("candidatePrevHash"),
+            "templateAgeSeconds": threshold_summary.get("templateAgeSeconds"),
             "submitblockException": threshold_summary.get("submitblockException"),
             "shareHashUsed": threshold_summary.get("shareHashUsed"),
             "blockTargetUsed": threshold_summary.get("blockTargetUsed"),
@@ -3468,6 +3543,10 @@ def _submitblock_status_result(
     submitblock_prevhash_guard_compared_value: str | None = None,
     submitblock_prevhash_guard_matched_best_block: bool | None = None,
     submitblock_prevhash_guard_payload_matched_job: bool | None = None,
+    candidate_prev_hash: str | None = None,
+    daemon_best_hash_at_submit_decision: str | None = None,
+    template_age_seconds: int | None = None,
+    candidate_age_seconds_at_submit_decision: int | None = None,
 ) -> dict[str, Any]:
     return {
         "submitblockAttempted": attempted,
@@ -3496,6 +3575,12 @@ def _submitblock_status_result(
         ),
         "submitblockPrevhashGuardPayloadMatchedJob": (
             submitblock_prevhash_guard_payload_matched_job
+        ),
+        "candidatePrevHash": candidate_prev_hash,
+        "daemonBestHashAtSubmitDecision": daemon_best_hash_at_submit_decision,
+        "templateAgeSeconds": template_age_seconds,
+        "candidateAgeSecondsAtSubmitDecision": (
+            candidate_age_seconds_at_submit_decision
         ),
         "submitblockException": exception_text,
     }
@@ -3628,6 +3713,21 @@ def _isoformat_optional(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
+
+
+def _age_seconds_later_from_earlier(
+    later: datetime | None, earlier: datetime | None
+) -> int | None:
+    if not isinstance(later, datetime):
+        return None
+    if isinstance(earlier, str):
+        try:
+            earlier = datetime.fromisoformat(earlier.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(earlier, datetime):
+        return None
+    return max(0, int((later - earlier).total_seconds()))
 
 
 def _resolve_target_validation_outcome(

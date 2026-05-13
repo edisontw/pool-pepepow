@@ -2211,6 +2211,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     candidate_event["submitblockRealSubmitStatus"],
                     "submit-disabled-flag-off",
                 )
+                self.assertEqual(candidate_event["candidatePrevHash"], "1" * 64)
+                self.assertIsInstance(candidate_event["templateAgeSeconds"], int)
+                self.assertGreaterEqual(candidate_event["templateAgeSeconds"], 0)
                 self.assertEqual(
                     candidate_event["submitblockPayloadHash"],
                     share_event["shareHashDiagnostic"]["submitblockPayloadHash"],
@@ -2743,6 +2746,21 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(diag["submitblockHeaderPrevhash"], "1" * 64)
                 self.assertEqual(diag["submitblockDaemonBestBlockHash"], "2" * 64)
+                self.assertEqual(diag["candidatePrevHash"], "1" * 64)
+                self.assertEqual(
+                    diag["daemonBestHashAtSubmitDecision"],
+                    "2" * 64,
+                )
+                self.assertIsInstance(diag["templateAgeSeconds"], int)
+                self.assertGreaterEqual(diag["templateAgeSeconds"], 0)
+                self.assertIsInstance(
+                    diag["candidateAgeSecondsAtSubmitDecision"],
+                    int,
+                )
+                self.assertGreaterEqual(
+                    diag["candidateAgeSecondsAtSubmitDecision"],
+                    0,
+                )
                 self.assertTrue(diag["submitblockPrevhashGuardEvaluated"])
                 self.assertEqual(
                     diag["submitblockPrevhashGuardComparedField"],
@@ -2755,6 +2773,38 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(diag["submitblockPrevhashGuardMatchedBestBlock"])
                 self.assertTrue(diag["submitblockPrevhashGuardPayloadMatchedJob"])
                 self.assertEqual(rpc_client.submitblock_calls, [])
+
+                submit_evidence_path = config.activity_log_path.with_name(
+                    "submit-evidence.jsonl"
+                )
+                await self._wait_for(lambda: submit_evidence_path.exists())
+                submit_evidence_rows = [
+                    json.loads(line)
+                    for line in submit_evidence_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                ]
+                self.assertGreaterEqual(len(submit_evidence_rows), 1)
+                latest_submit_evidence = submit_evidence_rows[-1]
+                self.assertEqual(latest_submit_evidence["candidatePrevHash"], "1" * 64)
+                self.assertEqual(
+                    latest_submit_evidence["daemonBestHashAtSubmitDecision"],
+                    "2" * 64,
+                )
+                self.assertIsInstance(latest_submit_evidence["templateAgeSeconds"], int)
+                self.assertGreaterEqual(
+                    latest_submit_evidence["templateAgeSeconds"],
+                    0,
+                )
+                self.assertIsInstance(
+                    latest_submit_evidence["candidateAgeSecondsAtSubmitDecision"],
+                    int,
+                )
+                self.assertGreaterEqual(
+                    latest_submit_evidence["candidateAgeSecondsAtSubmitDecision"],
+                    0,
+                )
 
                 candidate_event = json.loads(self._read_candidate_events(config)[0])
                 self.assertEqual(
@@ -5139,6 +5189,8 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
                     "submitblockPrevhashGuardMatchedBestBlock": False,
                     "submitblockPrevhashGuardPayloadMatchedJob": False,
                     "submitblockException": None,
+                    "candidatePrevHash": "22" * 32,
+                    "daemonBestHashAtSubmitDecision": "33" * 32,
                 }
             )
             params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
@@ -5172,6 +5224,10 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             self.assertEqual(rec["submitblockPrevhashGuardComparedValue"], "22" * 32)
             self.assertEqual(rec["submitblockPrevhashGuardMatchedBestBlock"], False)
             self.assertEqual(rec["submitblockPrevhashGuardPayloadMatchedJob"], False)
+            self.assertEqual(rec["candidatePrevHash"], "22" * 32)
+            self.assertEqual(rec["daemonBestHashAtSubmitDecision"], "33" * 32)
+            self.assertNotIn("templateAgeSeconds", rec)
+            self.assertNotIn("candidateAgeSecondsAtSubmitDecision", rec)
             self.assertNotIn("submitblockException", rec)
 
 

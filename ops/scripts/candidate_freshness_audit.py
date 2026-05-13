@@ -173,6 +173,7 @@ def main() -> int:
         )
         latest_candidate_prevhash = first_present(
             latest_candidate,
+            "candidatePrevHash",
             "submitblockCandidatePrevhash",
             "submitblockPayloadPrevhash",
             "submitblockHeaderPrevhash",
