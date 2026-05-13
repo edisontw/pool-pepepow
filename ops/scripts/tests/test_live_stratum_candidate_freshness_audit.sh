@@ -22,10 +22,10 @@ make_stale_fixture() {
   local fixture_dir="$1"
   mkdir -p "${fixture_dir}"
   cat >"${fixture_dir}/candidate-events.jsonl" <<'EOF'
-{"timestamp":"2026-05-11T00:10:00Z","jobId":"job-stale","candidateBlockHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","submitblockCandidatePrevhash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockDaemonBestBlockHash":"2222222222222222222222222222222222222222222222222222222222222222","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"submitblockAttempted":true,"followupStatus":"not-checked","followupNote":null}
+{"timestamp":"2026-05-11T00:10:00Z","jobId":"job-stale","candidateBlockHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","candidatePrevHash":"1111111111111111111111111111111111111111111111111111111111111111","templateAgeSeconds":9,"submitblockCandidatePrevhash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockDaemonBestBlockHash":"2222222222222222222222222222222222222222222222222222222222222222","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"submitblockAttempted":true,"followupStatus":"not-checked","followupNote":null}
 EOF
   cat >"${fixture_dir}/submit-evidence.jsonl" <<'EOF'
-{"timestamp":"2026-05-11T00:10:01Z","jobId":"job-stale","submitblockRealSubmitStatus":"submit-not-triggered","submitblockSent":false}
+{"timestamp":"2026-05-11T00:10:01Z","jobId":"job-stale","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"daemonBestHashAtSubmitDecision":"3333333333333333333333333333333333333333333333333333333333333333","candidateAgeSecondsAtSubmitDecision":14}
 EOF
   cat >"${fixture_dir}/candidate-followup-events.jsonl" <<'EOF'
 {"timestamp":"2026-05-11T00:20:00Z","jobId":"job-stale","followupStatus":"no-match-found","followupNote":"candidate-block-hash-not-found-on-local-chain"}
@@ -55,6 +55,20 @@ EOF
 EOF
 }
 
+make_submit_disabled_fixture() {
+  local fixture_dir="$1"
+  mkdir -p "${fixture_dir}"
+  cat >"${fixture_dir}/candidate-events.jsonl" <<'EOF'
+{"timestamp":"2026-05-13T11:09:54Z","jobId":"job-disabled","candidateBlockHash":"0000000305c7619c493a0f14cd6802173898955621e6176419790311d86c4280","candidatePrevHash":"000000027116173c9fd6b5c5d70be422af9aacd698589f5caa844cfc0a5e93c1","templateAgeSeconds":13,"submitblockRealSubmitStatus":"submit-disabled-flag-off","submitblockSent":false,"submitblockAttempted":false}
+EOF
+  cat >"${fixture_dir}/submit-evidence.jsonl" <<'EOF'
+{"timestamp":"2026-05-13T11:09:55Z","jobId":"job-disabled","submitblockRealSubmitStatus":"submit-not-triggered","submitblockSent":false}
+EOF
+  cat >"${fixture_dir}/activity-snapshot.json" <<'EOF'
+{"meta":{"templateModeEffective":"daemon-template","templateFetchStatus":"ok","templateDaemonRpcReachable":true}}
+EOF
+}
+
 stale_dir="${tmpdir}/stale"
 make_stale_fixture "${stale_dir}"
 stale_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${stale_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
@@ -63,12 +77,33 @@ assert_contains "${stale_output}" "submit_evidence_rows_inspected: 1"
 assert_contains "${stale_output}" "submit_skipped_stale_prevblk_count_in_window: 1"
 assert_contains "${stale_output}" "chain_match_not_found_count_in_window: 1"
 assert_contains "${stale_output}" "daemon_best_hash_current: 2222222222222222222222222222222222222222222222222222222222222222"
+assert_contains "${stale_output}" "latest_candidate_has_attribution: true"
+assert_contains "${stale_output}" "latest_candidate_template_age_seconds: 9"
+assert_contains "${stale_output}" "submit_decision_fields_expected: true"
+assert_contains "${stale_output}" "latest_submit_has_decision_attribution: true"
+assert_contains "${stale_output}" "attribution_note: decision-attribution-present"
 assert_contains "${stale_output}" "freshness_conclusion: stale-prevblk-observed"
 
 insufficient_dir="${tmpdir}/insufficient"
 make_insufficient_fixture "${insufficient_dir}"
 insufficient_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${insufficient_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
+assert_contains "${insufficient_output}" "latest_candidate_has_attribution: false"
+assert_contains "${insufficient_output}" "latest_candidate_template_age_seconds: None"
+assert_contains "${insufficient_output}" "submit_decision_fields_expected: false"
+assert_contains "${insufficient_output}" "latest_submit_has_decision_attribution: false"
+assert_contains "${insufficient_output}" "attribution_note: candidate-attribution-missing"
 assert_contains "${insufficient_output}" "freshness_conclusion: insufficient-fields"
 assert_contains "${insufficient_output}" "smallest_future_instrumentation_fields: candidatePrevHash,daemonBestHashAtCandidate,daemonBestHashAtSubmitDecision,templateAgeSeconds,candidateAgeSecondsAtSubmitDecision"
+
+submit_disabled_dir="${tmpdir}/submit-disabled"
+make_submit_disabled_fixture "${submit_disabled_dir}"
+submit_disabled_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${submit_disabled_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
+assert_contains "${submit_disabled_output}" "latest_candidate_prevhash: 000000027116173c9fd6b5c5d70be422af9aacd698589f5caa844cfc0a5e93c1"
+assert_contains "${submit_disabled_output}" "latest_candidate_has_attribution: true"
+assert_contains "${submit_disabled_output}" "latest_candidate_template_age_seconds: 13"
+assert_contains "${submit_disabled_output}" "latest_submit_status: submit-disabled-flag-off"
+assert_contains "${submit_disabled_output}" "submit_decision_fields_expected: false"
+assert_contains "${submit_disabled_output}" "latest_submit_has_decision_attribution: false"
+assert_contains "${submit_disabled_output}" "attribution_note: candidate-attribution-present-submit-disabled"
 
 echo "test_live_stratum_candidate_freshness_audit: ok"

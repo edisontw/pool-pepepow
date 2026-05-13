@@ -42,6 +42,13 @@ TERMINAL_PREFIXES = (
     "submit-disabled-",
 )
 
+DECISION_EXPECTED_STATUSES = {
+    "submit-sent",
+    "submit-skipped-stale-prevblk",
+    "submit-skipped-send-budget-exhausted",
+    "submit-skipped-budget-exhausted",
+}
+
 
 def load_json(path: Path) -> Any:
     try:
@@ -88,6 +95,16 @@ def is_submit_error(payload: dict[str, Any], status: Any) -> bool:
 
 def print_kv(key: str, value: Any) -> None:
     print(f"{key}: {value}")
+
+
+def has_all_fields(payload: dict[str, Any], *keys: str) -> bool:
+    return all(payload.get(key) is not None for key in keys)
+
+
+def is_decision_attribution_expected(status: Any, payload: dict[str, Any]) -> bool:
+    if status in DECISION_EXPECTED_STATUSES:
+        return True
+    return is_submit_error(payload, status)
 
 
 def main() -> int:
@@ -165,6 +182,7 @@ def main() -> int:
 
     latest_candidate_hash = None
     latest_candidate_prevhash = None
+    latest_candidate_template_age_seconds = None
     if latest_candidate is not None:
         latest_candidate_hash = first_present(
             latest_candidate,
@@ -179,6 +197,50 @@ def main() -> int:
             "submitblockHeaderPrevhash",
             "submitblockJobPrevhash",
         )
+        latest_candidate_template_age_seconds = first_present(
+            latest_candidate,
+            "templateAgeSeconds",
+        )
+
+    latest_candidate_has_attribution = (
+        latest_candidate is not None
+        and latest_candidate_prevhash is not None
+        and latest_candidate_template_age_seconds is not None
+    )
+
+    related_rows: list[dict[str, Any]] = []
+    latest_candidate_job_id = first_present(latest_candidate or {}, "jobId")
+    if latest_candidate is not None:
+        related_rows.append(latest_candidate)
+    for source_rows in (submit_rows, outcome_rows, followup_rows, candidate_rows[:-1]):
+        for row in reversed(source_rows):
+            if latest_candidate_job_id is None or first_present(row, "jobId") == latest_candidate_job_id:
+                related_rows.append(row)
+                break
+
+    submit_decision_fields_expected = (
+        latest_candidate is not None
+        and is_decision_attribution_expected(latest_submit_status, latest_candidate)
+    )
+    latest_submit_has_decision_attribution = any(
+        has_all_fields(
+            row,
+            "daemonBestHashAtSubmitDecision",
+            "candidateAgeSecondsAtSubmitDecision",
+        )
+        for row in related_rows
+    )
+
+    if latest_candidate is None:
+        attribution_note = "no-latest-candidate"
+    elif not latest_candidate_has_attribution:
+        attribution_note = "candidate-attribution-missing"
+    elif not submit_decision_fields_expected:
+        attribution_note = "candidate-attribution-present-submit-disabled"
+    elif latest_submit_has_decision_attribution:
+        attribution_note = "decision-attribution-present"
+    else:
+        attribution_note = "decision-attribution-missing"
 
     has_prevhash_evidence = latest_candidate_prevhash is not None or any(
         first_present(
@@ -211,10 +273,15 @@ def main() -> int:
     print_kv("candidate_events_inspected", len(candidate_rows))
     print_kv("submit_evidence_rows_inspected", len(submit_rows))
     print_kv("latest_candidate_timestamp", first_present(latest_candidate or {}, "timestamp"))
-    print_kv("latest_candidate_job_id", first_present(latest_candidate or {}, "jobId"))
+    print_kv("latest_candidate_job_id", latest_candidate_job_id)
     print_kv("latest_candidate_hash", latest_candidate_hash)
     print_kv("latest_candidate_prevhash", latest_candidate_prevhash)
+    print_kv("latest_candidate_has_attribution", str(latest_candidate_has_attribution).lower())
+    print_kv("latest_candidate_template_age_seconds", latest_candidate_template_age_seconds)
     print_kv("latest_submit_status", latest_submit_status)
+    print_kv("submit_decision_fields_expected", str(submit_decision_fields_expected).lower())
+    print_kv("latest_submit_has_decision_attribution", str(latest_submit_has_decision_attribution).lower())
+    print_kv("attribution_note", attribution_note)
     print_kv("submit_sent_count_in_window", submit_sent_count)
     print_kv("submit_error_count_in_window", submit_error_count)
     print_kv("submit_skipped_stale_prevblk_count_in_window", submit_skipped_stale_prevblk_count)
