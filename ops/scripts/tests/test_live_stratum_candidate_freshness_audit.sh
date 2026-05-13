@@ -69,6 +69,20 @@ EOF
 EOF
 }
 
+make_ready_fixture() {
+  local fixture_dir="$1"
+  mkdir -p "${fixture_dir}"
+  cat >"${fixture_dir}/candidate-events.jsonl" <<'EOF'
+{"timestamp":"2026-05-13T12:20:00Z","jobId":"job-ready","candidateBlockHash":"00000000feedfacecafebeef111122223333444455556666777788889999aaaa","candidatePrevHash":"00000000aaaabbbbccccddddeeeeffff11112222333344445555666677778888","templateAgeSeconds":4,"submitblockRealSubmitStatus":"submit-not-triggered","submitblockSent":false,"submitblockAttempted":false}
+EOF
+  cat >"${fixture_dir}/submit-evidence.jsonl" <<'EOF'
+{"timestamp":"2026-05-13T12:20:01Z","jobId":"job-ready","submitblockRealSubmitStatus":"submit-not-triggered","submitblockSent":false}
+EOF
+  cat >"${fixture_dir}/activity-snapshot.json" <<'EOF'
+{"meta":{"templateModeEffective":"daemon-template","templateFetchStatus":"ok","templateDaemonRpcReachable":true,"realSubmitblockEnabled":true,"realSubmitblockSendBudgetRemaining":1}}
+EOF
+}
+
 stale_dir="${tmpdir}/stale"
 make_stale_fixture "${stale_dir}"
 stale_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${stale_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
@@ -84,6 +98,7 @@ assert_contains "${stale_output}" "latest_submit_has_decision_attribution: true"
 assert_contains "${stale_output}" "latest_submit_candidate_freshness_status: stale-prevblk"
 assert_contains "${stale_output}" "latest_submit_prevhash_matches_daemon_best: false"
 assert_contains "${stale_output}" "latest_submit_classification_source: submit-evidence"
+assert_contains "${stale_output}" "latest_submit_readiness_status: stale-prevblk"
 assert_contains "${stale_output}" "attribution_note: decision-attribution-present"
 assert_contains "${stale_output}" "freshness_conclusion: stale-prevblk-observed"
 
@@ -97,6 +112,7 @@ assert_contains "${insufficient_output}" "latest_submit_has_decision_attribution
 assert_contains "${insufficient_output}" "latest_submit_candidate_freshness_status: unknown"
 assert_contains "${insufficient_output}" "latest_submit_prevhash_matches_daemon_best: null"
 assert_contains "${insufficient_output}" "latest_submit_classification_source: none"
+assert_contains "${insufficient_output}" "latest_submit_readiness_status: disabled"
 assert_contains "${insufficient_output}" "attribution_note: candidate-attribution-missing"
 assert_contains "${insufficient_output}" "freshness_conclusion: insufficient-fields"
 assert_contains "${insufficient_output}" "smallest_future_instrumentation_fields: candidatePrevHash,daemonBestHashAtCandidate,daemonBestHashAtSubmitDecision,templateAgeSeconds,candidateAgeSecondsAtSubmitDecision"
@@ -113,7 +129,15 @@ assert_contains "${submit_disabled_output}" "latest_submit_has_decision_attribut
 assert_contains "${submit_disabled_output}" "latest_submit_candidate_freshness_status: unknown"
 assert_contains "${submit_disabled_output}" "latest_submit_prevhash_matches_daemon_best: null"
 assert_contains "${submit_disabled_output}" "latest_submit_classification_source: none"
+assert_contains "${submit_disabled_output}" "latest_submit_readiness_status: disabled"
 assert_contains "${submit_disabled_output}" "attribution_note: candidate-attribution-present-submit-disabled"
+
+ready_dir="${tmpdir}/ready"
+make_ready_fixture "${ready_dir}"
+ready_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${ready_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
+assert_contains "${ready_output}" "latest_submit_status: submit-not-triggered"
+assert_contains "${ready_output}" "latest_submit_candidate_freshness_status: unknown"
+assert_contains "${ready_output}" "latest_submit_readiness_status: ready"
 
 fallback_dir="${tmpdir}/fallback"
 mkdir -p "${fallback_dir}"
@@ -133,6 +157,7 @@ assert_contains "${fallback_output}" "latest_submit_has_decision_attribution: tr
 assert_contains "${fallback_output}" "latest_submit_candidate_freshness_status: unknown"
 assert_contains "${fallback_output}" "latest_submit_prevhash_matches_daemon_best: null"
 assert_contains "${fallback_output}" "latest_submit_classification_source: none"
+assert_contains "${fallback_output}" "latest_submit_readiness_status: unknown"
 assert_contains "${fallback_output}" "attribution_note: decision-attribution-present"
 
 echo "test_live_stratum_candidate_freshness_audit: ok"

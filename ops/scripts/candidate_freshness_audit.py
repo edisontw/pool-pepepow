@@ -98,6 +98,10 @@ def is_terminal_submit_status(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(TERMINAL_PREFIXES)
 
 
+def is_submit_disabled_status(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("submit-disabled-")
+
+
 def is_submit_error(payload: dict[str, Any], status: Any) -> bool:
     if isinstance(status, str) and ("error" in status or "exception" in status):
         return True
@@ -114,6 +118,31 @@ def render_bool_or_null(value: Any) -> str:
     if value is False:
         return "false"
     return "null"
+
+
+def normalize_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def parse_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except Exception:
+            return None
+    return None
 
 
 def is_decision_attribution_expected(status: Any, payload: dict[str, Any]) -> bool:
@@ -234,6 +263,11 @@ def main() -> int:
                     chain_match_not_found_count += 1
 
     meta = snapshot.get("meta", {}) if isinstance(snapshot, dict) else {}
+    real_submit_enabled = normalize_bool(meta.get("realSubmitblockEnabled"))
+    real_submit_send_budget_remaining = parse_int(meta.get("realSubmitblockSendBudgetRemaining"))
+    template_mode_effective = meta.get("templateModeEffective")
+    template_fetch_status = meta.get("templateFetchStatus")
+    template_daemon_rpc_reachable = normalize_bool(meta.get("templateDaemonRpcReachable"))
     daemon_best_hash_current = first_present(
         meta,
         "daemonBestHashCurrent",
@@ -325,6 +359,25 @@ def main() -> int:
             else:
                 latest_submit_classification_source = "unknown"
 
+    daemon_template_ready = (
+        template_mode_effective == "daemon-template"
+        and template_fetch_status == "ok"
+        and template_daemon_rpc_reachable is True
+    )
+    if real_submit_enabled is False or is_submit_disabled_status(latest_submit_status):
+        latest_submit_readiness_status = "disabled"
+    elif latest_submit_candidate_freshness_status == "stale-prevblk":
+        latest_submit_readiness_status = "stale-prevblk"
+    elif (
+        daemon_template_ready
+        and real_submit_enabled is True
+        and real_submit_send_budget_remaining is not None
+        and real_submit_send_budget_remaining > 0
+    ):
+        latest_submit_readiness_status = "ready"
+    else:
+        latest_submit_readiness_status = "unknown"
+
     if latest_candidate is None:
         attribution_note = "no-latest-candidate"
     elif not latest_candidate_has_attribution:
@@ -390,6 +443,7 @@ def main() -> int:
         "latest_submit_classification_source",
         latest_submit_classification_source,
     )
+    print_kv("latest_submit_readiness_status", latest_submit_readiness_status)
     print_kv("attribution_note", attribution_note)
     print_kv("submit_sent_count_in_window", submit_sent_count)
     print_kv("submit_error_count_in_window", submit_error_count)
