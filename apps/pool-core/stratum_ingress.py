@@ -1231,6 +1231,22 @@ class StratumIngressService:
         real_submitblock_enabled = diag.get("realSubmitblockEnabled")
         if real_submitblock_enabled is None:
             real_submitblock_enabled = getattr(config, "enable_real_submitblock", None)
+        (
+            candidate_prevhash_matches_daemon_best_at_submit_decision,
+            candidate_freshness_status,
+        ) = _candidate_freshness_at_submit_decision(
+            diag.get("candidatePrevHash"),
+            diag.get("daemonBestHashAtSubmitDecision"),
+        )
+        if (
+            diag.get("candidatePrevHashMatchesDaemonBestAtSubmitDecision")
+            is not None
+        ):
+            candidate_prevhash_matches_daemon_best_at_submit_decision = diag.get(
+                "candidatePrevHashMatchesDaemonBestAtSubmitDecision"
+            )
+        if isinstance(diag.get("candidateFreshnessStatus"), str):
+            candidate_freshness_status = diag.get("candidateFreshnessStatus")
         record = {
             "timestamp": observed_at.replace(microsecond=0).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             "sessionId": state.session_id,
@@ -1328,6 +1344,10 @@ class StratumIngressService:
             "daemonBestHashAtSubmitDecision": diag.get(
                 "daemonBestHashAtSubmitDecision"
             ),
+            "candidatePrevHashMatchesDaemonBestAtSubmitDecision": (
+                candidate_prevhash_matches_daemon_best_at_submit_decision
+            ),
+            "candidateFreshnessStatus": candidate_freshness_status,
             "templateAgeSeconds": diag.get("templateAgeSeconds"),
             "candidateAgeSecondsAtSubmitDecision": diag.get(
                 "candidateAgeSecondsAtSubmitDecision"
@@ -2249,6 +2269,26 @@ class StratumIngressService:
         candidate_artifact = threshold_summary.get("candidateArtifact")
         if not isinstance(candidate_artifact, dict):
             candidate_artifact = {}
+        (
+            candidate_prevhash_matches_daemon_best_at_submit_decision,
+            candidate_freshness_status,
+        ) = _candidate_freshness_at_submit_decision(
+            threshold_summary.get("candidatePrevHash"),
+            threshold_summary.get("daemonBestHashAtSubmitDecision"),
+        )
+        if (
+            threshold_summary.get("candidatePrevHashMatchesDaemonBestAtSubmitDecision")
+            is not None
+        ):
+            candidate_prevhash_matches_daemon_best_at_submit_decision = (
+                threshold_summary.get(
+                    "candidatePrevHashMatchesDaemonBestAtSubmitDecision"
+                )
+            )
+        if isinstance(threshold_summary.get("candidateFreshnessStatus"), str):
+            candidate_freshness_status = threshold_summary.get(
+                "candidateFreshnessStatus"
+            )
         payload = {
             "timestamp": threshold_summary.get("candidatePreparedAt")
             or _isoformat_optional(utc_now()),
@@ -2318,6 +2358,13 @@ class StratumIngressService:
                 "submitblockPrevhashGuardPayloadMatchedJob"
             ),
             "candidatePrevHash": threshold_summary.get("candidatePrevHash"),
+            "daemonBestHashAtSubmitDecision": threshold_summary.get(
+                "daemonBestHashAtSubmitDecision"
+            ),
+            "candidatePrevHashMatchesDaemonBestAtSubmitDecision": (
+                candidate_prevhash_matches_daemon_best_at_submit_decision
+            ),
+            "candidateFreshnessStatus": candidate_freshness_status,
             "templateAgeSeconds": threshold_summary.get("templateAgeSeconds"),
             "submitblockException": threshold_summary.get("submitblockException"),
             "shareHashUsed": threshold_summary.get("shareHashUsed"),
@@ -3561,6 +3608,13 @@ def _submitblock_status_result(
     template_age_seconds: int | None = None,
     candidate_age_seconds_at_submit_decision: int | None = None,
 ) -> dict[str, Any]:
+    (
+        candidate_prevhash_matches_daemon_best_at_submit_decision,
+        candidate_freshness_status,
+    ) = _candidate_freshness_at_submit_decision(
+        candidate_prev_hash,
+        daemon_best_hash_at_submit_decision,
+    )
     return {
         "submitblockAttempted": attempted,
         "submitblockSent": sent,
@@ -3591,12 +3645,31 @@ def _submitblock_status_result(
         ),
         "candidatePrevHash": candidate_prev_hash,
         "daemonBestHashAtSubmitDecision": daemon_best_hash_at_submit_decision,
+        "candidatePrevHashMatchesDaemonBestAtSubmitDecision": (
+            candidate_prevhash_matches_daemon_best_at_submit_decision
+        ),
+        "candidateFreshnessStatus": candidate_freshness_status,
         "templateAgeSeconds": template_age_seconds,
         "candidateAgeSecondsAtSubmitDecision": (
             candidate_age_seconds_at_submit_decision
         ),
         "submitblockException": exception_text,
     }
+
+
+def _candidate_freshness_at_submit_decision(
+    candidate_prev_hash: Any,
+    daemon_best_hash_at_submit_decision: Any,
+) -> tuple[bool | None, str]:
+    if (
+        not isinstance(candidate_prev_hash, str)
+        or not candidate_prev_hash
+        or not isinstance(daemon_best_hash_at_submit_decision, str)
+        or not daemon_best_hash_at_submit_decision
+    ):
+        return None, "unknown"
+    matches = candidate_prev_hash == daemon_best_hash_at_submit_decision
+    return matches, ("current-prevblk" if matches else "stale-prevblk")
 
 
 def _summarize_submitblock_daemon_response(daemon_result: Any) -> dict[str, Any]:
