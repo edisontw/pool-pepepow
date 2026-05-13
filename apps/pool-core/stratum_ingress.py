@@ -1220,6 +1220,17 @@ class StratumIngressService:
             if isinstance(notify_evidence, dict)
             else None
         )
+        candidate_block_hash = (
+            diag.get("candidateBlockHash")
+            or diag.get("submitblockPayloadHash")
+            or diag.get("localComputedHash")
+        )
+        candidate_timestamp = (
+            diag.get("candidateTimestamp") or diag.get("candidatePreparedAt")
+        )
+        real_submitblock_enabled = diag.get("realSubmitblockEnabled")
+        if real_submitblock_enabled is None:
+            real_submitblock_enabled = getattr(config, "enable_real_submitblock", None)
         record = {
             "timestamp": observed_at.replace(microsecond=0).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             "sessionId": state.session_id,
@@ -1227,6 +1238,8 @@ class StratumIngressService:
             "wallet": state.authorized_wallet,
             "worker": state.authorized_worker,
             "jobId": assessment.submit_job_id,
+            "candidateTimestamp": candidate_timestamp,
+            "candidateBlockHash": candidate_block_hash,
             "jobSource": job_source,
             "jobStatus": assessment.job_status,
             "cleanJobsLegacy": state.clean_jobs_legacy,
@@ -1271,7 +1284,7 @@ class StratumIngressService:
             "rejectReason": assessment.reject_reason,
             "rejectDetail": assessment.detail,
             "jobContext": assessment.job_status,
-            "realSubmitblockEnabled": diag.get("realSubmitblockEnabled"),
+            "realSubmitblockEnabled": real_submitblock_enabled,
             "submitblockDryRunReady": diag.get("submitblockDryRunReady"),
             "submitblockDryRunStatus": diag.get("submitblockDryRunStatus"),
             "submitblockRpcMethod": diag.get("submitblockRpcMethod"),

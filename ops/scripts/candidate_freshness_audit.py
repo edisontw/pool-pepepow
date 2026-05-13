@@ -49,6 +49,17 @@ DECISION_EXPECTED_STATUSES = {
     "submit-skipped-budget-exhausted",
 }
 
+DECISION_HASH_KEYS = (
+    "candidateBlockHash",
+    "submitblockPayloadHash",
+    "localComputedHash",
+)
+
+DECISION_TIMESTAMP_KEYS = (
+    "candidateTimestamp",
+    "timestamp",
+)
+
 
 def load_json(path: Path) -> Any:
     try:
@@ -105,6 +116,45 @@ def is_decision_attribution_expected(status: Any, payload: dict[str, Any]) -> bo
     if status in DECISION_EXPECTED_STATUSES:
         return True
     return is_submit_error(payload, status)
+
+
+def candidate_hash_from_row(payload: dict[str, Any]) -> Any:
+    return first_present(payload, *DECISION_HASH_KEYS)
+
+
+def candidate_timestamp_from_row(payload: dict[str, Any]) -> Any:
+    return first_present(payload, *DECISION_TIMESTAMP_KEYS)
+
+
+def row_matches_latest_candidate(
+    row: dict[str, Any],
+    latest_candidate_job_id: Any,
+    latest_candidate_hash_values: set[str],
+) -> bool:
+    row_job_id = first_present(row, "jobId")
+    if latest_candidate_job_id is not None and row_job_id == latest_candidate_job_id:
+        return True
+    row_hash = candidate_hash_from_row(row)
+    return isinstance(row_hash, str) and row_hash in latest_candidate_hash_values
+
+
+def has_decision_attribution(
+    row: dict[str, Any],
+    latest_candidate_hash_values: set[str],
+) -> bool:
+    status = first_present(row, "submitblockRealSubmitStatus")
+    if not is_decision_attribution_expected(status, row):
+        return False
+    row_hash = candidate_hash_from_row(row)
+    if not isinstance(row_hash, str):
+        return False
+    if latest_candidate_hash_values and row_hash not in latest_candidate_hash_values:
+        return False
+    if row.get("candidatePrevHash") is None:
+        return False
+    if row.get("daemonBestHashAtSubmitDecision") is None:
+        return False
+    return candidate_timestamp_from_row(row) is not None
 
 
 def main() -> int:
@@ -184,11 +234,7 @@ def main() -> int:
     latest_candidate_prevhash = None
     latest_candidate_template_age_seconds = None
     if latest_candidate is not None:
-        latest_candidate_hash = first_present(
-            latest_candidate,
-            "candidateBlockHash",
-            "submitblockPayloadHash",
-        )
+        latest_candidate_hash = candidate_hash_from_row(latest_candidate)
         latest_candidate_prevhash = first_present(
             latest_candidate,
             "candidatePrevHash",
@@ -210,23 +256,35 @@ def main() -> int:
 
     related_rows: list[dict[str, Any]] = []
     latest_candidate_job_id = first_present(latest_candidate or {}, "jobId")
+    latest_candidate_hash_values: set[str] = set()
+    if isinstance(latest_candidate_hash, str):
+        latest_candidate_hash_values.add(latest_candidate_hash)
     if latest_candidate is not None:
         related_rows.append(latest_candidate)
     for source_rows in (submit_rows, outcome_rows, followup_rows, candidate_rows[:-1]):
         for row in reversed(source_rows):
-            if latest_candidate_job_id is None or first_present(row, "jobId") == latest_candidate_job_id:
+            if row_matches_latest_candidate(
+                row,
+                latest_candidate_job_id,
+                latest_candidate_hash_values,
+            ):
                 related_rows.append(row)
-                break
+        if latest_candidate_hash is None:
+            for row in related_rows:
+                row_hash = candidate_hash_from_row(row)
+                if isinstance(row_hash, str):
+                    latest_candidate_hash = row_hash
+                    latest_candidate_hash_values.add(row_hash)
+                    break
 
     submit_decision_fields_expected = (
         latest_candidate is not None
         and is_decision_attribution_expected(latest_submit_status, latest_candidate)
     )
     latest_submit_has_decision_attribution = any(
-        has_all_fields(
+        has_decision_attribution(
             row,
-            "daemonBestHashAtSubmitDecision",
-            "candidateAgeSecondsAtSubmitDecision",
+            latest_candidate_hash_values,
         )
         for row in related_rows
     )
@@ -272,7 +330,10 @@ def main() -> int:
     print_kv("requested_tail_lines", tail_lines)
     print_kv("candidate_events_inspected", len(candidate_rows))
     print_kv("submit_evidence_rows_inspected", len(submit_rows))
-    print_kv("latest_candidate_timestamp", first_present(latest_candidate or {}, "timestamp"))
+    print_kv(
+        "latest_candidate_timestamp",
+        candidate_timestamp_from_row(latest_candidate or {}),
+    )
     print_kv("latest_candidate_job_id", latest_candidate_job_id)
     print_kv("latest_candidate_hash", latest_candidate_hash)
     print_kv("latest_candidate_prevhash", latest_candidate_prevhash)

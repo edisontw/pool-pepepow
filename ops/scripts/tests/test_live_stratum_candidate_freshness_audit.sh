@@ -25,7 +25,7 @@ make_stale_fixture() {
 {"timestamp":"2026-05-11T00:10:00Z","jobId":"job-stale","candidateBlockHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","candidatePrevHash":"1111111111111111111111111111111111111111111111111111111111111111","templateAgeSeconds":9,"submitblockCandidatePrevhash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockDaemonBestBlockHash":"2222222222222222222222222222222222222222222222222222222222222222","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"submitblockAttempted":true,"followupStatus":"not-checked","followupNote":null}
 EOF
   cat >"${fixture_dir}/submit-evidence.jsonl" <<'EOF'
-{"timestamp":"2026-05-11T00:10:01Z","jobId":"job-stale","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"daemonBestHashAtSubmitDecision":"3333333333333333333333333333333333333333333333333333333333333333","candidateAgeSecondsAtSubmitDecision":14}
+{"timestamp":"2026-05-11T00:10:01Z","jobId":"job-stale","submitblockPayloadHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","candidatePrevHash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"realSubmitblockEnabled":true,"daemonBestHashAtSubmitDecision":"3333333333333333333333333333333333333333333333333333333333333333","templateAgeSeconds":9,"candidateAgeSecondsAtSubmitDecision":14}
 EOF
   cat >"${fixture_dir}/candidate-followup-events.jsonl" <<'EOF'
 {"timestamp":"2026-05-11T00:20:00Z","jobId":"job-stale","followupStatus":"no-match-found","followupNote":"candidate-block-hash-not-found-on-local-chain"}
@@ -105,5 +105,22 @@ assert_contains "${submit_disabled_output}" "latest_submit_status: submit-disabl
 assert_contains "${submit_disabled_output}" "submit_decision_fields_expected: false"
 assert_contains "${submit_disabled_output}" "latest_submit_has_decision_attribution: false"
 assert_contains "${submit_disabled_output}" "attribution_note: candidate-attribution-present-submit-disabled"
+
+fallback_dir="${tmpdir}/fallback"
+mkdir -p "${fallback_dir}"
+cat >"${fallback_dir}/candidate-events.jsonl" <<'EOF'
+{"timestamp":"2026-05-13T12:42:48Z","jobId":"job-fallback","candidateBlockHash":"00000001c4a0a4edf6ae65cadac19d3404ed3d750e49d012b558366d3771a85b","candidatePrevHash":"000000047731b207515f73a0905e0255aaf52389d3342708740ab688ec3c3762","templateAgeSeconds":8,"submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"submitblockAttempted":false}
+EOF
+cat >"${fallback_dir}/submit-evidence.jsonl" <<'EOF'
+{"timestamp":"2026-05-13T12:42:48Z","jobId":"job-fallback","localComputedHash":"00000001c4a0a4edf6ae65cadac19d3404ed3d750e49d012b558366d3771a85b","candidatePrevHash":"000000047731b207515f73a0905e0255aaf52389d3342708740ab688ec3c3762","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"daemonBestHashAtSubmitDecision":"0000000399cd89e59fbdd50900e57dc2f136cbb8b832fa46c58d506aec82d821","templateAgeSeconds":8,"candidateAgeSecondsAtSubmitDecision":0}
+EOF
+cat >"${fallback_dir}/activity-snapshot.json" <<'EOF'
+{"meta":{"templateModeEffective":"daemon-template","templateFetchStatus":"ok","templateDaemonRpcReachable":true}}
+EOF
+fallback_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${fallback_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
+assert_contains "${fallback_output}" "latest_candidate_hash: 00000001c4a0a4edf6ae65cadac19d3404ed3d750e49d012b558366d3771a85b"
+assert_contains "${fallback_output}" "submit_decision_fields_expected: true"
+assert_contains "${fallback_output}" "latest_submit_has_decision_attribution: true"
+assert_contains "${fallback_output}" "attribution_note: decision-attribution-present"
 
 echo "test_live_stratum_candidate_freshness_audit: ok"
