@@ -2286,6 +2286,49 @@ for payload in matches:
 ' "${candidate_hash}" "${tail_lines}"
 }
 
+candidate_freshness_audit_service() {
+  ensure_runtime_dir
+
+  local tail_lines helper_path tmpdir candidate_tail_path submit_tail_path followup_tail_path outcome_tail_path
+  tail_lines="${2:-200}"
+  helper_path="${SCRIPT_DIR}/candidate_freshness_audit.py"
+  if [[ ! "${tail_lines}" =~ ^[0-9]+$ ]] || [[ "${tail_lines}" -lt 1 ]]; then
+    echo "candidate-freshness-audit tail_lines must be a positive integer" >&2
+    return 1
+  fi
+  if [[ ! -f "${CANDIDATE_EVENT_LOG}" ]]; then
+    echo "candidate_freshness_audit: none (candidate events log not found)"
+    return 0
+  fi
+  if [[ ! -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    echo "candidate_freshness_audit: none (submit evidence log not found)"
+    return 0
+  fi
+
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "'"${tmpdir}"'"' RETURN
+  candidate_tail_path="${tmpdir}/candidate-events.tail.jsonl"
+  submit_tail_path="${tmpdir}/submit-evidence.tail.jsonl"
+  followup_tail_path="-"
+  outcome_tail_path="-"
+  tail -n "${tail_lines}" -- "${CANDIDATE_EVENT_LOG}" > "${candidate_tail_path}"
+  tail -n "${tail_lines}" -- "${SUBMIT_EVIDENCE_LOG}" > "${submit_tail_path}"
+  if [[ -f "${FOLLOWUP_EVENT_LOG}" ]]; then
+    followup_tail_path="${tmpdir}/candidate-followup-events.tail.jsonl"
+    tail -n "${tail_lines}" -- "${FOLLOWUP_EVENT_LOG}" > "${followup_tail_path}"
+  elif [[ -f "${CANDIDATE_OUTCOME_EVENT_LOG}" ]]; then
+    outcome_tail_path="${tmpdir}/candidate-outcome-events.tail.jsonl"
+    tail -n "${tail_lines}" -- "${CANDIDATE_OUTCOME_EVENT_LOG}" > "${outcome_tail_path}"
+  fi
+
+  python3 "${helper_path}" "${tail_lines}" \
+    "${candidate_tail_path}" \
+    "${submit_tail_path}" \
+    "${ACTIVITY_SNAPSHOT}" \
+    "${followup_tail_path}" \
+    "${outcome_tail_path}"
+}
+
 replay_evidence_service() {
   ensure_runtime_dir
   local count
@@ -2705,6 +2748,9 @@ case "${SUBCOMMAND}" in
   submit-evidence-find)
     submit_evidence_find_service "$@"
     ;;
+  candidate-freshness-audit)
+    candidate_freshness_audit_service "$@"
+    ;;
   replay-evidence)
     replay_evidence_service "$@"
     ;;
@@ -2730,7 +2776,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac

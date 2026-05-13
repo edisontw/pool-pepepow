@@ -54,6 +54,9 @@ Purpose:
 - find one candidate’s bounded submit evidence from `submit-evidence.jsonl`
   with `submit-evidence-find <candidate_hash> [tail_lines]` (default tail
   window: `5000`)
+- summarize recent candidate freshness and stale-prevblk / chain follow-up
+  signals from bounded tails with `candidate-freshness-audit [tail_lines]`
+  (default tail window: `200`)
 
 Runtime paths:
 
