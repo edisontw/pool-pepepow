@@ -25,7 +25,7 @@ make_stale_fixture() {
 {"timestamp":"2026-05-11T00:10:00Z","jobId":"job-stale","candidateBlockHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","candidatePrevHash":"1111111111111111111111111111111111111111111111111111111111111111","templateAgeSeconds":9,"submitblockCandidatePrevhash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockDaemonBestBlockHash":"2222222222222222222222222222222222222222222222222222222222222222","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"submitblockAttempted":true,"followupStatus":"not-checked","followupNote":null}
 EOF
   cat >"${fixture_dir}/submit-evidence.jsonl" <<'EOF'
-{"timestamp":"2026-05-11T00:10:01Z","jobId":"job-stale","submitblockPayloadHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","candidatePrevHash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"realSubmitblockEnabled":true,"daemonBestHashAtSubmitDecision":"3333333333333333333333333333333333333333333333333333333333333333","templateAgeSeconds":9,"candidateAgeSecondsAtSubmitDecision":14}
+{"timestamp":"2026-05-11T00:10:01Z","jobId":"job-stale","submitblockPayloadHash":"00000000aaaabbbbccccddddeeeeffff00001111222233334444555566667777","candidatePrevHash":"1111111111111111111111111111111111111111111111111111111111111111","submitblockRealSubmitStatus":"submit-skipped-stale-prevblk","submitblockSent":false,"realSubmitblockEnabled":true,"daemonBestHashAtSubmitDecision":"3333333333333333333333333333333333333333333333333333333333333333","candidatePrevHashMatchesDaemonBestAtSubmitDecision":false,"candidateFreshnessStatus":"stale-prevblk","templateAgeSeconds":9,"candidateAgeSecondsAtSubmitDecision":14}
 EOF
   cat >"${fixture_dir}/candidate-followup-events.jsonl" <<'EOF'
 {"timestamp":"2026-05-11T00:20:00Z","jobId":"job-stale","followupStatus":"no-match-found","followupNote":"candidate-block-hash-not-found-on-local-chain"}
@@ -81,6 +81,9 @@ assert_contains "${stale_output}" "latest_candidate_has_attribution: true"
 assert_contains "${stale_output}" "latest_candidate_template_age_seconds: 9"
 assert_contains "${stale_output}" "submit_decision_fields_expected: true"
 assert_contains "${stale_output}" "latest_submit_has_decision_attribution: true"
+assert_contains "${stale_output}" "latest_submit_candidate_freshness_status: stale-prevblk"
+assert_contains "${stale_output}" "latest_submit_prevhash_matches_daemon_best: false"
+assert_contains "${stale_output}" "latest_submit_classification_source: submit-evidence"
 assert_contains "${stale_output}" "attribution_note: decision-attribution-present"
 assert_contains "${stale_output}" "freshness_conclusion: stale-prevblk-observed"
 
@@ -91,6 +94,9 @@ assert_contains "${insufficient_output}" "latest_candidate_has_attribution: fals
 assert_contains "${insufficient_output}" "latest_candidate_template_age_seconds: None"
 assert_contains "${insufficient_output}" "submit_decision_fields_expected: false"
 assert_contains "${insufficient_output}" "latest_submit_has_decision_attribution: false"
+assert_contains "${insufficient_output}" "latest_submit_candidate_freshness_status: unknown"
+assert_contains "${insufficient_output}" "latest_submit_prevhash_matches_daemon_best: null"
+assert_contains "${insufficient_output}" "latest_submit_classification_source: none"
 assert_contains "${insufficient_output}" "attribution_note: candidate-attribution-missing"
 assert_contains "${insufficient_output}" "freshness_conclusion: insufficient-fields"
 assert_contains "${insufficient_output}" "smallest_future_instrumentation_fields: candidatePrevHash,daemonBestHashAtCandidate,daemonBestHashAtSubmitDecision,templateAgeSeconds,candidateAgeSecondsAtSubmitDecision"
@@ -104,6 +110,9 @@ assert_contains "${submit_disabled_output}" "latest_candidate_template_age_secon
 assert_contains "${submit_disabled_output}" "latest_submit_status: submit-disabled-flag-off"
 assert_contains "${submit_disabled_output}" "submit_decision_fields_expected: false"
 assert_contains "${submit_disabled_output}" "latest_submit_has_decision_attribution: false"
+assert_contains "${submit_disabled_output}" "latest_submit_candidate_freshness_status: unknown"
+assert_contains "${submit_disabled_output}" "latest_submit_prevhash_matches_daemon_best: null"
+assert_contains "${submit_disabled_output}" "latest_submit_classification_source: none"
 assert_contains "${submit_disabled_output}" "attribution_note: candidate-attribution-present-submit-disabled"
 
 fallback_dir="${tmpdir}/fallback"
@@ -121,6 +130,9 @@ fallback_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${fallback_dir}" "${LIVE_ST
 assert_contains "${fallback_output}" "latest_candidate_hash: 00000001c4a0a4edf6ae65cadac19d3404ed3d750e49d012b558366d3771a85b"
 assert_contains "${fallback_output}" "submit_decision_fields_expected: true"
 assert_contains "${fallback_output}" "latest_submit_has_decision_attribution: true"
+assert_contains "${fallback_output}" "latest_submit_candidate_freshness_status: unknown"
+assert_contains "${fallback_output}" "latest_submit_prevhash_matches_daemon_best: null"
+assert_contains "${fallback_output}" "latest_submit_classification_source: none"
 assert_contains "${fallback_output}" "attribution_note: decision-attribution-present"
 
 echo "test_live_stratum_candidate_freshness_audit: ok"

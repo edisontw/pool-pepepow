@@ -108,8 +108,12 @@ def print_kv(key: str, value: Any) -> None:
     print(f"{key}: {value}")
 
 
-def has_all_fields(payload: dict[str, Any], *keys: str) -> bool:
-    return all(payload.get(key) is not None for key in keys)
+def render_bool_or_null(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "null"
 
 
 def is_decision_attribution_expected(status: Any, payload: dict[str, Any]) -> bool:
@@ -155,6 +159,23 @@ def has_decision_attribution(
     if row.get("daemonBestHashAtSubmitDecision") is None:
         return False
     return candidate_timestamp_from_row(row) is not None
+
+
+def latest_submit_decision_row(
+    related_rows: list[dict[str, Any]],
+    latest_candidate_hash_values: set[str],
+) -> dict[str, Any] | None:
+    for row in related_rows:
+        if has_decision_attribution(row, latest_candidate_hash_values):
+            return row
+    return None
+
+
+def has_submit_classification_fields(row: dict[str, Any]) -> bool:
+    return (
+        row.get("candidateFreshnessStatus") is not None
+        or row.get("candidatePrevHashMatchesDaemonBestAtSubmitDecision") is not None
+    )
 
 
 def main() -> int:
@@ -281,13 +302,28 @@ def main() -> int:
         latest_candidate is not None
         and is_decision_attribution_expected(latest_submit_status, latest_candidate)
     )
-    latest_submit_has_decision_attribution = any(
-        has_decision_attribution(
-            row,
-            latest_candidate_hash_values,
-        )
-        for row in related_rows
+    latest_submit_decision = latest_submit_decision_row(
+        related_rows,
+        latest_candidate_hash_values,
     )
+    latest_submit_has_decision_attribution = latest_submit_decision is not None
+    latest_submit_candidate_freshness_status = "unknown"
+    latest_submit_prevhash_matches_daemon_best = None
+    latest_submit_classification_source = "none"
+    if latest_submit_decision is not None:
+        if has_submit_classification_fields(latest_submit_decision):
+            latest_submit_candidate_freshness_status = first_present(
+                latest_submit_decision,
+                "candidateFreshnessStatus",
+            ) or "unknown"
+            latest_submit_prevhash_matches_daemon_best = first_present(
+                latest_submit_decision,
+                "candidatePrevHashMatchesDaemonBestAtSubmitDecision",
+            )
+            if latest_submit_decision in submit_rows:
+                latest_submit_classification_source = "submit-evidence"
+            else:
+                latest_submit_classification_source = "unknown"
 
     if latest_candidate is None:
         attribution_note = "no-latest-candidate"
@@ -342,6 +378,18 @@ def main() -> int:
     print_kv("latest_submit_status", latest_submit_status)
     print_kv("submit_decision_fields_expected", str(submit_decision_fields_expected).lower())
     print_kv("latest_submit_has_decision_attribution", str(latest_submit_has_decision_attribution).lower())
+    print_kv(
+        "latest_submit_candidate_freshness_status",
+        latest_submit_candidate_freshness_status,
+    )
+    print_kv(
+        "latest_submit_prevhash_matches_daemon_best",
+        render_bool_or_null(latest_submit_prevhash_matches_daemon_best),
+    )
+    print_kv(
+        "latest_submit_classification_source",
+        latest_submit_classification_source,
+    )
     print_kv("attribution_note", attribution_note)
     print_kv("submit_sent_count_in_window", submit_sent_count)
     print_kv("submit_error_count_in_window", submit_error_count)
