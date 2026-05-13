@@ -17,6 +17,7 @@ NOTIFY_EVIDENCE_LOG="${RUNTIME_DIR}/notify-evidence.jsonl"
 ACTIVITY_SNAPSHOT="${RUNTIME_DIR}/activity-snapshot.json"
 LAUNCH_ENV_FILE="${RUNTIME_DIR}/launch.env"
 SYSTEMD_UNIT_NAME="pepepow-pool-stratum.service"
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-/usr/bin/systemctl}"
 
 SUBCOMMAND="${1:-status}"
 
@@ -447,13 +448,25 @@ current_process_in_systemd_unit() {
 }
 
 systemd_unit_active() {
-  command -v systemctl >/dev/null 2>&1 || return 1
-  systemctl is-active --quiet "${SYSTEMD_UNIT_NAME}"
+  command -v "${SYSTEMCTL_BIN}" >/dev/null 2>&1 || return 1
+  "${SYSTEMCTL_BIN}" is-active --quiet "${SYSTEMD_UNIT_NAME}"
 }
 
 systemd_main_pid() {
-  command -v systemctl >/dev/null 2>&1 || return 1
-  systemctl show -p MainPID --value "${SYSTEMD_UNIT_NAME}" 2>/dev/null || true
+  command -v "${SYSTEMCTL_BIN}" >/dev/null 2>&1 || return 1
+  "${SYSTEMCTL_BIN}" show -p MainPID --value "${SYSTEMD_UNIT_NAME}" 2>/dev/null || true
+}
+
+run_systemctl_noninteractive() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "${SYSTEMCTL_BIN}" "$@"
+    return
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required for non-interactive systemd control" >&2
+    return 1
+  fi
+  sudo -n "${SYSTEMCTL_BIN}" "$@"
 }
 
 systemd_owns_live_stratum() {
@@ -2676,18 +2689,18 @@ systemd_restart_service() {
   warn_if_suspicious_launch_env
   write_launch_env
 
-  if ! command -v systemctl >/dev/null 2>&1; then
+  if ! command -v "${SYSTEMCTL_BIN}" >/dev/null 2>&1; then
     echo "systemctl is not available; wrote ${LAUNCH_ENV_FILE} only" >&2
     return 1
   fi
 
   echo "prepared ${LAUNCH_ENV_FILE} for ${SYSTEMD_UNIT_NAME}"
-  if ! systemctl restart "${SYSTEMD_UNIT_NAME}"; then
+  if ! run_systemctl_noninteractive restart "${SYSTEMD_UNIT_NAME}"; then
     echo "failed to restart ${SYSTEMD_UNIT_NAME}; launch env is prepared for the next operator-approved restart" >&2
     return 1
   fi
 
-  systemctl status "${SYSTEMD_UNIT_NAME}" --no-pager --lines=15 || true
+  run_systemctl_noninteractive status "${SYSTEMD_UNIT_NAME}" --no-pager --lines=15 || true
 }
 
 case "${SUBCOMMAND}" in
