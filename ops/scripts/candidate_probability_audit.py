@@ -17,6 +17,8 @@ from typing import Any
 
 getcontext().prec = 80
 
+DEFAULT_CANDIDATE_RATIO_SCALE = Decimal(65536)
+
 
 def nested(payload: dict[str, Any], diagnostic: dict[str, Any], key: str, *fallback_keys: str) -> Any:
     if diagnostic.get(key) is not None:
@@ -42,6 +44,60 @@ def decimal_ratio(numerator: int, denominator: int | None) -> Decimal | None:
     if denominator in (None, 0):
         return None
     return Decimal(numerator) / Decimal(denominator)
+
+
+def parse_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def infer_ratio_scale(rows: list[dict[str, Any]]) -> tuple[Decimal, str]:
+    for payload in rows:
+        diagnostic = payload.get("shareHashDiagnostic")
+        if not isinstance(diagnostic, dict):
+            diagnostic = {}
+
+        scale_value = nested(payload, diagnostic, "difficultyScale")
+        scale_decimal = parse_decimal(scale_value)
+        if scale_decimal not in (None, Decimal(0)):
+            return scale_decimal, "payload-difficultyScale"
+
+        miner_wire_difficulty = parse_decimal(
+            nested(payload, diagnostic, "minerWireDifficulty")
+        )
+        effective_share_difficulty = parse_decimal(
+            nested(payload, diagnostic, "effectiveShareDifficulty", "shareDifficultyUsed")
+        )
+        if (
+            miner_wire_difficulty is not None
+            and effective_share_difficulty not in (None, Decimal(0))
+        ):
+            return (
+                miner_wire_difficulty / effective_share_difficulty,
+                "payload-wire-over-effective",
+            )
+
+        submit_payload = payload.get("submit")
+        if isinstance(submit_payload, dict):
+            miner_wire_difficulty = parse_decimal(submit_payload.get("difficulty"))
+            effective_share_difficulty = parse_decimal(
+                nested(payload, diagnostic, "shareDifficultyUsed")
+            )
+            if (
+                miner_wire_difficulty is not None
+                and effective_share_difficulty not in (None, Decimal(0))
+                and miner_wire_difficulty >= effective_share_difficulty
+            ):
+                return (
+                    miner_wire_difficulty / effective_share_difficulty,
+                    "submit-difficulty-over-shareDifficultyUsed",
+                )
+
+    return DEFAULT_CANDIDATE_RATIO_SCALE, "default-pepepow-65536"
 
 
 def is_accepted_or_pool_valid(payload: dict[str, Any]) -> bool:
@@ -190,13 +246,17 @@ def main() -> int:
                     "candidate_prep_status": prep_status,
                 }
 
+    ratio_scale, ratio_scale_source = infer_ratio_scale(accepted_rows)
     median_ratio = None
+    normalized_median_ratio = None
     expected_candidates = None
     poisson_zero = None
     if ratios:
         median_ratio = statistics.median(ratios)
-        if median_ratio:
-            expected_candidates = Decimal(len(accepted_rows)) / median_ratio
+        if median_ratio and ratio_scale not in (None, Decimal(0)):
+            normalized_median_ratio = median_ratio / ratio_scale
+        if normalized_median_ratio:
+            expected_candidates = Decimal(len(accepted_rows)) / normalized_median_ratio
             try:
                 poisson_zero = math.exp(-float(expected_candidates))
             except (OverflowError, InvalidOperation):
@@ -263,10 +323,21 @@ def main() -> int:
         print(f"shareTarget_over_blockTarget_min: {min(ratios)}")
         print(f"shareTarget_over_blockTarget_median: {median_ratio}")
         print(f"shareTarget_over_blockTarget_max: {max(ratios)}")
+        print(f"candidate_probability_ratio_scale: {ratio_scale}")
+        print(f"candidate_probability_ratio_scale_source: {ratio_scale_source}")
+        print(f"median_share_to_block_ratio_raw: {median_ratio}")
+        print(
+            "median_share_to_block_ratio_normalized: "
+            f"{normalized_median_ratio if normalized_median_ratio is not None else 'none'}"
+        )
     else:
         print("shareTarget_over_blockTarget_min: none")
         print("shareTarget_over_blockTarget_median: none")
         print("shareTarget_over_blockTarget_max: none")
+        print(f"candidate_probability_ratio_scale: {ratio_scale}")
+        print(f"candidate_probability_ratio_scale_source: {ratio_scale_source}")
+        print("median_share_to_block_ratio_raw: none")
+        print("median_share_to_block_ratio_normalized: none")
     print(f"expected_candidate_count: {expected_candidates if expected_candidates is not None else 'none'}")
     print(f"poisson_p_zero_candidates: {poisson_zero if poisson_zero is not None else 'none'}")
     print(f"hash_le_block_but_meetsBlockTarget_not_true: {hash_le_block_but_not_marked}")
