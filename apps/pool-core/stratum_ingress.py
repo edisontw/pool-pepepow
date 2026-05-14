@@ -156,11 +156,18 @@ class SubmitAssessment:
 @dataclass
 class NotifyProbeMetadata:
     job_id: str
+    job_created_at: datetime
     notify_sent_at: datetime
     assigned_difficulty: float | None
     previous_assigned_difficulty: float | None
     template_height: int | None
     replaced_current_job: bool
+    previous_job_id: str | None = None
+    previous_job_prevhash: str | None = None
+    current_job_prevhash: str | None = None
+    template_observed_at: datetime | None = None
+    tip_prevhash_changed: bool = False
+    tip_to_job_created_delta_ms: int | None = None
 
 
 @dataclass
@@ -1499,6 +1506,30 @@ class StratumIngressService:
                 ntime=params[7],
             ),
         }
+        notify_probe = self._notify_probe_for_job(state, job_id)
+        if notify_probe is not None:
+            record["jobCreatedAt"] = _isoformat_optional(notify_probe.job_created_at)
+            if notify_probe.tip_prevhash_changed:
+                record["tipTemplateChanged"] = True
+                record["previousJobId"] = notify_probe.previous_job_id
+                record["previousJobPrevhash"] = notify_probe.previous_job_prevhash
+                record["templatePrevhash"] = notify_probe.current_job_prevhash
+                record["templateObservedAt"] = _isoformat_optional(
+                    notify_probe.template_observed_at
+                )
+                record["tipToJobCreatedDeltaMs"] = (
+                    notify_probe.tip_to_job_created_delta_ms
+                )
+                timestamp_value = record.get("timestamp")
+                notify_recorded_at = _parse_iso8601(timestamp_value)
+                if (
+                    notify_probe.template_observed_at is not None
+                    and notify_recorded_at is not None
+                ):
+                    record["tipToNotifySentDeltaMs"] = _delta_ms(
+                        notify_probe.template_observed_at,
+                        notify_recorded_at,
+                    )
         record["notifyEvidenceDigest"] = _json_sha256_digest(
             {k: v for k, v in record.items() if k not in {"timestamp"}}
         )
@@ -2874,6 +2905,11 @@ class StratumIngressService:
         self._job_counter += 1
         replaced_current_job = state.current_job_id is not None
         state.previous_job_id = state.current_job_id
+        previous_job = (
+            self._job_manager.get_job(state.previous_job_id)
+            if state.previous_job_id is not None
+            else None
+        )
         state.current_job_id = f"job-{self._job_counter:016x}"
         previous_job_probe = self._notify_probe_for_job(state, state.previous_job_id)
         assigned_difficulty = state.current_difficulty or self._synthetic_difficulty()
@@ -2883,19 +2919,53 @@ class StratumIngressService:
             assigned_difficulty=assigned_difficulty,
         )
         job = _apply_daemon_template_coinbase_dialect(job)
+        latest_template = getattr(self._job_manager, "_latest_template", None)
+        template_observed_at = None
+        if (
+            latest_template is not None
+            and getattr(latest_template, "template_anchor", None) == job.template_anchor
+        ):
+            fetched_at = getattr(latest_template, "fetched_at", None)
+            if isinstance(fetched_at, datetime):
+                template_observed_at = fetched_at
+        previous_job_prevhash = _normalize_optional_hex(
+            getattr(previous_job, "prevhash", None)
+        )
+        current_job_prevhash = _normalize_optional_hex(getattr(job, "prevhash", None))
+        tip_prevhash_changed = (
+            replaced_current_job
+            and previous_job_prevhash is not None
+            and current_job_prevhash is not None
+            and previous_job_prevhash != current_job_prevhash
+        )
+        tip_to_job_created_delta_ms = (
+            _delta_ms(template_observed_at, job.created_at)
+            if tip_prevhash_changed and template_observed_at is not None
+            else None
+        )
+        log_payload: dict[str, Any] = {
+            "jobId": state.current_job_id,
+            "templateAnchor": job.template_anchor,
+            "jobCreatedAt": _isoformat_optional(job.created_at),
+            "prevhash": job.prevhash,
+            "height": _optional_int((job.target_context or {}).get("height")),
+            "curtime": (job.target_context or {}).get("curtime"),
+            "previousJobId": state.previous_job_id,
+            "replacedCurrentJob": replaced_current_job,
+        }
+        if tip_prevhash_changed:
+            log_payload.update(
+                {
+                    "tipTemplateChanged": True,
+                    "previousJobPrevhash": previous_job_prevhash,
+                    "templateObservedAt": _isoformat_optional(template_observed_at),
+                    "tipToJobCreatedDeltaMs": tip_to_job_created_delta_ms,
+                }
+            )
         LOGGER.info(
             "job-issued-from-template %s",
             json.dumps(
-                {
-                    "jobId": state.current_job_id,
-                    "templateAnchor": job.template_anchor,
-                    "jobCreatedAt": _isoformat_optional(job.created_at),
-                    "prevhash": job.prevhash,
-                    "height": _optional_int((job.target_context or {}).get("height")),
-                    "curtime": (job.target_context or {}).get("curtime"),
-                    "previousJobId": state.previous_job_id,
-                    "replacedCurrentJob": replaced_current_job,
-                },
+                log_payload,
                 sort_keys=True,
                 separators=(",", ":"),
             ),
@@ -2905,6 +2975,7 @@ class StratumIngressService:
             state,
             NotifyProbeMetadata(
                 job_id=state.current_job_id,
+                job_created_at=job.created_at,
                 notify_sent_at=observed_at,
                 assigned_difficulty=assigned_difficulty,
                 previous_assigned_difficulty=(
@@ -2914,6 +2985,12 @@ class StratumIngressService:
                 ),
                 template_height=_optional_int((job.target_context or {}).get("height")),
                 replaced_current_job=replaced_current_job,
+                previous_job_id=state.previous_job_id,
+                previous_job_prevhash=previous_job_prevhash,
+                current_job_prevhash=current_job_prevhash,
+                template_observed_at=template_observed_at,
+                tip_prevhash_changed=tip_prevhash_changed,
+                tip_to_job_created_delta_ms=tip_to_job_created_delta_ms,
             ),
         )
         self._mark_latest_difficulty_notify_followed(state)
@@ -3799,6 +3876,15 @@ def _isoformat_optional(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
+
+
+def _parse_iso8601(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _age_seconds_later_from_earlier(

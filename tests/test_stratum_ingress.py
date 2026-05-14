@@ -133,6 +133,23 @@ class EmptyMasternodeTemplateRpcClient(SuccessfulTemplateRpcClient):
         return payload
 
 
+class SequencedTemplateRpcClient(SuccessfulTemplateRpcClient):
+    def __init__(self, prevhashes: list[str]) -> None:
+        super().__init__()
+        self._prevhashes = list(prevhashes)
+        self._index = 0
+
+    def get_block_template(self) -> dict[str, object]:
+        payload = super().get_block_template()
+        payload["previousblockhash"] = self._prevhashes[
+            min(self._index, len(self._prevhashes) - 1)
+        ]
+        payload["height"] = 123456 + min(self._index, len(self._prevhashes) - 1)
+        payload["curtime"] = 1713225600 + (min(self._index, len(self._prevhashes) - 1) * 15)
+        self._index += 1
+        return payload
+
+
 class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
     def test_load_config_clamps_hashrate_assumed_share_difficulty_to_pool_floor(self):
         with mock.patch.dict(
@@ -1229,6 +1246,61 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("checkedAt", payload)
         self.assertIn("daemonBestBlockObservedAt", payload)
         self.assertIn("bestBlockHashRpcLatencyMs", payload)
+
+    async def test_notify_evidence_records_tip_rollover_latency_fields(self):
+        config = self._make_config(
+            Path(tempfile.mkdtemp()),
+            template_mode="daemon-template",
+        )
+        service = StratumIngressService(
+            config,
+            rpc_client=SequencedTemplateRpcClient(["1" * 64, "2" * 64]),
+        )
+        state = stratum_ingress.new_connection_state()
+
+        await service._job_manager._refresh_once()
+        first_notify = service._new_notify_message(state)
+        service._append_notify_evidence(
+            state=state,
+            remote_address="127.0.0.1:3333",
+            payload=first_notify,
+        )
+
+        await service._job_manager._refresh_once()
+        with self.assertLogs("pepepow.stratum_ingress", level="INFO") as cm:
+            second_notify = service._new_notify_message(state)
+        service._append_notify_evidence(
+            state=state,
+            remote_address="127.0.0.1:3333",
+            payload=second_notify,
+        )
+
+        log_payload = self._extract_structured_log(cm.output, "job-issued-from-template ")
+        self.assertTrue(log_payload["tipTemplateChanged"])
+        self.assertEqual(log_payload["previousJobId"], first_notify["params"][0])
+        self.assertEqual(log_payload["previousJobPrevhash"], "1" * 64)
+        self.assertEqual(log_payload["prevhash"], "2" * 64)
+        self.assertIn("templateObservedAt", log_payload)
+        self.assertIn("tipToJobCreatedDeltaMs", log_payload)
+
+        records = [
+            json.loads(line)
+            for line in self._read_notify_evidence_events(config)
+        ]
+        self.assertEqual(len(records), 2)
+        first_record, second_record = records
+        self.assertNotIn("tipTemplateChanged", first_record)
+        self.assertTrue(second_record["tipTemplateChanged"])
+        self.assertEqual(second_record["previousJobId"], first_notify["params"][0])
+        self.assertEqual(second_record["previousJobPrevhash"], "1" * 64)
+        self.assertEqual(second_record["templatePrevhash"], "2" * 64)
+        self.assertEqual(second_record["jobId"], second_notify["params"][0])
+        self.assertIn("jobCreatedAt", second_record)
+        self.assertIn("templateObservedAt", second_record)
+        self.assertIn("tipToJobCreatedDeltaMs", second_record)
+        self.assertIn("tipToNotifySentDeltaMs", second_record)
+        self.assertGreaterEqual(second_record["tipToJobCreatedDeltaMs"], 0)
+        self.assertGreaterEqual(second_record["tipToNotifySentDeltaMs"], 0)
 
     def test_submit_validation_uses_newly_issued_job_difficulty_after_vardiff(self):
         service = StratumIngressService(
@@ -4983,6 +5055,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
     def _read_notify_debug_capture_events(self, config: PoolCoreConfig) -> list[str]:
         path = self._notify_debug_capture_path(config)
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
+    def _notify_evidence_path(self, config: PoolCoreConfig) -> Path:
+        return config.activity_log_path.with_name("notify-evidence.jsonl")
+
+    def _read_notify_evidence_events(self, config: PoolCoreConfig) -> list[str]:
+        path = self._notify_evidence_path(config)
         if not path.exists():
             return []
         return path.read_text(encoding="utf-8").splitlines()
