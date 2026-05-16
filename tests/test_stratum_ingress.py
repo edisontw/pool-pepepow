@@ -150,6 +150,26 @@ class SequencedTemplateRpcClient(SuccessfulTemplateRpcClient):
         return payload
 
 
+class MutableTemplateRpcClient(SuccessfulTemplateRpcClient):
+    def __init__(self, prevhash: str = "1" * 64) -> None:
+        super().__init__()
+        self._prevhash = prevhash
+        self._height = 123456
+        self._curtime = 1713225600
+
+    def set_prevhash(self, prevhash: str) -> None:
+        self._prevhash = prevhash
+        self._height += 1
+        self._curtime += 15
+
+    def get_block_template(self) -> dict[str, object]:
+        payload = super().get_block_template()
+        payload["previousblockhash"] = self._prevhash
+        payload["height"] = self._height
+        payload["curtime"] = self._curtime
+        return payload
+
+
 class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
     def test_load_config_clamps_hashrate_assumed_share_difficulty_to_pool_floor(self):
         with mock.patch.dict(
@@ -1299,8 +1319,17 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("templateObservedAt", second_record)
         self.assertIn("tipToJobCreatedDeltaMs", second_record)
         self.assertIn("tipToNotifySentDeltaMs", second_record)
+        notify_probe = service._notify_probe_for_job(state, second_notify["params"][0])
+        self.assertIsNotNone(notify_probe)
         self.assertGreaterEqual(second_record["tipToJobCreatedDeltaMs"], 0)
         self.assertGreaterEqual(second_record["tipToNotifySentDeltaMs"], 0)
+        self.assertEqual(
+            second_record["tipToNotifySentDeltaMs"],
+            stratum_ingress._delta_ms(
+                notify_probe.template_observed_at,
+                notify_probe.notify_sent_at,
+            ),
+        )
 
     def test_submit_validation_uses_newly_issued_job_difficulty_after_vardiff(self):
         service = StratumIngressService(
@@ -1457,6 +1486,124 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     [config.stratum_vardiff_initial_difficulty * config.stratum_wire_difficulty_scale],
                 )
                 self.assertNotEqual(periodic_notify["params"][0], first_notify["params"][0])
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_authorized_connection_receives_immediate_notify_on_template_rollover(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = MutableTemplateRpcClient()
+            config = self._make_config(
+                tmp_path,
+                synthetic_job_interval_seconds=30.0,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=0.05,
+            )
+            service = StratumIngressService(config, rpc_client=rpc_client)
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: service._job_manager.latest_template_anchor is not None,
+                    timeout=1.0,
+                )
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                first_notify = await self._read_json(reader)
+                first_job = service._job_manager.get_job(first_notify["params"][0])
+                self.assertIsNotNone(first_job)
+                self.assertEqual(first_job.prevhash, "1" * 64)
+
+                rollover_started_at = asyncio.get_running_loop().time()
+                rpc_client.set_prevhash("2" * 64)
+
+                second_difficulty = await asyncio.wait_for(
+                    self._read_json(reader), timeout=1.0
+                )
+                second_notify = await asyncio.wait_for(
+                    self._read_json(reader), timeout=1.0
+                )
+                rollover_elapsed = asyncio.get_running_loop().time() - rollover_started_at
+
+                self.assertEqual(second_difficulty["method"], "mining.set_difficulty")
+                self.assertEqual(second_notify["method"], "mining.notify")
+                self.assertLess(rollover_elapsed, 1.0)
+                self.assertLess(rollover_elapsed, config.synthetic_job_interval_seconds)
+
+                second_job = service._job_manager.get_job(second_notify["params"][0])
+                self.assertIsNotNone(second_job)
+                self.assertEqual(second_job.prevhash, "2" * 64)
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_authorized_connection_does_not_wake_notify_loop_for_unchanged_template(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = MutableTemplateRpcClient()
+            config = self._make_config(
+                tmp_path,
+                synthetic_job_interval_seconds=30.0,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=0.05,
+            )
+            service = StratumIngressService(config, rpc_client=rpc_client)
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: service._job_manager.latest_template_anchor is not None,
+                    timeout=1.0,
+                )
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                await self._read_json(reader)
+
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._read_json(reader), timeout=0.3)
             finally:
                 if writer is not None:
                     writer.close()

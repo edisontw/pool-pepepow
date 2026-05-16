@@ -256,7 +256,11 @@ class StratumIngressService:
         self._engine = ActivityEngine(
             assumed_share_difficulty=_hashrate_estimation_difficulty(config)
         )
-        self._job_manager = TemplateJobManager(config, rpc_client=rpc_client)
+        self._job_manager = TemplateJobManager(
+            config,
+            rpc_client=rpc_client,
+            template_rollover_callback=self._handle_template_rollover,
+        )
         self._queue: asyncio.Queue[ShareEnvelope] = asyncio.Queue(
             maxsize=config.stratum_queue_maxsize
         )
@@ -273,6 +277,7 @@ class StratumIngressService:
         self._active_log_last_sequence: int | None = None
         self._client_writers: set[asyncio.StreamWriter] = set()
         self._active_sessions: dict[str, tuple[ConnectionState, SessionStats]] = {}
+        self._template_wake_events: dict[str, asyncio.Event] = {}
         self._duplicate_submit_cache_size = max(
             512, config.template_job_cache_size * 64
         )
@@ -503,8 +508,10 @@ class StratumIngressService:
         remote_address = _format_peer(writer.get_extra_info("peername"))
         send_lock = asyncio.Lock()
         notify_task: asyncio.Task[None] | None = None
+        template_wake_event = asyncio.Event()
         self._client_writers.add(writer)
         self._active_sessions[state.session_id] = (state, session_stats, remote_address)
+        self._template_wake_events[state.session_id] = template_wake_event
         LOGGER.info(
             "Miner connected: remote=%s session=%s",
             remote_address,
@@ -545,7 +552,13 @@ class StratumIngressService:
 
                 if dispatch.start_notify_loop and notify_task is None:
                     notify_task = asyncio.create_task(
-                        self._notify_loop(state, writer, send_lock, remote_address),
+                        self._notify_loop(
+                            state,
+                            writer,
+                            send_lock,
+                            remote_address,
+                            template_wake_event,
+                        ),
                         name=f"synthetic-notify-{state.session_id}",
                     )
         except ConnectionError:
@@ -565,6 +578,7 @@ class StratumIngressService:
                 await writer.wait_closed()
             self._client_writers.discard(writer)
             self._active_sessions.pop(state.session_id, None)
+            self._template_wake_events.pop(state.session_id, None)
             LOGGER.info(
                 "Miner disconnected: remote=%s session=%s acceptedShares=%s rejectedShares=%s firstShareAt=%s lastShareAt=%s lastJobId=%s",
                 remote_address,
@@ -1521,7 +1535,9 @@ class StratumIngressService:
                     notify_probe.tip_to_job_created_delta_ms
                 )
                 timestamp_value = record.get("timestamp")
-                notify_recorded_at = _parse_iso8601(timestamp_value)
+                notify_recorded_at = notify_probe.notify_sent_at
+                if not isinstance(notify_recorded_at, datetime):
+                    notify_recorded_at = _parse_iso8601(timestamp_value)
                 if (
                     notify_probe.template_observed_at is not None
                     and notify_recorded_at is not None
@@ -2634,49 +2650,72 @@ class StratumIngressService:
         writer: asyncio.StreamWriter,
         send_lock: asyncio.Lock,
         remote_address: str,
+        template_wake_event: asyncio.Event,
     ) -> None:
         while not self._stop_event.is_set() and not writer.is_closing():
+            wake_reason = await self._wait_for_notify_wake(template_wake_event)
+            if wake_reason == "stop":
+                return
+            if wake_reason == "template-change":
+                template_wake_event.clear()
+            if not state.authorized:
+                continue
+            latest_anchor = self._job_manager.latest_template_anchor
+            if latest_anchor is not None and state.last_notified_anchor == latest_anchor:
+                continue
             try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=self._config.synthetic_job_interval_seconds,
+                difficulty_message = self._current_difficulty_notification(
+                    state,
+                    reason="notify-clean-job-repeat",
                 )
-            except asyncio.TimeoutError:
-                if not state.authorized:
-                    continue
-                latest_anchor = self._job_manager.latest_template_anchor
-                if latest_anchor is not None and state.last_notified_anchor == latest_anchor:
-                    continue
-                try:
-                    difficulty_message = self._current_difficulty_notification(
-                        state,
-                        reason="notify-clean-job-repeat",
-                    )
-                    notify_message = self._new_notify_message(state)
-                    LOGGER.info(
-                        "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s",
-                        state.session_id,
-                        state.current_job_id,
-                        state.previous_job_id,
-                        notify_message["params"][8],
-                    )
-                    if difficulty_message is not None:
-                        await self._send_message(
-                            writer,
-                            send_lock,
-                            difficulty_message,
-                            state=state,
-                            remote_address=remote_address,
-                        )
+                notify_message = self._new_notify_message(state)
+                LOGGER.info(
+                    "Notify sent: session=%s jobId=%s previousJobId=%s cleanJobs=%s",
+                    state.session_id,
+                    state.current_job_id,
+                    state.previous_job_id,
+                    notify_message["params"][8],
+                )
+                if difficulty_message is not None:
                     await self._send_message(
                         writer,
                         send_lock,
-                        notify_message,
+                        difficulty_message,
                         state=state,
                         remote_address=remote_address,
                     )
-                except ConnectionError:
-                    return
+                await self._send_message(
+                    writer,
+                    send_lock,
+                    notify_message,
+                    state=state,
+                    remote_address=remote_address,
+                )
+            except ConnectionError:
+                return
+
+    async def _wait_for_notify_wake(self, template_wake_event: asyncio.Event) -> str:
+        stop_wait = asyncio.create_task(self._stop_event.wait())
+        template_wait = asyncio.create_task(template_wake_event.wait())
+        done: set[asyncio.Task[Any]] = set()
+        pending: set[asyncio.Task[Any]] = set()
+        try:
+            done, pending = await asyncio.wait(
+                {stop_wait, template_wait},
+                timeout=self._config.synthetic_job_interval_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with suppress(asyncio.CancelledError):
+                    await task
+        if stop_wait in done and stop_wait.result():
+            return "stop"
+        if template_wait in done and template_wait.result():
+            return "template-change"
+        return "timeout"
 
     async def _send_message(
         self,
@@ -3007,6 +3046,14 @@ class StratumIngressService:
             clean_jobs=True,
             legacy_clean_jobs=state.clean_jobs_legacy,
         )
+
+    def _handle_template_rollover(
+        self,
+        _previous_template: Any,
+        _current_template: Any,
+    ) -> None:
+        for template_wake_event in self._template_wake_events.values():
+            template_wake_event.set()
 
     def _record_notify_probe(
         self, state: ConnectionState, metadata: NotifyProbeMetadata

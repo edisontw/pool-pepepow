@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -114,6 +115,8 @@ class TemplateJobManager:
         config: PoolCoreConfig,
         *,
         rpc_client: DaemonRpcClient | Any | None = None,
+        template_rollover_callback: Callable[[TemplateSnapshot, TemplateSnapshot], None]
+        | None = None,
     ) -> None:
         self._configured_mode = normalize_template_mode(config.template_mode)
         self._fetch_interval_seconds = config.template_fetch_interval_seconds
@@ -149,6 +152,7 @@ class TemplateJobManager:
         )
         self._dirty = False
         self._task: asyncio.Task[None] | None = None
+        self._template_rollover_callback = template_rollover_callback
 
     @property
     def latest_template_anchor(self) -> str | None:
@@ -335,12 +339,19 @@ class TemplateJobManager:
             LOGGER.warning("Daemon template refresh failed: %s", exc)
             return
 
+        previous_template = self._latest_template
         self._latest_template = template
         self._last_success_at = current_time
         self._last_error = None
         self._rpc_status = RPC_STATUS_REACHABLE
         self._fetch_status = FETCH_STATUS_OK
         self._dirty = True
+        if (
+            previous_template is not None
+            and previous_template.prevhash != template.prevhash
+            and self._template_rollover_callback is not None
+        ):
+            self._template_rollover_callback(previous_template, template)
         LOGGER.info(
             "template-refresh-success %s",
             json.dumps(
