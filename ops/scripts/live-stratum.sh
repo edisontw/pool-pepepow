@@ -2773,7 +2773,14 @@ submit_watch_once_service() {
   fi
 
   local elapsed=0
+  local terminal_event="timeout"
+  local matched_status=""
+
   echo "Watching for a new submit event (timeout ${timeout_limit}s)..."
+
+  # Trap SIGINT (Ctrl-C) and SIGTERM to force disarm
+  trap 'terminal_event="interrupted"; break' INT TERM
+
   while (( elapsed < timeout_limit )); do
     local current_lines=0
     if [[ -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
@@ -2783,7 +2790,6 @@ submit_watch_once_service() {
     if (( current_lines > initial_lines )); then
       local new_count=$(( current_lines - initial_lines ))
       local terminal_found="false"
-      local matched_status=""
       while read -r line; do
         local status
         status=$(echo "${line}" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("submitblockRealSubmitStatus", ""))')
@@ -2795,10 +2801,8 @@ submit_watch_once_service() {
       done < <(tail -n "${new_count}" "${SUBMIT_EVIDENCE_LOG}")
 
       if [[ "${terminal_found}" == "true" ]]; then
-        echo "Terminal event detected: ${matched_status}"
-        echo "Auto-disarming submit..."
-        submit_disarm_service
-        return 0
+        terminal_event="${matched_status}"
+        break
       fi
     fi
 
@@ -2806,10 +2810,49 @@ submit_watch_once_service() {
     elapsed=$(( elapsed + 2 ))
   done
 
-  echo "Timeout reached (${timeout_limit}s) without a terminal submit event."
-  echo "Auto-disarming submit..."
-  submit_disarm_service
-  return 1
+  # Reset trap
+  trap - INT TERM
+
+  echo "Terminal event triggered: ${terminal_event}"
+  echo "Executing disarm..."
+  local disarm_attempted="true"
+  local disarm_status="failed"
+  if submit_disarm_service; then
+    disarm_status="success"
+  fi
+
+  # Bounded snapshot/status checks for summary
+  local final_enabled="unknown"
+  local final_budget="unknown"
+  local final_last_status="unknown"
+
+  if [[ -f "${ACTIVITY_SNAPSHOT}" ]]; then
+    final_enabled=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockEnabled", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+    final_budget=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockSendBudgetRemaining", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+    final_last_status=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockLastStatus", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+  fi
+
+  echo "=== submit-watch-once safety summary ==="
+  echo "terminal_event: ${terminal_event}"
+  echo "watch_elapsed_seconds: ${elapsed}"
+  echo "disarm_attempted: ${disarm_attempted}"
+  echo "disarm_status: ${disarm_status}"
+  echo "final real_submit_enabled: ${final_enabled}"
+  echo "final budget remaining: ${final_budget}"
+  echo "final real_submit_last_status: ${final_last_status}"
+
+  if [[ "${final_enabled}" != "false" ]]; then
+    echo "================================================="
+    echo "!!! SAFETY WARNING: real_submit_enabled IS STILL TRUE/UNKNOWN !!!"
+    echo "================================================="
+    exit 1
+  fi
+
+  if [[ "${terminal_event}" == "timeout" ]]; then
+    exit 0
+  fi
+
+  exit 0
 }
 
 case "${SUBCOMMAND}" in
