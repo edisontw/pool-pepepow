@@ -2841,7 +2841,9 @@ submit_watch_once_service() {
   echo "final budget remaining: ${final_budget}"
   echo "final real_submit_last_status: ${final_last_status}"
 
-  if [[ "${final_enabled}" != "false" ]]; then
+  local final_enabled_lower
+  final_enabled_lower="$(echo "${final_enabled:-unknown}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${final_enabled_lower}" != "false" ]]; then
     echo "================================================="
     echo "!!! SAFETY WARNING: real_submit_enabled IS STILL TRUE/UNKNOWN !!!"
     echo "================================================="
@@ -2893,7 +2895,9 @@ submit_arm_watch_once_service() {
     echo "final_budget_remaining: ${final_budget}"
     echo "final_real_submit_last_status: ${final_last_status}"
 
-    if [[ "${final_enabled}" != "false" ]]; then
+    local final_enabled_lower
+    final_enabled_lower="$(echo "${final_enabled:-unknown}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${final_enabled_lower}" != "false" ]]; then
       exit 1
     fi
     if [[ "${wrapper_status}" == "success" ]]; then
