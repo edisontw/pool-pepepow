@@ -5731,3 +5731,43 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertNotIn("variantTargetMatches", records[0])
             self.assertEqual(records[0]["rejectReason"], "preimage-missing")
+
+    def test_stale_and_budget_exhausted_skips_tracked(self):
+        """Skip counts and last candidate freshness are tracked in submit_validation_counts."""
+        service = StratumIngressService.__new__(StratumIngressService)
+        service._submit_validation_counts = {
+            "realSubmitblockAttemptCount": 0,
+            "realSubmitblockSentCount": 0,
+            "realSubmitblockErrorCount": 0,
+            "realSubmitblockStalePrevblkSkipCount": 0,
+            "realSubmitblockBudgetExhaustedSkipCount": 0,
+            "realSubmitblockLastCandidateFreshness": None,
+            "realSubmitblockSendBudgetRemaining": 1,
+            "realSubmitblockLastStatus": "never-attempted",
+            "realSubmitblockLastAttemptAt": None,
+            "realSubmitblockLastError": None,
+        }
+        class DummyConfig:
+            real_submitblock_max_sends = 1
+        service._config = DummyConfig()
+
+        # Record a stale skip
+        payload_stale = {
+            "submitblockRealSubmitStatus": "submit-skipped-stale-prevblk",
+            "candidateFreshnessStatus": "stale-prevblk",
+            "submitblockSubmittedAt": "2026-05-26T12:00:00Z",
+        }
+        service._record_submitblock_status(payload_stale)
+        self.assertEqual(service._submit_validation_counts["realSubmitblockStalePrevblkSkipCount"], 1)
+        self.assertEqual(service._submit_validation_counts["realSubmitblockLastCandidateFreshness"], "stale-prevblk")
+
+        # Record a budget-exhausted skip
+        payload_exhausted = {
+            "submitblockRealSubmitStatus": "submit-skipped-send-budget-exhausted",
+            "candidateFreshnessStatus": "current-prevblk",
+            "submitblockSubmittedAt": "2026-05-26T12:05:00Z",
+        }
+        service._record_submitblock_status(payload_exhausted)
+        self.assertEqual(service._submit_validation_counts["realSubmitblockBudgetExhaustedSkipCount"], 1)
+        self.assertEqual(service._submit_validation_counts["realSubmitblockLastCandidateFreshness"], "current-prevblk")
+

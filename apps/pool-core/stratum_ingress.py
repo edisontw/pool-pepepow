@@ -328,6 +328,9 @@ class StratumIngressService:
             "realSubmitblockAttemptCount": 0,
             "realSubmitblockSentCount": 0,
             "realSubmitblockErrorCount": 0,
+            "realSubmitblockStalePrevblkSkipCount": 0,
+            "realSubmitblockBudgetExhaustedSkipCount": 0,
+            "realSubmitblockLastCandidateFreshness": None,
             "realSubmitblockLastStatus": "never-attempted",
             "realSubmitblockLastAttemptAt": None,
             "realSubmitblockLastError": None,
@@ -2291,6 +2294,15 @@ class StratumIngressService:
             self._submit_validation_counts["realSubmitblockSentCount"] += 1
         if exception_text:
             self._submit_validation_counts["realSubmitblockErrorCount"] += 1
+
+        if status == "submit-skipped-stale-prevblk":
+            self._submit_validation_counts["realSubmitblockStalePrevblkSkipCount"] += 1
+        elif status == "submit-skipped-send-budget-exhausted":
+            self._submit_validation_counts["realSubmitblockBudgetExhaustedSkipCount"] += 1
+
+        self._submit_validation_counts["realSubmitblockLastCandidateFreshness"] = status_payload.get(
+            "candidateFreshnessStatus"
+        )
 
         self._submit_validation_counts["realSubmitblockSendBudgetRemaining"] = max(
             0,

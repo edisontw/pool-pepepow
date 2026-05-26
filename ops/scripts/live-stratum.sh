@@ -647,6 +647,9 @@ print(f"real_submit_send_budget_remaining: {meta.get('realSubmitblockSendBudgetR
 print(f"real_submit_attempt_count: {real_submit_attempt_count}")
 print(f"real_submit_sent_count: {real_submit_sent_count}")
 print(f"real_submit_error_count: {real_submit_error_count}")
+print(f"real_submit_stale_prevblk_skips: {meta.get('realSubmitblockStalePrevblkSkipCount', 0)}")
+print(f"real_submit_budget_exhausted_skips: {meta.get('realSubmitblockBudgetExhaustedSkipCount', 0)}")
+print(f"real_submit_last_candidate_freshness: {meta.get('realSubmitblockLastCandidateFreshness', 'None')}")
 print(f"real_submit_last_status: {meta.get('realSubmitblockLastStatus')}")
 print(f"real_submit_last_attempt_at: {meta.get('realSubmitblockLastAttemptAt')}")
 print(f"real_submit_last_error: {meta.get('realSubmitblockLastError')}")
@@ -2703,6 +2706,112 @@ systemd_restart_service() {
   run_systemctl_noninteractive status "${SYSTEMD_UNIT_NAME}" --no-pager --lines=15 || true
 }
 
+submit_arm_once_service() {
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+
+  # Override to enable one-shot real submit block
+  REAL_SUBMITBLOCK_ENABLED="true"
+  REAL_SUBMITBLOCK_MAX_SENDS="1"
+
+  echo "WARNING: One-shot armed submit is TEMPORARY and NOT for permanent production use."
+  echo "Arming one-shot real submit block in launch.env..."
+  write_launch_env
+
+  if ! command -v "${SYSTEMCTL_BIN}" >/dev/null 2>&1; then
+    echo "systemctl is not available; wrote ${LAUNCH_ENV_FILE} only" >&2
+    return 1
+  fi
+
+  echo "Restarting ${SYSTEMD_UNIT_NAME} with armed one-shot submit..."
+  if ! run_systemctl_noninteractive restart "${SYSTEMD_UNIT_NAME}"; then
+    echo "failed to restart ${SYSTEMD_UNIT_NAME}" >&2
+    return 1
+  fi
+
+  run_systemctl_noninteractive status "${SYSTEMD_UNIT_NAME}" --no-pager --lines=15 || true
+}
+
+submit_disarm_service() {
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+
+  # Override to disable real submit block
+  REAL_SUBMITBLOCK_ENABLED="false"
+  REAL_SUBMITBLOCK_MAX_SENDS="1"
+
+  echo "Disarming real submit block in launch.env..."
+  write_launch_env
+
+  if ! command -v "${SYSTEMCTL_BIN}" >/dev/null 2>&1; then
+    echo "systemctl is not available; wrote ${LAUNCH_ENV_FILE} only" >&2
+    return 1
+  fi
+
+  echo "Restarting ${SYSTEMD_UNIT_NAME} with disabled submit..."
+  if ! run_systemctl_noninteractive restart "${SYSTEMD_UNIT_NAME}"; then
+    echo "failed to restart ${SYSTEMD_UNIT_NAME}" >&2
+    return 1
+  fi
+
+  run_systemctl_noninteractive status "${SYSTEMD_UNIT_NAME}" --no-pager --lines=15 || true
+}
+
+submit_watch_once_service() {
+  ensure_runtime_dir
+  local timeout_limit="${2:-300}"
+  if [[ ! "${timeout_limit}" =~ ^[0-9]+$ ]] || [[ "${timeout_limit}" -lt 1 ]]; then
+    echo "submit-watch-once timeout must be a positive integer" >&2
+    return 1
+  fi
+
+  local initial_lines=0
+  if [[ -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+    initial_lines=$(wc -l < "${SUBMIT_EVIDENCE_LOG}")
+  fi
+
+  local elapsed=0
+  echo "Watching for a new submit event (timeout ${timeout_limit}s)..."
+  while (( elapsed < timeout_limit )); do
+    local current_lines=0
+    if [[ -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
+      current_lines=$(wc -l < "${SUBMIT_EVIDENCE_LOG}")
+    fi
+
+    if (( current_lines > initial_lines )); then
+      local new_count=$(( current_lines - initial_lines ))
+      local terminal_found="false"
+      local matched_status=""
+      while read -r line; do
+        local status
+        status=$(echo "${line}" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("submitblockRealSubmitStatus", ""))')
+        if [[ "${status}" == "submit-sent" || "${status}" == "submit-error" || "${status}" == "submit-skipped-stale-prevblk" || "${status}" == "submit-skipped-send-budget-exhausted" ]]; then
+          terminal_found="true"
+          matched_status="${status}"
+          break
+        fi
+      done < <(tail -n "${new_count}" "${SUBMIT_EVIDENCE_LOG}")
+
+      if [[ "${terminal_found}" == "true" ]]; then
+        echo "Terminal event detected: ${matched_status}"
+        echo "Auto-disarming submit..."
+        submit_disarm_service
+        return 0
+      fi
+    fi
+
+    sleep 2
+    elapsed=$(( elapsed + 2 ))
+  done
+
+  echo "Timeout reached (${timeout_limit}s) without a terminal submit event."
+  echo "Auto-disarming submit..."
+  submit_disarm_service
+  return 1
+}
+
 case "${SUBCOMMAND}" in
   start)
     start_service
@@ -2724,6 +2833,15 @@ case "${SUBCOMMAND}" in
     ;;
   submit-safety-audit)
     submit_safety_audit_service
+    ;;
+  submit-arm-once)
+    submit_arm_once_service
+    ;;
+  submit-disarm)
+    submit_disarm_service
+    ;;
+  submit-watch-once)
+    submit_watch_once_service "$@"
     ;;
   candidate-events)
     candidate_events_service "$@"
@@ -2789,7 +2907,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
