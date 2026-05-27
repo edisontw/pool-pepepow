@@ -5313,6 +5313,124 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         nomp_swapped = stratum_ingress._swap_prevhash_words_for_pepew_header(display_prevhash)
         self.assertEqual(nomp_swapped, expected_nomp)
 
+    async def test_full_path_candidate_identity_and_hashing(self):
+        class AsymmetricTemplateRpcClient(SuccessfulTemplateRpcClient):
+            def get_block_template(self) -> dict[str, object]:
+                tpl = super().get_block_template()
+                tpl["previousblockhash"] = self._best_block_hash
+                return tpl
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = AsymmetricTemplateRpcClient(
+                allow_submitblock=True,
+                submitblock_result="high-hash",
+                best_block_hash="0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51",
+            )
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
+            )
+            await service.start()
+
+            reader = writer = None
+            try:
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        )
+                        == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+
+                expected_nomp_prevhash = "030000007fcba43932787357fa4258f3007bb0ab163f62810fcd879e517a7657"
+                self.assertEqual(notify_message["params"][1], expected_nomp_prevhash)
+
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job,
+                    target_context=target_context,
+                )
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                diag = share_event["shareHashDiagnostic"]
+                artifact = diag.get("candidateArtifact") or {}
+                c_hdr_hex = artifact.get("candidateBlockHeaderHex")
+                sub_hdr_hex = artifact.get("submitblockHeaderHex")
+                c_block_hex = artifact.get("candidateBlockHex")
+
+                self.assertEqual(c_hdr_hex, c_block_hex[:160])
+                self.assertEqual(sub_hdr_hex, c_hdr_hex)
+
+                from pepepow_pow import hoohash_v110, blake3_hash
+                header_bytes = bytes.fromhex(sub_hdr_hex)
+                masked_header = header_bytes[:76] + (b"\x00" * 4)
+                nonce = int.from_bytes(header_bytes[76:80], byteorder="little")
+                expected_hash = hoohash_v110(blake3_hash(masked_header), blake3_hash(header_bytes), nonce)[::-1].hex()
+
+                self.assertEqual(diag["submitblockPayloadHash"], expected_hash)
+
+                expected_unswapped_prevhash = "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"
+                self.assertEqual(sub_hdr_hex[8:72], expected_unswapped_prevhash)
+
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

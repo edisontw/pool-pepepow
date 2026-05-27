@@ -3035,13 +3035,13 @@ submit_arm_watch_once_service() {
     return 1
   fi
 
-  local arm_status="failed"
-  local watch_status="failed"
-  local disarm_attempted="false"
-  local wrapper_status="failed"
-  local final_enabled="unknown"
-  local final_budget="unknown"
-  local final_last_status="unknown"
+  arm_status="failed"
+  watch_status="failed"
+  disarm_attempted="false"
+  wrapper_status="failed"
+  final_enabled="unknown"
+  final_budget="unknown"
+  final_last_status="unknown"
 
   cleanup_and_summary() {
     # Remove traps to prevent recursion
