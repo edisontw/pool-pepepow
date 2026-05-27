@@ -5431,6 +5431,153 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_pre_rpc_stale_prevblk_guard_skips_submit_without_consuming_budget(self):
+        """B-classification fix: guard passes, but daemon tip advances before the
+        immediate pre-RPC get_best_block_hash() call.  submitblock must NOT be
+        called and the send budget must NOT be decremented."""
+
+        CANDIDATE_PREVHASH = "a" * 64   # what the candidate was built on
+        GUARD_BEST_HASH    = CANDIDATE_PREVHASH   # guard sees a matching tip ...
+        NEW_BEST_HASH      = "b" * 64             # ... then tip advances before RPC
+
+        class TipAdvancingRpcClient(SuccessfulTemplateRpcClient):
+            """First get_best_block_hash() -> guard hash (matches candidate).
+            Second get_best_block_hash() -> new tip (race window triggered)."""
+            def __init__(self) -> None:
+                super().__init__(
+                    allow_submitblock=False,     # must NOT be called
+                    best_block_hash=GUARD_BEST_HASH,
+                )
+                self._call_count = 0
+
+            def get_block_template(self) -> dict[str, object]:
+                tpl = super().get_block_template()
+                tpl["previousblockhash"] = CANDIDATE_PREVHASH
+                return tpl
+
+            def get_best_block_hash(self) -> str:
+                self._call_count += 1
+                if self._call_count == 1:
+                    return GUARD_BEST_HASH   # guard check passes
+                return NEW_BEST_HASH          # pre-RPC recheck: tip changed
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = TipAdvancingRpcClient()
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+                real_submitblock_max_sends=1,
+            )
+            service = StratumIngressService(config, rpc_client=rpc_client)
+            await service.start()
+
+            reader = writer = None
+            try:
+                # Wait for template to be fetched
+                await self._wait_for(
+                    lambda: (
+                        config.activity_snapshot_output_path.exists()
+                        and self._load_json(config.activity_snapshot_output_path)["meta"].get(
+                            "templateFetchStatus"
+                        ) == "ok"
+                    )
+                )
+
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader, writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8") + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)   # authorize response
+                await self._read_json(reader)   # difficulty notification
+                notify_message = await self._read_json(reader)
+                job_id = notify_message["params"][0]
+
+                # Patch the job target so the share looks like a block candidate
+                cached_job = service._job_manager.get_job(job_id)
+                assert cached_job is not None
+                target_context = dict(cached_job.target_context)
+                target_context["target"] = "f" * 64
+                service._job_manager._jobs[job_id] = replace(
+                    cached_job, target_context=target_context
+                )
+
+                submit_response = await self._rpc_call(
+                    reader, writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            job_id,
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                # Stratum layer still accepts the submit
+                self.assertTrue(submit_response["result"])
+
+                # Wait for share event
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                diag = share_event["shareHashDiagnostic"]
+
+                # 1. submitblock must NOT have been called
+                self.assertEqual(rpc_client.submitblock_calls, [],
+                                 "submitblock must not be called when pre-RPC tip changed")
+
+                # 2. status must be stale-prevblk skipped
+                self.assertEqual(
+                    diag["submitblockRealSubmitStatus"],
+                    "submit-skipped-stale-prevblk",
+                )
+                self.assertFalse(diag["submitblockAttempted"])
+                self.assertFalse(diag["submitblockSent"])
+
+                # 3. send budget NOT consumed
+                counts = service._submit_validation_counts
+                self.assertEqual(counts["realSubmitblockSentCount"], 0,
+                                 "send budget must not be consumed on pre-RPC stale skip")
+                self.assertEqual(counts["realSubmitblockSendBudgetRemaining"], 1,
+                                 "budget remaining must stay at 1")
+
+                # 4. candidate event records stale-prevblk
+                await self._wait_for(
+                    lambda: len(self._read_candidate_events(config)) == 1
+                )
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertEqual(
+                    candidate_event["submitblockRealSubmitStatus"],
+                    "submit-skipped-stale-prevblk",
+                )
+                self.assertFalse(candidate_event["submitblockAttempted"])
+                self.assertFalse(candidate_event["submitblockSent"])
+
+                # 5. exactly two get_best_block_hash calls: guard + pre-RPC recheck
+                self.assertEqual(rpc_client._call_count, 2,
+                                 "expected exactly two get_best_block_hash calls: guard + pre-RPC")
+
+            finally:
+                if writer is not None:
+                    writer.close()
+                await service.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -5903,4 +6050,5 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         service._record_submitblock_status(payload_exhausted)
         self.assertEqual(service._submit_validation_counts["realSubmitblockBudgetExhaustedSkipCount"], 1)
         self.assertEqual(service._submit_validation_counts["realSubmitblockLastCandidateFreshness"], "current-prevblk")
+
 

@@ -2218,6 +2218,86 @@ class StratumIngressService:
                 )
             )
 
+        # Immediate pre-RPC tip recheck: close the window between the guard
+        # check above and the actual submitblock RPC call.  The daemon tip can
+        # advance in that gap (observed: bad-prevblk despite guard passing).
+        # This does NOT consume send budget when stale; budget is only consumed
+        # after the submitblock call succeeds (sent=True path below).
+        pre_rpc_best_block_hash: str | None = None
+        try:
+            pre_rpc_best_block_hash = _normalize_optional_hex(
+                rpc_client.get_best_block_hash()
+            )
+        except Exception as exc:
+            return self._record_submitblock_status(
+                _submitblock_status_result(
+                    status="submit-skipped-best-block-hash-unavailable",
+                    daemon_error=str(exc),
+                    daemon_accepted_likely=False,
+                    submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_job_prevhash=candidate_prevhash,
+                    submitblock_payload_prevhash_raw=payload_prevhash_raw,
+                    submitblock_payload_prevhash=payload_prevhash,
+                    submitblock_header_prevhash_raw=header_prevhash_raw,
+                    submitblock_header_prevhash=header_prevhash,
+                    submitblock_daemon_best_block_hash=pre_rpc_best_block_hash,
+                    submitblock_prevhash_guard_evaluated=True,
+                    submitblock_prevhash_guard_compared_field=guard_compared_field,
+                    submitblock_prevhash_guard_compared_value=guard_compared_value,
+                    submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
+                    submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
+                    candidate_prev_hash=candidate_prevhash,
+                    daemon_best_hash_at_submit_decision=daemon_best_block_hash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
+                )
+            )
+        if (
+            guard_compared_value is None
+            or pre_rpc_best_block_hash is None
+            or guard_compared_value != pre_rpc_best_block_hash
+        ):
+            LOGGER.info(
+                "submitblock-pre-rpc-stale %s",
+                json.dumps(
+                    {
+                        "guardComparedValue": guard_compared_value,
+                        "guardBestBlockHash": daemon_best_block_hash,
+                        "preRpcBestBlockHash": pre_rpc_best_block_hash,
+                        "guardStatus": "submit-skipped-stale-prevblk",
+                        "realSubmitEnabled": self._config.enable_real_submitblock,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+            return self._record_submitblock_status(
+                _submitblock_status_result(
+                    status="submit-skipped-stale-prevblk",
+                    daemon_accepted_likely=False,
+                    submitblock_candidate_prevhash=candidate_prevhash,
+                    submitblock_job_prevhash=candidate_prevhash,
+                    submitblock_payload_prevhash_raw=payload_prevhash_raw,
+                    submitblock_payload_prevhash=payload_prevhash,
+                    submitblock_header_prevhash_raw=header_prevhash_raw,
+                    submitblock_header_prevhash=header_prevhash,
+                    submitblock_daemon_best_block_hash=pre_rpc_best_block_hash,
+                    submitblock_prevhash_guard_evaluated=True,
+                    submitblock_prevhash_guard_compared_field=guard_compared_field,
+                    submitblock_prevhash_guard_compared_value=guard_compared_value,
+                    submitblock_prevhash_guard_matched_best_block=guard_matched_best_block,
+                    submitblock_prevhash_guard_payload_matched_job=payload_matched_job,
+                    candidate_prev_hash=candidate_prevhash,
+                    daemon_best_hash_at_submit_decision=daemon_best_block_hash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=(
+                        candidate_age_seconds_at_submit_decision
+                    ),
+                )
+            )
+
         submitted_at = _isoformat_optional(utc_now())
         try:
             daemon_result = rpc_client.submitblock(payload_hex)
