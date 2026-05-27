@@ -2302,6 +2302,177 @@ for payload in matches:
 ' "${candidate_hash}" "${tail_lines}"
 }
 
+reconstruct_submit_outcome_service() {
+  ensure_runtime_dir
+
+  local candidate_hash tail_lines
+  candidate_hash="${2:-}"
+  tail_lines="${3:-100000}"
+  if [[ -z "${candidate_hash}" ]]; then
+    echo "usage: $0 reconstruct-submit-outcome <candidate_hash> [tail_lines]" >&2
+    return 1
+  fi
+  if [[ ! "${tail_lines}" =~ ^[0-9]+$ ]] || [[ "${tail_lines}" -lt 1 ]]; then
+    echo "reconstruct-submit-outcome tail_lines must be a positive integer" >&2
+    return 1
+  fi
+
+  python3 - "${CANDIDATE_EVENT_LOG}" "${SUBMIT_EVIDENCE_LOG}" "${FOLLOWUP_EVENT_LOG}" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${candidate_hash}" "${tail_lines}" <<'PY'
+import json
+import sys
+import os
+from pathlib import Path
+
+candidate_event_log = Path(sys.argv[1])
+submit_evidence_log = Path(sys.argv[2])
+followup_event_log = Path(sys.argv[3])
+outcome_event_log = Path(sys.argv[4])
+candidate_hash = sys.argv[5].strip().lower()
+tail_lines = int(sys.argv[6])
+
+def tail_file(path: Path, lines_count: int) -> list[str]:
+    if not path.is_file():
+        return []
+    with open(path, "rb") as f:
+        try:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block_size = 1024 * 1024
+            data = bytearray()
+            while data.count(b"\n") <= lines_count + 1 and f.tell() > 0:
+                pos = max(0, f.tell() - block_size)
+                f.seek(pos, os.SEEK_SET)
+                chunk = f.read(block_size)
+                data = chunk + data
+                f.seek(pos, os.SEEK_SET)
+                if pos == 0:
+                    break
+            lines = data.decode("utf-8", errors="replace").splitlines()
+            return lines[-lines_count:]
+        except Exception:
+            return []
+
+candidate_lines = tail_file(candidate_event_log, tail_lines)
+submit_lines = tail_file(submit_evidence_log, tail_lines)
+followup_lines = tail_file(followup_event_log, tail_lines)
+outcome_lines = tail_file(outcome_event_log, tail_lines)
+
+hash_fields = ["candidateBlockHash", "submitblockPayloadHash", "shareHash", "localComputedHash", "independentAuthoritativeShareHash"]
+def find_match(lines):
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        for field in hash_fields:
+            val = payload.get(field)
+            if isinstance(val, str) and val.strip().lower() == candidate_hash:
+                return payload
+    return None
+
+candidate_evt = find_match(candidate_lines)
+submit_evt = find_match(submit_lines)
+followup_evt = find_match(followup_lines)
+outcome_evt = find_match(outcome_lines)
+
+if not candidate_evt and not submit_evt:
+    print(f"Error: Candidate hash {candidate_hash} not found in last {tail_lines} lines of candidate events or submit evidence.")
+    sys.exit(1)
+
+timestamp = (candidate_evt or submit_evt).get("timestamp") or (candidate_evt or submit_evt).get("candidatePreparedAt")
+job_id = (candidate_evt or submit_evt).get("jobId")
+
+print("=== TIMELINE ===")
+if candidate_evt:
+    print(f"Candidate Event: timestamp={candidate_evt.get('timestamp')}, jobId={candidate_evt.get('jobId')}, candidateBlockHash={candidate_evt.get('candidateBlockHash')}, localComputedHash={candidate_evt.get('localComputedHash')}, target={candidate_evt.get('blockTargetUsed') or candidate_evt.get('shareTarget')}, meetsBlockTarget={candidate_evt.get('meetsBlockTarget')}")
+else:
+    print("Candidate Event: NOT FOUND in tail")
+
+if submit_evt:
+    daemon_result_str = submit_evt.get("submitblockDaemonResult")
+    print(f"Submit Evidence: timestamp={submit_evt.get('timestamp')}, submitblockAttempted={submit_evt.get('submitblockAttempted')}, submitblockSent={submit_evt.get('submitblockSent')}, submitblockRealSubmitStatus={submit_evt.get('submitblockRealSubmitStatus')}, submitblockSubmittedAt={submit_evt.get('submitblockSubmittedAt')}")
+else:
+    daemon_result_str = None
+    print("Submit Evidence: NOT FOUND in tail")
+
+daemon_hash = None
+daemon_err = None
+debug_log = Path(os.path.expanduser("~/.PEPEPOWcore/debug.log"))
+if debug_log.is_file() and timestamp:
+    try:
+        date_str = timestamp.replace("T", " ")[:16]
+        debug_lines = tail_file(debug_log, 100000)
+        for line in debug_lines:
+            if date_str in line and "CheckProofOfWork()" in line:
+                daemon_err = line.strip()
+                parts = line.split("with")
+                if len(parts) > 1:
+                    hash_part = parts[1].strip().split(" ")[0]
+                    if len(hash_part) == 64:
+                        daemon_hash = hash_part
+                break
+    except Exception:
+        pass
+
+if daemon_err:
+    print(f"Daemon Submit Result: submitblockDaemonResult={daemon_result_str}, DaemonLog='{daemon_err}'")
+else:
+    print(f"Daemon Submit Result: submitblockDaemonResult={daemon_result_str or 'missing'}, DaemonLog=Not found in debug.log")
+
+if followup_evt:
+    print(f"Follow-up Event: followupStatus={followup_evt.get('followupStatus')}, followupCheckedAt={followup_evt.get('followupCheckedAt')}, followupObservedHeight={followup_evt.get('followupObservedHeight')}, followupObservedBlockHash={followup_evt.get('followupObservedBlockHash')}, followupNote={followup_evt.get('followupNote')}")
+else:
+    print("Follow-up Event: NOT FOUND in tail")
+
+if outcome_evt:
+    print(f"Outcome: candidateOutcomeStatus={outcome_evt.get('candidateOutcomeStatus')}")
+else:
+    print("Outcome: NOT FOUND in tail")
+
+print("\n=== ALIGNMENT COMPARISON ===")
+c_hash = (candidate_evt or submit_evt).get("candidateBlockHash")
+p_hash = (candidate_evt or submit_evt).get("submitblockPayloadHash")
+f_hash = followup_evt.get("followupObservedBlockHash") if followup_evt else None
+
+print(f"candidateBlockHash:               {c_hash or '-'}")
+print(f"submitblockPayloadHash:           {p_hash or '-'}")
+if daemon_hash:
+    print(f"daemonComputedBlockHash (debug):  {daemon_hash}")
+else:
+    print("daemonComputedBlockHash (debug):  Not found")
+print(f"followupObservedBlockHash:        {f_hash or '-'}")
+
+agree = True
+if p_hash and c_hash and p_hash != c_hash:
+    agree = False
+    print("WARNING: candidateBlockHash and submitblockPayloadHash DISAGREE!")
+if daemon_hash and c_hash and daemon_hash != c_hash:
+    agree = False
+    print("WARNING: pool-recorded candidateBlockHash and daemon-computed block hash DISAGREE!")
+if agree:
+    print("All recorded pool hash fields agree.")
+
+print("\n=== CLASSIFICATION ===")
+sent = (submit_evt or candidate_evt).get("submitblockSent")
+
+if daemon_result_str == "high-hash" or daemon_hash is not None:
+    print("Result: a) submitted but daemon rejected/ignored (high-hash / proof of work failed)")
+    if daemon_hash and c_hash and daemon_hash != c_hash:
+        print("Explanation: The pool submitted a block payload with a different hash representation (likely NOMP word-swapped prevhash in the header) which caused the daemon to compute a different block hash that failed target verification.")
+elif outcome_evt and outcome_evt.get("candidateOutcomeStatus") == "chain-match-not-found" and sent:
+    print("Result: b) submitted and accepted but chain later reorganized/orphaned (or rejected by daemon)")
+elif outcome_evt and outcome_evt.get("candidateOutcomeStatus") == "submitted" and sent:
+    print("Result: b) submitted but not yet fully confirmed or chain match check has not run")
+elif p_hash and c_hash and p_hash != c_hash:
+    print("Result: c) submitted payload hash differs from candidate hash")
+else:
+    print("Result: d) evidence insufficient")
+PY
+}
+
 candidate_freshness_audit_service() {
   ensure_runtime_dir
 
@@ -2999,6 +3170,9 @@ case "${SUBCOMMAND}" in
   submit-evidence-find)
     submit_evidence_find_service "$@"
     ;;
+  reconstruct-submit-outcome)
+    reconstruct_submit_outcome_service "$@"
+    ;;
   candidate-freshness-audit)
     candidate_freshness_audit_service "$@"
     ;;
@@ -3027,7 +3201,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac

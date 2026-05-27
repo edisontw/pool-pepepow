@@ -4634,18 +4634,7 @@ def _build_submitblock_header(
     submitblock_prevhash_hex: str | None,
     job_prevhash_hex: str | None,
 ) -> bytes:
-    if len(header) != 80:
-        return header
-    prevhash_raw = _normalize_optional_hex(submitblock_prevhash_hex)
-    if prevhash_raw is None:
-        job_prevhash = _normalize_optional_hex(job_prevhash_hex)
-        if job_prevhash is None:
-            return header
-        try:
-            prevhash_raw = _swap_prevhash_words_for_pepew_header(job_prevhash)
-        except ValueError:
-            return header
-    return header[:4] + bytes.fromhex(prevhash_raw) + header[36:]
+    return header
 
 
 def _configured_coinbase_dialect() -> str:

@@ -5296,7 +5296,22 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         for line in output:
             if prefix in line:
                 return json.loads(line.split(prefix, 1)[1])
-        self.fail(f"missing structured log with prefix {prefix!r}")
+    def test_build_submitblock_header_returns_validation_header_as_is(self):
+        header = bytes.fromhex("00400020" + "12" * 32 + "34" * 32 + "11223344" + "55667788" + "aabbccdd")
+        submit_prev = "33" * 32
+        job_prev = "44" * 32
+        res = stratum_ingress._build_submitblock_header(
+            header,
+            submitblock_prevhash_hex=submit_prev,
+            job_prevhash_hex=job_prev
+        )
+        self.assertEqual(res, header)
+        self.assertEqual(res[:80], header[:80])
+
+        display_prevhash = "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"
+        expected_nomp = "030000007fcba43932787357fa4258f3007bb0ab163f62810fcd879e517a7657"
+        nomp_swapped = stratum_ingress._swap_prevhash_words_for_pepew_header(display_prevhash)
+        self.assertEqual(nomp_swapped, expected_nomp)
 
 
 if __name__ == "__main__":
