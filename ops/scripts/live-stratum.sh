@@ -2938,9 +2938,9 @@ submit_watch_once_service() {
     return 1
   fi
 
-  local initial_lines=0
+  local initial_size=0
   if [[ -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
-    initial_lines=$(wc -l < "${SUBMIT_EVIDENCE_LOG}")
+    initial_size=$(stat -c %s "${SUBMIT_EVIDENCE_LOG}")
   fi
 
   local elapsed=0
@@ -2953,25 +2953,35 @@ submit_watch_once_service() {
   trap 'terminal_event="interrupted"; break' INT TERM
 
   while (( elapsed < timeout_limit )); do
-    local current_lines=0
+    local current_size=0
     if [[ -f "${SUBMIT_EVIDENCE_LOG}" ]]; then
-      current_lines=$(wc -l < "${SUBMIT_EVIDENCE_LOG}")
+      current_size=$(stat -c %s "${SUBMIT_EVIDENCE_LOG}")
     fi
 
-    if (( current_lines > initial_lines )); then
-      local new_count=$(( current_lines - initial_lines ))
-      local terminal_found="false"
-      while read -r line; do
-        local status
-        status=$(echo "${line}" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("submitblockRealSubmitStatus", ""))')
-        if [[ "${status}" == "submit-sent" || "${status}" == "submit-error" || "${status}" == "submit-skipped-stale-prevblk" || "${status}" == "submit-skipped-send-budget-exhausted" ]]; then
-          terminal_found="true"
-          matched_status="${status}"
-          break
-        fi
-      done < <(tail -n "${new_count}" "${SUBMIT_EVIDENCE_LOG}")
+    if (( current_size > initial_size )); then
+      local chunk_size=$(( current_size - initial_size ))
+      local new_content
+      new_content=$(tail -c "+$((initial_size + 1))" "${SUBMIT_EVIDENCE_LOG}")
+      initial_size=${current_size}
 
-      if [[ "${terminal_found}" == "true" ]]; then
+      local status_list
+      status_list=$(echo "${new_content}" | python3 -c '
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        data = json.loads(line)
+        status = data.get("submitblockRealSubmitStatus")
+        if status in {"submit-sent", "submit-error", "submit-skipped-stale-prevblk", "submit-skipped-send-budget-exhausted"}:
+            print(status)
+    except Exception:
+        pass
+')
+
+      if [[ -n "${status_list}" ]]; then
+        matched_status="$(echo "${status_list}" | head -n 1)"
         terminal_event="${matched_status}"
         break
       fi
@@ -3022,7 +3032,7 @@ submit_watch_once_service() {
   fi
 
   if [[ "${terminal_event}" == "timeout" ]]; then
-    exit 0
+    exit 2
   fi
 
   exit 0
@@ -3071,7 +3081,7 @@ submit_arm_watch_once_service() {
     if [[ "${final_enabled_lower}" != "false" ]]; then
       exit 1
     fi
-    if [[ "${wrapper_status}" == "success" ]]; then
+    if [[ "${wrapper_status}" == "success" || "${wrapper_status}" == "timeout" ]]; then
       exit 0
     else
       exit 1
@@ -3090,9 +3100,19 @@ submit_arm_watch_once_service() {
   fi
 
   # Step 2: Watch in a subshell
+  local watch_rc=0
   if ( submit_watch_once_service "submit-watch-once" "${timeout_limit}" ); then
+    watch_rc=0
+  else
+    watch_rc=$?
+  fi
+
+  if [[ ${watch_rc} -eq 0 ]]; then
     watch_status="success"
     wrapper_status="success"
+  elif [[ ${watch_rc} -eq 2 ]]; then
+    watch_status="timeout"
+    wrapper_status="timeout"
   else
     watch_status="failed"
     wrapper_status="failed-watch"
