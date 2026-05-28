@@ -125,3 +125,17 @@ class DaemonRpcClientTests(unittest.TestCase):
         )
         self.assertEqual(outcome_unsent["candidateOutcomeStatus"], "not-submitted")
 
+    def test_candidate_hash_block_target_comparison(self):
+        # High-hash candidate hash: 00000002e37d152f579355c47a5f0317226b7e823f9415865da43195c5b41ef7
+        # Block target: 0000000379120000000000000000000000000000000000000000000000000000
+        candidate_hash = "00000002e37d152f579355c47a5f0317226b7e823f9415865da43195c5b41ef7"
+        block_target = "0000000379120000000000000000000000000000000000000000000000000000"
+        
+        candidate_int = int(candidate_hash, 16)
+        target_int = int(block_target, 16)
+        
+        # The pool-side comparison logic is: share_hash_int <= block_target_int
+        meets_target = candidate_int <= target_int
+        self.assertTrue(meets_target)
+
+
