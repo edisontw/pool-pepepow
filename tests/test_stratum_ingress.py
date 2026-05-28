@@ -5579,6 +5579,129 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 await service.stop()
 
 
+    def test_submitblock_header_version_consistency(self):
+        class DummyJob:
+            version = "20004000"
+            prevhash = "1" * 64
+            nbits = "1c0ffff0"
+            ntime = "65c31693"
+            coinb1 = "01000000"
+            coinb2 = "00000000"
+            merkle_branch = ()
+            assigned_difficulty = 1.0
+
+        cached_job = DummyJob()
+        # Build the share validation header
+        preimage = stratum_ingress._build_share_header_preimage(
+            cached_job,
+            extranonce1="00000000",
+            extranonce2="00000000",
+            ntime="65c31693",
+            nonce="00000000",
+            version_source_order=False,
+        )
+        self.assertEqual(preimage.status, "preimage-ready")
+        self.assertIsNotNone(preimage.header)
+        share_val_header = preimage.header
+        
+        # Verify the version of the share-validation header starts with 00400020 (reversing "20004000")
+        self.assertTrue(share_val_header.hex().startswith("00400020"))
+        
+        # Build submitblock header
+        submit_prev = "33" * 32
+        job_prev = "1" * 32
+        submitblock_header = stratum_ingress._build_submitblock_header(
+            share_val_header,
+            submitblock_prevhash_hex=submit_prev,
+            job_prevhash_hex=job_prev
+        )
+        # Verify submitblock header starts with 00400020
+        self.assertTrue(submitblock_header.hex().startswith("00400020"))
+        
+        # Assert they use the same authoritative version source
+        self.assertEqual(share_val_header[:4], submitblock_header[:4])
+
+    def test_candidate_block_merkle_root_correctness(self):
+        raw_template = SuccessfulTemplateRpcClient().get_block_template()
+        fetched_at = stratum_ingress.utc_now()
+        snapshot = template_jobs._parse_block_template(
+            raw_template,
+            fetched_at=fetched_at,
+        )
+        job = template_jobs.JobRecord(
+            job_id="job-abc",
+            template_anchor=snapshot.template_anchor,
+            assigned_difficulty=1.0,
+            target_context=snapshot.target_context,
+            created_at=fetched_at,
+            expires_at=fetched_at + timedelta(seconds=60),
+            stale_basis="test",
+            source="daemon-template",
+            prevhash=snapshot.prevhash,
+            version=snapshot.version,
+            nbits=snapshot.nbits,
+            ntime=snapshot.ntime,
+            coinb1=snapshot.coinb1,
+            coinb2=snapshot.coinb2,
+            merkle_branch=snapshot.merkle_branch,
+            preimage_context=snapshot.preimage_context,
+            authoritative_context=snapshot.authoritative_context,
+        )
+        
+        extranonce1 = "00000001"
+        extranonce2 = "0000000000000002"
+        ntime = job.ntime
+        nonce = "00000003"
+        
+        preimage = stratum_ingress._build_share_header_preimage(
+            job,
+            extranonce1=extranonce1,
+            extranonce2=extranonce2,
+            ntime=ntime,
+            nonce=nonce,
+        )
+        self.assertEqual(preimage.status, "preimage-ready")
+        self.assertIsNotNone(preimage.header)
+        
+        artifact_dict = stratum_ingress._prepare_candidate_artifact(
+            job,
+            header=preimage.header,
+            share_hash=b"\x00"*32,
+            extranonce1_hex=extranonce1,
+            extranonce2_hex=extranonce2,
+            ntime_hex=ntime,
+            nonce_hex=nonce,
+            block_target_hex="0f"*32,
+        )
+        self.assertEqual(artifact_dict["candidatePrepStatus"], "candidate-prepared-complete")
+        artifact = artifact_dict["candidateArtifact"]
+        
+        candidate_block_hex = artifact["candidateBlockHex"]
+        header_hex = candidate_block_hex[:160]
+        header_bytes = bytes.fromhex(header_hex)
+        header_merkle_root = header_bytes[36:68]
+        
+        coinbase_hex = artifact["coinbaseTransactionHex"]
+        tx_hexes = [coinbase_hex] + list(job.authoritative_context["transactionDataHexes"])
+        
+        import hashlib
+        layer = []
+        for tx_hex in tx_hexes:
+            tx_bytes = bytes.fromhex(tx_hex)
+            tx_hash = hashlib.sha256(hashlib.sha256(tx_bytes).digest()).digest()
+            layer.append(tx_hash)
+        
+        while len(layer) > 1:
+            if len(layer) % 2 == 1:
+                layer.append(layer[-1])
+            layer = [
+                hashlib.sha256(hashlib.sha256(layer[i] + layer[i+1]).digest()).digest()
+                for i in range(0, len(layer), 2)
+            ]
+        
+        self.assertEqual(layer[0].hex(), header_merkle_root.hex())
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -6050,5 +6173,54 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         service._record_submitblock_status(payload_exhausted)
         self.assertEqual(service._submit_validation_counts["realSubmitblockBudgetExhaustedSkipCount"], 1)
         self.assertEqual(service._submit_validation_counts["realSubmitblockLastCandidateFreshness"], "current-prevblk")
+
+    def test_target_computation_and_comparison(self):
+        """Verify that target computed from nBits=1d037912 matches blockTarget and compares correctly."""
+        nbits = 0x1d037912
+        exponent = nbits >> 24
+        mantissa = nbits & 0xffffff
+        if exponent <= 3:
+            computed_target = mantissa >> (8 * (3 - exponent))
+        else:
+            computed_target = mantissa << (8 * (exponent - 3))
+        
+        expected_target_hex = "0000000379120000000000000000000000000000000000000000000000000000"
+        computed_target_hex = f"{computed_target:064x}"
+        self.assertEqual(computed_target_hex, expected_target_hex)
+
+        candidate_hash_hex = "00000002e37d152f579355c47a5f0317226b7e823f9415865da43195c5b41ef7"
+        candidate_hash_int = int(candidate_hash_hex, 16)
+        
+        self.assertTrue(candidate_hash_int <= computed_target)
+
+    def test_daemon_consistent_header_hash_regression(self):
+        """Verify that the previously submitted candidate header computes to the daemon-consistent hash."""
+        # 80-byte header reconstructed from the exact candidate block hex
+        header_hex = (
+            "00400020"  # version
+            "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"  # prevhash (unswapped in header)
+            "6a15970ee6561da7c048c62d53db2d9ef74f618c5dea65fcb8d50497b835b519"  # merkleRoot
+            "e6c9156a"  # ntime
+            "4f86051d"  # nbits
+            "c316937a"  # nonce
+        )
+        header_bytes = bytes.fromhex(header_hex)
+        computed_hash_bytes = stratum_ingress._calculate_pepepow_share_hash(header_bytes)
+        computed_hash_hex = computed_hash_bytes.hex()
+        
+        expected_daemon_hash = "e85bcf6cdf70b203dc4f59393636e6ae98cf4bec8c0b36975b757e5ad4ac425a"
+        self.assertEqual(computed_hash_hex, expected_daemon_hash)
+
+    def test_candidate_meets_block_target_decision(self):
+        """Verify that a candidate hash of e85bcf6c... does not meet the block target 00000005864f..."""
+        daemon_hash = "e85bcf6cdf70b203dc4f59393636e6ae98cf4bec8c0b36975b757e5ad4ac425a"
+        target_hex = "00000005864f0000000000000000000000000000000000000000000000000000"
+        
+        daemon_hash_int = int(daemon_hash, 16)
+        target_int = int(target_hex, 16)
+        
+        meets_block_target = daemon_hash_int <= target_int
+        self.assertFalse(meets_block_target)
+
 
 
