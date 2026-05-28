@@ -2462,7 +2462,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(
                     candidate_outcome_event["candidateOutcomeStatus"],
-                    "submitted",
+                    "submit-disabled",
                 )
                 self.assertEqual(
                     candidate_outcome_event["followupStatus"],

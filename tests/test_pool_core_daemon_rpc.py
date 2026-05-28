@@ -64,3 +64,64 @@ class DaemonRpcClientTests(unittest.TestCase):
 
         with self.assertRaises(DaemonRpcUnavailableError):
             client.get_blockchain_info()
+
+    def test_candidate_outcome_status(self):
+        from daemon_rpc import candidate_outcome_status
+        # Chain match states should take precedence
+        self.assertEqual(candidate_outcome_status("match-found"), "chain-match-found")
+        self.assertEqual(candidate_outcome_status("no-match-found"), "chain-match-not-found")
+        self.assertEqual(candidate_outcome_status("check-error"), "check-error")
+
+        # Disabled submissions should return submit-disabled
+        self.assertEqual(
+            candidate_outcome_status("not-checked", submit_status="submit-disabled-flag-off"),
+            "submit-disabled"
+        )
+
+        # Unsent submissions should return not-submitted
+        self.assertEqual(
+            candidate_outcome_status("not-checked", submit_sent=False),
+            "not-submitted"
+        )
+
+        # Submitted submissions when submit_sent is true or missing (backward compatibility)
+        self.assertEqual(
+            candidate_outcome_status("not-checked", submit_sent=True),
+            "submitted"
+        )
+        self.assertEqual(
+            candidate_outcome_status("not-checked"),
+            "submitted"
+        )
+
+    def test_build_candidate_outcome_event_status_resolution(self):
+        from daemon_rpc import build_candidate_outcome_event
+        from datetime import datetime, timezone
+
+        candidate_event = {
+            "timestamp": "2026-05-27T16:46:28Z",
+            "jobId": "job-000000000000001a",
+            "candidateBlockHash": "000000029453ef330f44723c129dc780de00f6496635ce67323c42653148e27f",
+            "submitblockRealSubmitStatus": "submit-disabled-flag-off",
+            "submitblockSent": False,
+        }
+
+        outcome = build_candidate_outcome_event(
+            candidate_event,
+            recorded_at=datetime.now(timezone.utc)
+        )
+        self.assertEqual(outcome["candidateOutcomeStatus"], "submit-disabled")
+
+        candidate_event_unsent = {
+            "timestamp": "2026-05-27T16:46:28Z",
+            "jobId": "job-000000000000001a",
+            "candidateBlockHash": "000000029453ef330f44723c129dc780de00f6496635ce67323c42653148e27f",
+            "submitblockRealSubmitStatus": "some-other-status",
+            "submitblockSent": False,
+        }
+        outcome_unsent = build_candidate_outcome_event(
+            candidate_event_unsent,
+            recorded_at=datetime.now(timezone.utc)
+        )
+        self.assertEqual(outcome_unsent["candidateOutcomeStatus"], "not-submitted")
+

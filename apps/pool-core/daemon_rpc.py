@@ -216,13 +216,21 @@ def candidate_followup_defaults() -> dict[str, Any]:
     }
 
 
-def candidate_outcome_status(followup_status: Any) -> str:
+def candidate_outcome_status(
+    followup_status: Any,
+    submit_status: Any = None,
+    submit_sent: Any = None,
+) -> str:
     if followup_status == "match-found":
         return "chain-match-found"
     if followup_status == "no-match-found":
         return "chain-match-not-found"
     if followup_status == "check-error":
         return "check-error"
+    if submit_status == "submit-disabled-flag-off":
+        return "submit-disabled"
+    if submit_sent is False:
+        return "not-submitted"
     return "submitted"
 
 
@@ -248,6 +256,11 @@ def build_candidate_outcome_event(
                 "followupNote": followup_result.get("followupNote"),
             }
         )
+
+    submit_status = candidate_event.get("submitblockRealSubmitStatus") or candidate_event.get("submit_status")
+    submit_sent = candidate_event.get("submitblockSent")
+    if submit_sent is None:
+        submit_sent = candidate_event.get("submit_sent")
 
     return {
         "timestamp": (
@@ -281,7 +294,9 @@ def build_candidate_outcome_event(
             "submitblockDaemonBestBlockHash"
         ),
         "candidateOutcomeStatus": candidate_outcome_status(
-            merged_followup.get("followupStatus")
+            merged_followup.get("followupStatus"),
+            submit_status=submit_status,
+            submit_sent=submit_sent,
         ),
         "followupStatus": merged_followup.get("followupStatus"),
         "followupCheckedAt": merged_followup.get("followupCheckedAt"),
