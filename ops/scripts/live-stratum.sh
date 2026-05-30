@@ -1022,6 +1022,24 @@ candidate_probability_audit_service() {
   tail -n "${count}" "${SHARE_LOG}" | python3 "${SCRIPT_DIR}/candidate_probability_audit.py" "${count}" "${SHARE_LOG}"
 }
 
+post_fix_candidate_probability_audit_service() {
+  ensure_runtime_dir
+
+  local count
+  count="${2:-200000}"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || (( count == 0 )); then
+    echo "post-fix-candidate-probability-audit count must be a positive integer" >&2
+    return 1
+  fi
+  if [[ ! -f "${SHARE_LOG}" ]]; then
+    echo "post-fix-candidate-probability-audit: none (share log not found)"
+    return 0
+  fi
+
+  python3 "${SCRIPT_DIR}/post_fix_candidate_probability_audit.py" "${SHARE_LOG}" "2026-05-28T14:39:05Z" "${count}"
+}
+
+
 share_target_variant_audit_service() {
   set_effective_defaults
   ensure_runtime_dir
@@ -3169,6 +3187,9 @@ case "${SUBCOMMAND}" in
   candidate-probability-audit)
     candidate_probability_audit_service "$@"
     ;;
+  post-fix-candidate-probability-audit)
+    post_fix_candidate_probability_audit_service "$@"
+    ;;
   share-target-variant-audit)
     share_target_variant_audit_service "$@"
     ;;
@@ -3221,7 +3242,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac

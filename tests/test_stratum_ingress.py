@@ -5923,6 +5923,64 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             self.assertNotIn("submitblockException", rec)
 
 
+    def test_reject_evidence_clean_jobs_legacy_false_recorded(self):
+        """cleanJobsLegacy=False is faithfully recorded."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job()
+            state = self._make_state(clean_jobs_legacy=False)
+            assessment = self._make_rejected_assessment(job)
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(records[0]["cleanJobsLegacy"], False)
+
+    def test_reject_evidence_variant_matches_absent_when_not_in_diagnostic(self):
+        """variantTargetMatches key is absent when diagnostic has no header80VariantTargetMatches."""
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            evidence_path = tmp_path / "submit-evidence.jsonl"
+
+            service = StratumIngressService.__new__(StratumIngressService)
+            service._submit_evidence_path = evidence_path
+
+            job = self._make_daemon_job()
+            state = self._make_state()
+            assessment = SubmitAssessment(
+                job_status="current",
+                submit_job_id="job-0011223344556677",
+                cached_job=job,
+                accepted=False,
+                reject_reason="preimage-missing",
+                detail="header preimage is missing extranonce1",
+                share_hash_validation_status="preimage-missing",
+                share_hash_valid=None,
+                share_hash_diagnostic={
+                    "comparisonStage": "preimage-validation",
+                    "reasonCode": "preimage-missing",
+                },
+            )
+            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
+            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
+
+            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
+
+            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
+            self.assertEqual(len(records), 1)
+            self.assertNotIn("variantTargetMatches", records[0])
+            self.assertEqual(records[0]["rejectReason"], "preimage-missing")
+
+
 class LowDifficultyShareLogThrottleTests(unittest.TestCase):
     def _make_service(self, *, low_diff_share_full_log_every_n: int) -> StratumIngressService:
         tmp_path = Path(tempfile.mkdtemp())
@@ -6077,64 +6135,6 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
             service._submit_validation_counts["shareHashValidationCounts"]["low-difficulty-share"],
             3,
         )
-
-    def test_reject_evidence_clean_jobs_legacy_false_recorded(self):
-        """cleanJobsLegacy=False is faithfully recorded."""
-        from datetime import datetime, timezone
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            evidence_path = tmp_path / "submit-evidence.jsonl"
-
-            service = StratumIngressService.__new__(StratumIngressService)
-            service._submit_evidence_path = evidence_path
-
-            job = self._make_daemon_job()
-            state = self._make_state(clean_jobs_legacy=False)
-            assessment = self._make_rejected_assessment(job)
-            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
-            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
-
-            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
-
-            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(records[0]["cleanJobsLegacy"], False)
-
-    def test_reject_evidence_variant_matches_absent_when_not_in_diagnostic(self):
-        """variantTargetMatches key is absent when diagnostic has no header80VariantTargetMatches."""
-        from datetime import datetime, timezone
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            evidence_path = tmp_path / "submit-evidence.jsonl"
-
-            service = StratumIngressService.__new__(StratumIngressService)
-            service._submit_evidence_path = evidence_path
-
-            job = self._make_daemon_job()
-            state = self._make_state()
-            assessment = SubmitAssessment(
-                job_status="current",
-                submit_job_id="job-0011223344556677",
-                cached_job=job,
-                accepted=False,
-                reject_reason="preimage-missing",
-                detail="header preimage is missing extranonce1",
-                share_hash_validation_status="preimage-missing",
-                share_hash_valid=None,
-                share_hash_diagnostic={
-                    "comparisonStage": "preimage-validation",
-                    "reasonCode": "preimage-missing",
-                },
-            )
-            params = ["wallet1.rig01", "job-0011223344556677", "00000001", "01020304", "aabbccdd"]
-            observed_at = datetime(2026, 4, 19, 11, 0, 0, tzinfo=timezone.utc)
-
-            service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
-
-            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(len(records), 1)
-            self.assertNotIn("variantTargetMatches", records[0])
-            self.assertEqual(records[0]["rejectReason"], "preimage-missing")
-
     def test_stale_and_budget_exhausted_skips_tracked(self):
         """Skip counts and last candidate freshness are tracked in submit_validation_counts."""
         service = StratumIngressService.__new__(StratumIngressService)
@@ -6208,7 +6208,7 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         computed_hash_bytes = stratum_ingress._calculate_pepepow_share_hash(header_bytes)
         computed_hash_hex = computed_hash_bytes.hex()
         
-        expected_daemon_hash = "e85bcf6cdf70b203dc4f59393636e6ae98cf4bec8c0b36975b757e5ad4ac425a"
+        expected_daemon_hash = "00000002e37d152f579355c47a5f0317226b7e823f9415865da43195c5b41ef7"
         self.assertEqual(computed_hash_hex, expected_daemon_hash)
 
     def test_candidate_meets_block_target_decision(self):

@@ -3907,14 +3907,10 @@ def _calculate_pepepow_share_hash(header: bytes) -> bytes:
         raise PepepowPowError(
             f"PEPEPOW header must be 80 bytes, got {len(header)}"
         )
-    # Swap prevhash words (bytes 4 to 36) to match daemon CheckProofOfWork behavior
-    prevhash_swapped = b"".join(header[i:i+4][::-1] for i in range(4, 36, 4))
-    hash_header = header[:4] + prevhash_swapped + header[36:]
-
-    masked_header = hash_header[:76] + (b"\x00" * 4)
-    header_hash = blake3_hash(hash_header)
+    masked_header = header[:76] + (b"\x00" * 4)
+    header_hash = blake3_hash(header)
     matrix_seed = blake3_hash(masked_header)
-    nonce = int.from_bytes(hash_header[76:80], byteorder="little", signed=False)
+    nonce = int.from_bytes(header[76:80], byteorder="little", signed=False)
     # hoohash_v110 returns the internal digest byte order; normalize once here so
     # target comparisons and logged block hashes use the canonical big-endian form.
     return hoohash_v110(matrix_seed, header_hash, nonce)[::-1]
