@@ -207,6 +207,16 @@ def has_submit_classification_fields(row: dict[str, Any]) -> bool:
     )
 
 
+def parse_iso(ts_str: Any) -> datetime | None:
+    if not isinstance(ts_str, str) or not ts_str:
+        return None
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def main() -> int:
     if len(sys.argv) != 7:
         print("usage: candidate_freshness_audit.py <tail_lines> <candidate_tail> <submit_tail> <snapshot_json> <followup_tail_or_dash> <outcome_tail_or_dash>", file=sys.stderr)
@@ -414,6 +424,14 @@ def main() -> int:
         freshness_conclusion = "insufficient-fields"
     else:
         freshness_conclusion = "insufficient-fields"
+
+    if freshness_conclusion == "stale-prevblk-observed":
+        last_share_at_str = meta.get("lastShareAt")
+        latest_cand_ts_str = candidate_timestamp_from_row(latest_candidate or {})
+        cand_dt = parse_iso(latest_cand_ts_str)
+        share_dt = parse_iso(last_share_at_str)
+        if cand_dt and share_dt and (share_dt - cand_dt).total_seconds() > 1800:
+            freshness_conclusion = "historical stale-prevblk; no fresh candidate yet"
 
     print("candidate_freshness_audit: ready")
     print_kv("requested_tail_lines", tail_lines)
