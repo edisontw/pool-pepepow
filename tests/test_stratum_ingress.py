@@ -179,8 +179,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         ):
             config = pool_core_config.load_config()
 
-        self.assertEqual(config.hashrate_assumed_share_difficulty, 0.01)
-        self.assertEqual(config.estimated_hashrate_assumed_share_difficulty, 0.01)
+        self.assertEqual(config.hashrate_assumed_share_difficulty, 0.001)
+        self.assertEqual(config.estimated_hashrate_assumed_share_difficulty, 0.001)
 
     def test_load_config_reads_stratum_vardiff_settings(self):
         with mock.patch.dict(
@@ -1097,7 +1097,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(state.current_difficulty, 0.05)
-        self.assertEqual(message["params"], [0.05])
+        self.assertEqual(message["params"], [3276.8])
 
     def test_vardiff_does_not_retarget_before_minimum_window_conditions(self):
         service = StratumIngressService(
