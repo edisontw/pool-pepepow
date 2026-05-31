@@ -3056,6 +3056,137 @@ for line in sys.stdin:
   exit 0
 }
 
+fresh_candidate_submit_watch_once_service() {
+  local timeout_limit="${2:-300}"
+  if [[ ! "${timeout_limit}" =~ ^[0-9]+$ ]] || [[ "${timeout_limit}" -lt 1 ]]; then
+    echo "fresh-candidate-submit-watch-once timeout must be a positive integer" >&2
+    return 1
+  fi
+
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+
+  echo "Performing fresh-candidate submit pre-flight audit..."
+  local audit_output
+  audit_output="$(candidate_freshness_audit_service "candidate-freshness-audit" 200)"
+
+  get_audit_val() {
+    local key="$1"
+    echo "${audit_output}" | grep -F "${key}:" | head -n 1 | cut -d ' ' -f 2- || true
+  }
+
+  local latest_freshness
+  latest_freshness="$(get_audit_val "latest_candidate_freshness")"
+  local latest_prevhash
+  latest_prevhash="$(get_audit_val "latest_candidate_prevhash")"
+  local daemon_best
+  daemon_best="$(get_audit_val "daemon_best_hash_current")"
+
+  if [[ -z "${latest_prevhash}" || "${latest_prevhash}" == "None" ]]; then
+    echo "no-send: no block candidate has been prepared yet"
+    exit 0
+  fi
+
+  if [[ "${latest_freshness}" == "stale-prevblk" ]]; then
+    echo "submit-skipped-stale-prevblk"
+    echo "no-send: latest candidate prevhash (${latest_prevhash}) is stale against daemon best (${daemon_best})"
+    exit 0
+  fi
+
+  # Check readiness
+  local template_mode fetch_status rpc_reachable
+  template_mode="$(get_audit_val "template_mode_effective")"
+  fetch_status="$(get_audit_val "template_fetch_status")"
+  rpc_reachable="$(get_audit_val "template_daemon_rpc_reachable")"
+
+  if [[ "${template_mode}" != "daemon-template" || "${fetch_status}" != "ok" || "${rpc_reachable}" != "true" ]]; then
+    echo "no-send: daemon template readiness is unacceptable (mode=${template_mode}, fetch=${fetch_status}, rpc=${rpc_reachable})"
+    exit 0
+  fi
+
+  if [[ "${latest_freshness}" != "fresh-prevblk" ]]; then
+    echo "no-send: latest candidate freshness is not fresh-prevblk (freshness=${latest_freshness})"
+    exit 0
+  fi
+
+  echo "Latest candidate is fresh-prevblk and readiness is acceptable. Arming one-shot submit path..."
+
+  arm_status="failed"
+  watch_status="failed"
+  disarm_attempted="false"
+  wrapper_status="failed"
+  final_enabled="unknown"
+  final_budget="unknown"
+  final_last_status="unknown"
+
+  cleanup_and_summary() {
+    # Remove traps to prevent recursion
+    trap - INT TERM EXIT
+
+    echo "Ensuring final disarm safety..."
+    disarm_attempted="true"
+    submit_disarm_service >/dev/null 2>&1 || true
+
+    if [[ -f "${ACTIVITY_SNAPSHOT}" ]]; then
+      final_enabled=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockEnabled", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+      final_budget=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockSendBudgetRemaining", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+      final_last_status=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockLastStatus", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+    fi
+
+    echo "=== fresh-candidate-submit-watch-once safety summary ==="
+    echo "wrapper_status: ${wrapper_status}"
+    echo "arm_status: ${arm_status}"
+    echo "watch_status: ${watch_status}"
+    echo "disarm_attempted: ${disarm_attempted}"
+    echo "final_real_submit_enabled: ${final_enabled}"
+    echo "final_budget_remaining: ${final_budget}"
+    echo "final_real_submit_last_status: ${final_last_status}"
+
+    local final_enabled_lower
+    final_enabled_lower="$(echo "${final_enabled:-unknown}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${final_enabled_lower}" != "false" ]]; then
+      exit 1
+    fi
+    if [[ "${wrapper_status}" == "success" || "${wrapper_status}" == "timeout" ]]; then
+      exit 0
+    else
+      exit 1
+    fi
+  }
+
+  trap 'wrapper_status="interrupted"; cleanup_and_summary' INT TERM
+  trap 'cleanup_and_summary' EXIT
+
+  # Step 1: Arm
+  if submit_arm_once_service; then
+    arm_status="success"
+  else
+    wrapper_status="failed-arm"
+    exit 1
+  fi
+
+  # Step 2: Watch in a subshell
+  local watch_rc=0
+  if ( submit_watch_once_service "submit-watch-once" "${timeout_limit}" ); then
+    watch_rc=0
+  else
+    watch_rc=$?
+  fi
+
+  if [[ ${watch_rc} -eq 0 ]]; then
+    watch_status="success"
+    wrapper_status="success"
+  elif [[ ${watch_rc} -eq 2 ]]; then
+    watch_status="timeout"
+    wrapper_status="timeout"
+  else
+    watch_status="failed"
+    wrapper_status="failed-watch"
+    exit 1
+  fi
+}
+
 submit_arm_watch_once_service() {
   local timeout_limit="${2:-300}"
   if [[ ! "${timeout_limit}" =~ ^[0-9]+$ ]] || [[ "${timeout_limit}" -lt 1 ]]; then
@@ -3166,6 +3297,9 @@ case "${SUBCOMMAND}" in
   submit-arm-watch-once)
     submit_arm_watch_once_service "$@"
     ;;
+  fresh-candidate-submit-watch-once)
+    fresh_candidate_submit_watch_once_service "$@"
+    ;;
   submit-disarm)
     submit_disarm_service
     ;;
@@ -3242,7 +3376,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac

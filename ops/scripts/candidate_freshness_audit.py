@@ -446,6 +446,13 @@ def main() -> int:
         if cand_dt and share_dt and (share_dt - cand_dt).total_seconds() > 1800:
             freshness_conclusion = "historical stale-prevblk; no fresh candidate yet"
 
+    latest_candidate_freshness = "unknown"
+    if latest_candidate_prevhash is not None and daemon_best_hash_current is not None:
+        if latest_candidate_prevhash == daemon_best_hash_current:
+            latest_candidate_freshness = "fresh-prevblk"
+        else:
+            latest_candidate_freshness = "stale-prevblk"
+
     print("candidate_freshness_audit: ready")
     print_kv("requested_tail_lines", tail_lines)
     print_kv("candidate_events_inspected", len(candidate_rows))
@@ -457,6 +464,7 @@ def main() -> int:
     print_kv("latest_candidate_job_id", latest_candidate_job_id)
     print_kv("latest_candidate_hash", latest_candidate_hash)
     print_kv("latest_candidate_prevhash", latest_candidate_prevhash)
+    print_kv("latest_candidate_freshness", latest_candidate_freshness)
     print_kv("latest_candidate_has_attribution", str(latest_candidate_has_attribution).lower())
     print_kv("latest_candidate_template_age_seconds", latest_candidate_template_age_seconds)
     print_kv("latest_submit_status", latest_submit_status)

@@ -79,7 +79,7 @@ EOF
 {"timestamp":"2026-05-13T12:20:01Z","jobId":"job-ready","submitblockRealSubmitStatus":"submit-not-triggered","submitblockSent":false}
 EOF
   cat >"${fixture_dir}/activity-snapshot.json" <<'EOF'
-{"meta":{"templateModeEffective":"daemon-template","templateFetchStatus":"ok","templateDaemonRpcReachable":true,"realSubmitblockEnabled":true,"realSubmitblockSendBudgetRemaining":1}}
+{"meta":{"templateModeEffective":"daemon-template","templateFetchStatus":"ok","templateDaemonRpcReachable":true,"realSubmitblockEnabled":true,"realSubmitblockSendBudgetRemaining":1,"daemonBestHashCurrent":"00000000aaaabbbbccccddddeeeeffff11112222333344445555666677778888"}}
 EOF
 }
 
@@ -95,6 +95,7 @@ assert_contains "${stale_output}" "chain_match_not_found_count_in_window: 1"
 assert_contains "${stale_output}" "daemon_best_hash_current: 2222222222222222222222222222222222222222222222222222222222222222"
 assert_contains "${stale_output}" "latest_candidate_has_attribution: true"
 assert_contains "${stale_output}" "latest_candidate_template_age_seconds: 9"
+assert_contains "${stale_output}" "latest_candidate_freshness: stale-prevblk"
 assert_contains "${stale_output}" "submit_decision_fields_expected: true"
 assert_contains "${stale_output}" "latest_submit_has_decision_attribution: true"
 assert_contains "${stale_output}" "latest_submit_candidate_freshness_status: stale-prevblk"
@@ -138,6 +139,7 @@ ready_dir="${tmpdir}/ready"
 make_ready_fixture "${ready_dir}"
 ready_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${ready_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
 assert_contains "${ready_output}" "latest_submit_status: submit-not-triggered"
+assert_contains "${ready_output}" "latest_candidate_freshness: fresh-prevblk"
 assert_contains "${ready_output}" "latest_submit_candidate_freshness_status: unknown"
 assert_contains "${ready_output}" "latest_submit_readiness_status: ready"
 
@@ -161,5 +163,14 @@ assert_contains "${fallback_output}" "latest_submit_prevhash_matches_daemon_best
 assert_contains "${fallback_output}" "latest_submit_classification_source: none"
 assert_contains "${fallback_output}" "latest_submit_readiness_status: unknown"
 assert_contains "${fallback_output}" "attribution_note: decision-attribution-present"
+
+# Test fresh-candidate-submit-watch-once stale scenario
+stale_watch_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${stale_dir}" "${LIVE_STRATUM_SCRIPT}" fresh-candidate-submit-watch-once 10)"
+assert_contains "${stale_watch_output}" "submit-skipped-stale-prevblk"
+assert_contains "${stale_watch_output}" "no-send: latest candidate prevhash (1111111111111111111111111111111111111111111111111111111111111111) is stale against daemon best (2222222222222222222222222222222222222222222222222222222222222222)"
+
+# Test fresh-candidate-submit-watch-once insufficient/empty candidate scenario
+insufficient_watch_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${insufficient_dir}" "${LIVE_STRATUM_SCRIPT}" fresh-candidate-submit-watch-once 10)"
+assert_contains "${insufficient_watch_output}" "no-send: no block candidate has been prepared yet"
 
 echo "test_live_stratum_candidate_freshness_audit: ok"
