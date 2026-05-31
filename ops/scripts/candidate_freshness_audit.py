@@ -237,24 +237,37 @@ def main() -> int:
         latest_submit_status = first_present(latest_candidate, "submitblockRealSubmitStatus")
 
     submit_sent_count = 0
+    submit_sent_latest_ts = None
     submit_error_count = 0
+    submit_error_latest_ts = None
     submit_skipped_stale_prevblk_count = 0
+    submit_skipped_stale_prevblk_latest_ts = None
     submit_skipped_budget_exhausted_count = 0
+    submit_skipped_budget_exhausted_latest_ts = None
     chain_match_not_found_count = 0
     terminal_submit_events = 0
 
     for row in candidate_rows:
         status = first_present(row, "submitblockRealSubmitStatus")
+        row_ts = candidate_timestamp_from_row(row)
         if is_terminal_submit_status(status):
             terminal_submit_events += 1
         if row.get("submitblockSent") is True or status == "submit-sent":
             submit_sent_count += 1
+            if row_ts:
+                submit_sent_latest_ts = row_ts
         if status in STALE_PREVBLK_STATUSES:
             submit_skipped_stale_prevblk_count += 1
+            if row_ts:
+                submit_skipped_stale_prevblk_latest_ts = row_ts
         if status in BUDGET_EXHAUSTED_STATUSES:
             submit_skipped_budget_exhausted_count += 1
+            if row_ts:
+                submit_skipped_budget_exhausted_latest_ts = row_ts
         if is_submit_error(row, status):
             submit_error_count += 1
+            if row_ts:
+                submit_error_latest_ts = row_ts
         followup_status = first_present(row, "followupStatus", "candidateOutcomeStatus")
         followup_note = first_present(row, "followupNote")
         if followup_status in CHAIN_MATCH_NOT_FOUND_STATUSES or followup_note == "candidate-block-hash-not-found-on-local-chain":
@@ -463,10 +476,15 @@ def main() -> int:
     )
     print_kv("latest_submit_readiness_status", latest_submit_readiness_status)
     print_kv("attribution_note", attribution_note)
-    print_kv("submit_sent_count_in_window", submit_sent_count)
-    print_kv("submit_error_count_in_window", submit_error_count)
-    print_kv("submit_skipped_stale_prevblk_count_in_window", submit_skipped_stale_prevblk_count)
-    print_kv("submit_skipped_budget_exhausted_count_in_window", submit_skipped_budget_exhausted_count)
+    print_kv("persistent_tail_submit_sent_count", submit_sent_count)
+    print_kv("persistent_tail_submit_sent_latest_timestamp", submit_sent_latest_ts)
+    print_kv("persistent_tail_submit_error_count", submit_error_count)
+    print_kv("persistent_tail_submit_error_latest_timestamp", submit_error_latest_ts)
+    print_kv("persistent_tail_submit_skipped_stale_prevblk_count", submit_skipped_stale_prevblk_count)
+    print_kv("persistent_tail_submit_skipped_stale_prevblk_latest_timestamp", submit_skipped_stale_prevblk_latest_ts)
+    print_kv("persistent_tail_submit_skipped_budget_exhausted_count", submit_skipped_budget_exhausted_count)
+    print_kv("persistent_tail_submit_skipped_budget_exhausted_latest_timestamp", submit_skipped_budget_exhausted_latest_ts)
+    print_kv("persistent_tail_counts_may_include_previous_processes", "true")
     print_kv("chain_match_not_found_count_in_window", chain_match_not_found_count)
     print_kv("daemon_best_hash_current", daemon_best_hash_current)
     print_kv("freshness_conclusion", freshness_conclusion)
