@@ -2756,9 +2756,12 @@ class StratumIngressService:
             if latest_anchor is not None and state.last_notified_anchor == latest_anchor:
                 continue
             try:
+                if state.current_difficulty is None:
+                    state.current_difficulty = self._initial_session_difficulty()
                 difficulty_message = self._current_difficulty_notification(
                     state,
                     reason="notify-clean-job-repeat",
+                    remote_address=remote_address,
                 )
                 notify_message = self._new_notify_message(state)
                 LOGGER.info(
@@ -3348,6 +3351,11 @@ class StratumIngressService:
         )
 
     def _initial_session_difficulty(self) -> float:
+        if not self._config.stratum_vardiff_enabled:
+            diff = self._config.stratum_vardiff_initial_difficulty
+            if diff < 0.00025 or math.isclose(diff, 0.0000015, abs_tol=1e-7):
+                return 0.00025
+            return diff
         return self._clamp_vardiff(self._config.stratum_vardiff_initial_difficulty)
 
     def _maybe_update_vardiff(

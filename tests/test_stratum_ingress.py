@@ -5701,6 +5701,86 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         
         self.assertEqual(layer[0].hex(), header_merkle_root.hex())
 
+    async def test_fixed_difficulty_live_baseline_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(
+                tmp_path,
+                stratum_vardiff_enabled=False,
+                stratum_vardiff_initial_difficulty=0.00025,
+            )
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                subscribe_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 1,
+                        "method": "mining.subscribe",
+                        "params": ["test-miner/1.0"],
+                    },
+                )
+
+                # Authorize the miner
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": [
+                                "PEPEPOW1KnownWalletAddress000000.rig01",
+                                "x",
+                            ],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                # Read all responses in order
+                auth_resp = await self._read_json(reader)
+                self.assertTrue(auth_resp["result"])
+
+                # Verification 1 & 2: first mining.set_difficulty uses 16.384 and is sent before mining.notify
+                diff_msg = await self._read_json(reader)
+                self.assertEqual(diff_msg["method"], "mining.set_difficulty")
+                self.assertEqual(diff_msg["params"], [16.384])
+
+                notify_msg = await self._read_json(reader)
+                self.assertEqual(notify_msg["method"], "mining.notify")
+
+                # Verification 3: later job refresh / template change does not send difficulty or reset to 0.1
+                if service._job_manager._latest_template is not None:
+                    from dataclasses import replace
+                    new_temp = replace(
+                        service._job_manager._latest_template,
+                        template_anchor="new-anchor-1234",
+                        prevhash="0" * 63 + "1",
+                    )
+                    service._job_manager._latest_template = new_temp
+
+                # wake loop
+                for event in service._template_wake_events.values():
+                    event.set()
+
+                # Wait for next difficulty and notify messages. The difficulty must still be 16.384 (never reset to 0.1).
+                next_diff_msg = await self._read_json(reader)
+                self.assertEqual(next_diff_msg["method"], "mining.set_difficulty")
+                self.assertEqual(next_diff_msg["params"], [16.384])
+
+                next_msg = await self._read_json(reader)
+                self.assertEqual(next_msg["method"], "mining.notify")
+
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

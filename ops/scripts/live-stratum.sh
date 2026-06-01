@@ -2492,7 +2492,9 @@ PY
 }
 
 candidate_freshness_audit_service() {
+  set_effective_defaults
   ensure_runtime_dir
+  load_launch_env_if_present
 
   local tail_lines helper_path tmpdir candidate_tail_path submit_tail_path followup_tail_path outcome_tail_path
   tail_lines="${2:-200}"
@@ -2531,7 +2533,11 @@ candidate_freshness_audit_service() {
     "${submit_tail_path}" \
     "${ACTIVITY_SNAPSHOT}" \
     "${followup_tail_path}" \
-    "${outcome_tail_path}"
+    "${outcome_tail_path}" \
+    --rpc-url "${RPC_URL}" \
+    --rpc-user "${RPC_USER}" \
+    --rpc-password "${RPC_PASSWORD}" \
+    --rpc-timeout "${RPC_TIMEOUT_SECONDS}"
 }
 
 replay_evidence_service() {

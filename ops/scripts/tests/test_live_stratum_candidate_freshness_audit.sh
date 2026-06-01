@@ -173,4 +173,56 @@ assert_contains "${stale_watch_output}" "no-send: latest candidate prevhash (111
 insufficient_watch_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${insufficient_dir}" "${LIVE_STRATUM_SCRIPT}" fresh-candidate-submit-watch-once 10)"
 assert_contains "${insufficient_watch_output}" "no-send: no block candidate has been prepared yet"
 
+# Test RPC-best-hash override/source and fallback
+cat >"${ready_dir}/launch.env" <<'EOF'
+PEPEPOWD_RPC_URL=http://127.0.0.1:9999
+PEPEPOWD_RPC_HOST=127.0.0.1
+PEPEPOWD_RPC_PORT=9999
+PEPEPOWD_RPC_USER=testuser
+PEPEPOWD_RPC_PASSWORD=testpass
+PEPEPOWD_RPC_TIMEOUT_SECONDS=2
+EOF
+
+python3 -c '
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class MockRPC(BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        req = json.loads(body)
+        if req.get("method") == "getbestblockhash":
+            res = {"jsonrpc": "2.0", "id": req.get("id"), "result": "00000000rpcbestblockhashvalue112233445566", "error": None}
+        else:
+            res = {"jsonrpc": "2.0", "id": req.get("id"), "result": None, "error": {"code": -32601, "message": "Method not found"}}
+        response = json.dumps(res).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(response))
+        self.end_headers()
+        self.wfile.write(response)
+    def log_message(self, format, *args):
+        pass
+server = HTTPServer(("127.0.0.1", 9999), MockRPC)
+server.serve_forever()
+' &
+MOCK_PID=$!
+trap 'kill "${MOCK_PID}" 2>/dev/null || true; rm -rf "${tmpdir}"' EXIT
+sleep 0.5
+
+# 1. RPC lookup succeeds
+rpc_success_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${ready_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
+assert_contains "${rpc_success_output}" "daemon_best_hash_current: 00000000rpcbestblockhashvalue112233445566"
+assert_contains "${rpc_success_output}" "daemon_best_hash_source: rpc"
+
+# Kill mock server to simulate failure
+kill "${MOCK_PID}" 2>/dev/null || true
+wait "${MOCK_PID}" 2>/dev/null || true
+trap 'rm -rf "${tmpdir}"' EXIT
+
+# 2. RPC lookup fails (fallback to cached/snapshot)
+rpc_failure_output="$(PEPEPOW_LIVE_STRATUM_RUNTIME_DIR="${ready_dir}" "${LIVE_STRATUM_SCRIPT}" candidate-freshness-audit 200)"
+assert_contains "${rpc_failure_output}" "daemon_best_hash_current: 00000000aaaabbbbccccddddeeeeffff11112222333344445555666677778888"
+assert_contains "${rpc_failure_output}" "daemon_best_hash_source: cached"
+
 echo "test_live_stratum_candidate_freshness_audit: ok"

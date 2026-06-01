@@ -7,6 +7,7 @@ This helper is intentionally read-only. The shell wrapper feeds it bounded
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -218,16 +219,26 @@ def parse_iso(ts_str: Any) -> datetime | None:
 
 
 def main() -> int:
-    if len(sys.argv) != 7:
-        print("usage: candidate_freshness_audit.py <tail_lines> <candidate_tail> <submit_tail> <snapshot_json> <followup_tail_or_dash> <outcome_tail_or_dash>", file=sys.stderr)
-        return 1
+    parser = argparse.ArgumentParser()
+    parser.add_argument("tail_lines", type=int)
+    parser.add_argument("candidate_tail")
+    parser.add_argument("submit_tail")
+    parser.add_argument("snapshot_json")
+    parser.add_argument("followup_tail")
+    parser.add_argument("outcome_tail")
+    parser.add_argument("--rpc-url")
+    parser.add_argument("--rpc-user")
+    parser.add_argument("--rpc-password")
+    parser.add_argument("--rpc-timeout", type=float, default=5.0)
 
-    tail_lines = int(sys.argv[1])
-    candidate_rows = load_jsonl(Path(sys.argv[2]))
-    submit_rows = load_jsonl(Path(sys.argv[3]))
-    snapshot = load_json(Path(sys.argv[4]))
-    followup_path = sys.argv[5]
-    outcome_path = sys.argv[6]
+    args, _ = parser.parse_known_args()
+
+    tail_lines = args.tail_lines
+    candidate_rows = load_jsonl(Path(args.candidate_tail))
+    submit_rows = load_jsonl(Path(args.submit_tail))
+    snapshot = load_json(Path(args.snapshot_json))
+    followup_path = args.followup_tail
+    outcome_path = args.outcome_tail
     followup_rows = [] if followup_path == "-" else load_jsonl(Path(followup_path))
     outcome_rows = [] if outcome_path == "-" else load_jsonl(Path(outcome_path))
 
@@ -291,22 +302,46 @@ def main() -> int:
     template_mode_effective = meta.get("templateModeEffective")
     template_fetch_status = meta.get("templateFetchStatus")
     template_daemon_rpc_reachable = normalize_bool(meta.get("templateDaemonRpcReachable"))
-    daemon_best_hash_current = first_present(
-        meta,
-        "daemonBestHashCurrent",
-        "bestBlockHash",
-        "bestHash",
-    )
+    daemon_best_hash_current = None
+    daemon_best_hash_source = "cached"
+
+    if args.rpc_url:
+        try:
+            pool_core_dir = Path(__file__).resolve().parents[2] / "apps" / "pool-core"
+            if str(pool_core_dir) not in sys.path:
+                sys.path.insert(0, str(pool_core_dir))
+            from daemon_rpc import DaemonRpcClient
+
+            rpc_client = DaemonRpcClient(
+                rpc_url=args.rpc_url,
+                rpc_user=args.rpc_user or "",
+                rpc_password=args.rpc_password or "",
+                timeout_seconds=args.rpc_timeout or 5.0,
+            )
+            rpc_best_hash = rpc_client.get_best_block_hash()
+            if rpc_best_hash:
+                daemon_best_hash_current = rpc_best_hash
+                daemon_best_hash_source = "rpc"
+        except Exception:
+            pass
+
     if daemon_best_hash_current is None:
-        for row in reversed(candidate_rows):
-            daemon_best_hash_current = first_present(row, "submitblockDaemonBestBlockHash")
-            if daemon_best_hash_current is not None:
-                break
-    if daemon_best_hash_current is None:
-        for row in reversed(submit_rows):
-            daemon_best_hash_current = first_present(row, "submitblockDaemonBestBlockHash")
-            if daemon_best_hash_current is not None:
-                break
+        daemon_best_hash_current = first_present(
+            meta,
+            "daemonBestHashCurrent",
+            "bestBlockHash",
+            "bestHash",
+        )
+        if daemon_best_hash_current is None:
+            for row in reversed(candidate_rows):
+                daemon_best_hash_current = first_present(row, "submitblockDaemonBestBlockHash")
+                if daemon_best_hash_current is not None:
+                    break
+        if daemon_best_hash_current is None:
+            for row in reversed(submit_rows):
+                daemon_best_hash_current = first_present(row, "submitblockDaemonBestBlockHash")
+                if daemon_best_hash_current is not None:
+                    break
 
     latest_candidate_hash = None
     latest_candidate_prevhash = None
@@ -495,6 +530,7 @@ def main() -> int:
     print_kv("persistent_tail_counts_may_include_previous_processes", "true")
     print_kv("chain_match_not_found_count_in_window", chain_match_not_found_count)
     print_kv("daemon_best_hash_current", daemon_best_hash_current)
+    print_kv("daemon_best_hash_source", daemon_best_hash_source)
     print_kv("freshness_conclusion", freshness_conclusion)
     if freshness_conclusion == "insufficient-fields":
         print_kv("smallest_future_instrumentation_fields", ",".join(FUTURE_FIELDS))
