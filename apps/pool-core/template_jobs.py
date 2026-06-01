@@ -794,7 +794,7 @@ def _build_coinbase_merkle_branch(transaction_hashes: list[str]) -> list[str]:
     branch: list[str] = []
     while layer:
         sibling = layer[0]
-        branch.append(sibling[::-1].hex())
+        branch.append(sibling.hex())
         remaining = layer[1:]
         if not remaining:
             break

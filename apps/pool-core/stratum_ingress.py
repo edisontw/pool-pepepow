@@ -7079,7 +7079,7 @@ def _is_hex_string(raw_value: Any) -> bool:
 def _apply_merkle_branch(coinbase_hash: bytes, merkle_branch: list[str] | tuple[str, ...]) -> bytes:
     merkle_root = coinbase_hash
     for sibling_hash in merkle_branch:
-        sibling = bytes.fromhex(sibling_hash.strip())[::-1]
+        sibling = bytes.fromhex(sibling_hash.strip())
         merkle_root = _double_sha256(merkle_root + sibling)
     return merkle_root
 
