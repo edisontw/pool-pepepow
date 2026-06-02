@@ -3352,10 +3352,8 @@ class StratumIngressService:
 
     def _initial_session_difficulty(self) -> float:
         if not self._config.stratum_vardiff_enabled:
-            diff = self._config.stratum_vardiff_initial_difficulty
-            if diff < 0.00025 or math.isclose(diff, 0.0000015, abs_tol=1e-7):
-                return 0.00025
-            return diff
+            # Fixed baseline difficulty when vardiff is disabled
+            return 0.0015
         return self._clamp_vardiff(self._config.stratum_vardiff_initial_difficulty)
 
     def _maybe_update_vardiff(

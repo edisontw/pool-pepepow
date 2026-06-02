@@ -883,7 +883,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
                 self.assertEqual(
                     difficulty_message["params"],
-                    [65.536],
+                    [98.304],
                 )
                 self.assertEqual(notify_message["method"], "mining.notify")
                 self.assertEqual(len(notify_message["params"]), 9)
@@ -892,7 +892,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(issued_job)
                 self.assertEqual(
                     issued_job.assigned_difficulty,
-                    config.stratum_vardiff_initial_difficulty,
+                    0.0015,
                 )
 
                 submit_response = await self._rpc_call(
@@ -933,7 +933,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(share_event["jobId"], notify_message["params"][0])
                 self.assertEqual(
                     share_event["difficulty"],
-                    config.stratum_vardiff_initial_difficulty,
+                    0.0015,
                 )
                 self.assertEqual(share_event["jobStatus"], "current")
                 self.assertTrue(share_event["syntheticWork"])
@@ -947,9 +947,9 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 session = next(iter(active_sessions.values()))
                 self.assertEqual(
                     session["effectiveShareDifficulty"],
-                    config.stratum_vardiff_initial_difficulty,
+                    0.0015,
                 )
-                self.assertEqual(session["minerWireDifficulty"], 65.536)
+                self.assertEqual(session["minerWireDifficulty"], 98.304)
                 self.assertEqual(session["difficultyScale"], 65536.0)
 
                 await self._wait_for(
@@ -1483,7 +1483,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(periodic_notify["method"], "mining.notify")
                 self.assertEqual(
                     periodic_difficulty["params"],
-                    [config.stratum_vardiff_initial_difficulty * config.stratum_wire_difficulty_scale],
+                    [98.304],
                 )
                 self.assertNotEqual(periodic_notify["params"][0], first_notify["params"][0])
             finally:
@@ -3592,7 +3592,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 difficulty_message = await self._read_json(reader)
                 notify_message = await self._read_json(reader)
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
-                self.assertEqual(difficulty_message["params"], [65.536])
+                self.assertEqual(difficulty_message["params"], [98.304])
 
                 job_id = notify_message["params"][0]
                 cached_job = stratum_ingress._apply_daemon_template_coinbase_dialect(
@@ -3720,11 +3720,11 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 hashrate_assumed_share_difficulty=1e-08,
                 estimated_hashrate_assumed_share_difficulty=1e-11,
                 stratum_vardiff_enabled=False,
-                stratum_vardiff_initial_difficulty=0.00025,
+                stratum_vardiff_initial_difficulty=0.0015,
             )
             service = StratumIngressService(config)
             self.assertEqual(service._synthetic_difficulty(), 1e-08)
-            self.assertEqual(service._engine.assumed_share_difficulty, 0.00025)
+            self.assertEqual(service._engine.assumed_share_difficulty, 0.0015)
 
     async def test_activity_snapshot_uses_estimation_difficulty_for_vardiff(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -4363,7 +4363,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(second_notify["method"], "mining.notify")
                 self.assertEqual(
                     second_difficulty["params"],
-                    [config.stratum_vardiff_initial_difficulty * config.stratum_wire_difficulty_scale],
+                    [98.304],
                 )
 
                 response = await self._rpc_call(
@@ -5707,7 +5707,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             config = self._make_config(
                 tmp_path,
                 stratum_vardiff_enabled=False,
-                stratum_vardiff_initial_difficulty=0.00025,
+                stratum_vardiff_initial_difficulty=0.0015,
             )
             service = StratumIngressService(config)
             await service.start()
@@ -5745,10 +5745,10 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 auth_resp = await self._read_json(reader)
                 self.assertTrue(auth_resp["result"])
 
-                # Verification 1 & 2: first mining.set_difficulty uses 16.384 and is sent before mining.notify
+                # Verification 1 & 2: first mining.set_difficulty uses 98.304 and is sent before mining.notify
                 diff_msg = await self._read_json(reader)
                 self.assertEqual(diff_msg["method"], "mining.set_difficulty")
-                self.assertEqual(diff_msg["params"], [16.384])
+                self.assertEqual(diff_msg["params"], [98.304])
 
                 notify_msg = await self._read_json(reader)
                 self.assertEqual(notify_msg["method"], "mining.notify")
@@ -5767,10 +5767,10 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 for event in service._template_wake_events.values():
                     event.set()
 
-                # Wait for next difficulty and notify messages. The difficulty must still be 16.384 (never reset to 0.1).
+                # Wait for next difficulty and notify messages. The difficulty must still be 98.304 (never reset to 0.1).
                 next_diff_msg = await self._read_json(reader)
                 self.assertEqual(next_diff_msg["method"], "mining.set_difficulty")
-                self.assertEqual(next_diff_msg["params"], [16.384])
+                self.assertEqual(next_diff_msg["params"], [98.304])
 
                 next_msg = await self._read_json(reader)
                 self.assertEqual(next_msg["method"], "mining.notify")
