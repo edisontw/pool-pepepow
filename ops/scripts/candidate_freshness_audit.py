@@ -481,12 +481,94 @@ def main() -> int:
         if cand_dt and share_dt and (share_dt - cand_dt).total_seconds() > 1800:
             freshness_conclusion = "historical stale-prevblk; no fresh candidate yet"
 
-    latest_candidate_freshness = "unknown"
-    if latest_candidate_prevhash is not None and daemon_best_hash_current is not None:
+    latest_candidate_recorded_freshness = "unknown"
+    latest_candidate_recorded_freshness_status = "unknown"
+    if latest_candidate is not None:
+        recorded_f = latest_candidate.get("candidate_freshness")
+        recorded_status = latest_candidate.get("candidateFreshnessStatus")
+        if recorded_f == "fresh" or recorded_status == "current-prevblk":
+            latest_candidate_recorded_freshness = "fresh"
+        elif recorded_f is not None:
+            latest_candidate_recorded_freshness = recorded_f
+        
+        if recorded_status is not None:
+            latest_candidate_recorded_freshness_status = recorded_status
+
+    if latest_candidate_recorded_freshness == "unknown" and latest_candidate_prevhash is not None and daemon_best_hash_current is not None:
         if latest_candidate_prevhash == daemon_best_hash_current:
-            latest_candidate_freshness = "fresh-prevblk"
+            latest_candidate_recorded_freshness = "fresh"
         else:
-            latest_candidate_freshness = "stale-prevblk"
+            latest_candidate_recorded_freshness = "stale"
+    if latest_candidate_recorded_freshness_status == "unknown" and latest_candidate_prevhash is not None and daemon_best_hash_current is not None:
+        if latest_candidate_prevhash == daemon_best_hash_current:
+            latest_candidate_recorded_freshness_status = "current-prevblk"
+        else:
+            latest_candidate_recorded_freshness_status = "stale-prevblk"
+
+    latest_candidate_current_daemon_comparison = "unknown"
+    latest_candidate_prevhash_matches_current_daemon_best = None
+    latest_candidate_current_daemon_comparison_note = "none"
+
+    if latest_candidate_prevhash is not None and daemon_best_hash_current is not None:
+        matches = (latest_candidate_prevhash == daemon_best_hash_current)
+        latest_candidate_prevhash_matches_current_daemon_best = matches
+        if matches:
+            latest_candidate_current_daemon_comparison = "matches-current-daemon-best"
+        else:
+            latest_candidate_current_daemon_comparison = "historical-candidate-now-stale"
+            latest_candidate_current_daemon_comparison_note = "daemon-best-moved-since-candidate"
+
+    latest_candidate_freshness = "unknown"
+    if latest_candidate_recorded_freshness == "fresh":
+        latest_candidate_freshness = "fresh-prevblk"
+    elif latest_candidate_recorded_freshness == "stale":
+        latest_candidate_freshness = "stale-prevblk"
+    elif latest_candidate_recorded_freshness != "unknown":
+        latest_candidate_freshness = latest_candidate_recorded_freshness
+
+    latest_candidate_block_target_used = None
+    latest_candidate_hash_int_lte_block_target_int = "unknown"
+    latest_candidate_bits = None
+    latest_candidate_target_height = None
+    latest_candidate_prevhash_matches_latest_template = "unknown"
+
+    if latest_candidate is not None:
+        latest_candidate_block_target_used = latest_candidate.get("blockTargetUsed")
+        meets_block_target = latest_candidate.get("meetsBlockTarget")
+        hash_int = latest_candidate.get("localComputedHashInt") or latest_candidate.get("candidateHashInt")
+        target_int = latest_candidate.get("blockTargetInt")
+        if meets_block_target is not None:
+            latest_candidate_hash_int_lte_block_target_int = str(meets_block_target).lower()
+        elif hash_int is not None and target_int is not None:
+            latest_candidate_hash_int_lte_block_target_int = str(hash_int <= target_int).lower()
+        else:
+            c_block_hash = latest_candidate.get("candidate_block_hash") or latest_candidate.get("candidateBlockHash") or latest_candidate_hash
+            b_target_used = latest_candidate.get("blockTargetUsed")
+            if isinstance(c_block_hash, str) and isinstance(b_target_used, str):
+                try:
+                    c_val = int(c_block_hash.strip(), 16)
+                    t_val = int(b_target_used.strip(), 16)
+                    latest_candidate_hash_int_lte_block_target_int = str(c_val <= t_val).lower()
+                except Exception:
+                    pass
+
+        latest_candidate_bits = latest_candidate.get("bits") or latest_candidate.get("nbits")
+        target_context = latest_candidate.get("targetContext")
+        if isinstance(target_context, dict):
+            latest_candidate_target_height = target_context.get("height")
+        if latest_candidate_target_height is None:
+            latest_candidate_target_height = latest_candidate.get("targetContext.height") or latest_candidate.get("targetHeight")
+        prev_match = latest_candidate.get("prevhashMatchesLatestTemplate")
+        if prev_match is True:
+            latest_candidate_prevhash_matches_latest_template = "true"
+        elif prev_match is False:
+            latest_candidate_prevhash_matches_latest_template = "false"
+        else:
+            latest_candidate_prevhash_matches_latest_template = "unknown"
+
+    # Overrides/adjustments for freshness_conclusion
+    if latest_candidate_recorded_freshness == "fresh" and latest_submit_status == "submit-disabled-flag-off":
+        freshness_conclusion = "fresh-candidate-recorded-submit-disabled"
 
     print("candidate_freshness_audit: ready")
     print_kv("requested_tail_lines", tail_lines)
@@ -500,6 +582,16 @@ def main() -> int:
     print_kv("latest_candidate_hash", latest_candidate_hash)
     print_kv("latest_candidate_prevhash", latest_candidate_prevhash)
     print_kv("latest_candidate_freshness", latest_candidate_freshness)
+    print_kv("latest_candidate_recorded_freshness", latest_candidate_recorded_freshness)
+    print_kv("latest_candidate_recorded_freshness_status", latest_candidate_recorded_freshness_status)
+    print_kv("latest_candidate_current_daemon_comparison", latest_candidate_current_daemon_comparison)
+    print_kv("latest_candidate_prevhash_matches_current_daemon_best", render_bool_or_null(latest_candidate_prevhash_matches_current_daemon_best))
+    print_kv("latest_candidate_current_daemon_comparison_note", latest_candidate_current_daemon_comparison_note)
+    print_kv("latest_candidate_block_target_used", latest_candidate_block_target_used)
+    print_kv("latest_candidate_hash_int_lte_block_target_int", latest_candidate_hash_int_lte_block_target_int)
+    print_kv("latest_candidate_bits", latest_candidate_bits)
+    print_kv("latest_candidate_target_height", latest_candidate_target_height)
+    print_kv("latest_candidate_prevhash_matches_latest_template", latest_candidate_prevhash_matches_latest_template)
     print_kv("latest_candidate_has_attribution", str(latest_candidate_has_attribution).lower())
     print_kv("latest_candidate_template_age_seconds", latest_candidate_template_age_seconds)
     print_kv("latest_submit_status", latest_submit_status)

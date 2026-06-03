@@ -969,20 +969,20 @@ class StratumIngressService:
                     previous_job_id=state.previous_job_id,
                 ),
             )
-        if job_status == "stale":
-            return SubmitAssessment(
-                job_status=job_status,
-                submit_job_id=submit_job_id,
-                cached_job=cached_job,
-                accepted=False,
-                reject_reason="stale-job",
-            )
 
         target_context_check = self._assess_target_context(
             params,
             cached_job=cached_job,
         )
         if target_context_check.reject_reason is not None:
+            if job_status == "stale":
+                return SubmitAssessment(
+                    job_status=job_status,
+                    submit_job_id=submit_job_id,
+                    cached_job=cached_job,
+                    accepted=False,
+                    reject_reason="stale-job",
+                )
             return SubmitAssessment(
                 job_status=job_status,
                 submit_job_id=submit_job_id,
@@ -1001,6 +1001,7 @@ class StratumIngressService:
             wallet=state.authorized_wallet,
             worker=state.authorized_worker,
             login=login,
+            observed_at=observed_at,
         )
         resolved_target_validation_status, resolved_candidate_possible = (
             _resolve_target_validation_outcome(
@@ -1010,6 +1011,19 @@ class StratumIngressService:
             )
         )
         if share_hash_check.reject_reason is not None:
+            if job_status == "stale":
+                return SubmitAssessment(
+                    job_status=job_status,
+                    submit_job_id=submit_job_id,
+                    cached_job=cached_job,
+                    accepted=False,
+                    reject_reason="stale-job",
+                    target_validation_status=resolved_target_validation_status,
+                    candidate_possible=resolved_candidate_possible,
+                    share_hash_validation_status=share_hash_check.status,
+                    share_hash_valid=share_hash_check.valid,
+                    share_hash_diagnostic=share_hash_check.diagnostic,
+                )
             return SubmitAssessment(
                 job_status=job_status,
                 submit_job_id=submit_job_id,
@@ -1017,6 +1031,20 @@ class StratumIngressService:
                 accepted=False,
                 reject_reason=share_hash_check.reject_reason,
                 detail=share_hash_check.detail,
+                target_validation_status=resolved_target_validation_status,
+                candidate_possible=resolved_candidate_possible,
+                share_hash_validation_status=share_hash_check.status,
+                share_hash_valid=share_hash_check.valid,
+                share_hash_diagnostic=share_hash_check.diagnostic,
+            )
+
+        if job_status == "stale":
+            return SubmitAssessment(
+                job_status=job_status,
+                submit_job_id=submit_job_id,
+                cached_job=cached_job,
+                accepted=False,
+                reject_reason="stale-job",
                 target_validation_status=resolved_target_validation_status,
                 candidate_possible=resolved_candidate_possible,
                 share_hash_validation_status=share_hash_check.status,
@@ -1701,6 +1729,23 @@ class StratumIngressService:
                 detail="issued job is missing target context",
             )
 
+        # Fallback to computing target from bits if it is missing or empty
+        target_value = target_context.get("target")
+        if not isinstance(target_value, str) or not target_value.strip() or not _is_hex_string(target_value):
+            bits_hex = target_context.get("bits")
+            if isinstance(bits_hex, str) and len(bits_hex) == 8 and _is_hex_string(bits_hex):
+                try:
+                    bits = int(bits_hex, 16)
+                    exponent = bits >> 24
+                    mantissa = bits & 0xffffff
+                    if exponent <= 3:
+                        target_val = mantissa >> (8 * (3 - exponent))
+                    else:
+                        target_val = mantissa << (8 * (exponent - 3))
+                    target_context["target"] = f"{target_val:064x}"
+                except Exception:
+                    pass
+
         required_fields = {"bits", "version", "curtime"}
         if cached_job.source == "daemon-template":
             required_fields.add("target")
@@ -1808,6 +1853,7 @@ class StratumIngressService:
         wallet: str | None = None,
         worker: str | None = None,
         login: str | None = None,
+        observed_at: datetime | None = None,
     ) -> ShareHashCheck:
         if cached_job is None or cached_job.source != "daemon-template":
             return ShareHashCheck(status=None, reject_reason=None)
@@ -1867,6 +1913,20 @@ class StratumIngressService:
         assert preimage.header is not None
         target_context = cached_job.target_context if isinstance(cached_job.target_context, dict) else {}
         target_value = target_context.get("target")
+        if not isinstance(target_value, str) or not target_value.strip() or not _is_hex_string(target_value):
+            bits_hex = target_context.get("bits")
+            if isinstance(bits_hex, str) and len(bits_hex) == 8 and _is_hex_string(bits_hex):
+                try:
+                    bits = int(bits_hex, 16)
+                    exponent = bits >> 24
+                    mantissa = bits & 0xffffff
+                    if exponent <= 3:
+                        target_val = mantissa >> (8 * (3 - exponent))
+                    else:
+                        target_val = mantissa << (8 * (exponent - 3))
+                    target_value = f"{target_val:064x}"
+                except Exception:
+                    pass
         if not isinstance(target_value, str) or not target_value.strip():
             return ShareHashCheck(
                 status="preimage-missing",
@@ -1922,6 +1982,16 @@ class StratumIngressService:
         threshold_summary["shareDifficultyUsed"] = effective_difficulty
         if threshold_summary["meetsBlockTarget"]:
             threshold_summary["candidatePreparedAt"] = _isoformat_optional(utc_now())
+            job_id = getattr(cached_job, "job_id", None) or params[1]
+            threshold_summary["jobStatus"] = _classify_submit_job_id(
+                job_id,
+                current_job_id=state.current_job_id,
+                previous_job_id=state.previous_job_id,
+                cached_job=cached_job,
+                is_stale_job=self._job_manager.is_stale_job(
+                    job_id, now=observed_at or utc_now()
+                ),
+            )
             threshold_summary.update(
                 _prepare_candidate_artifact(
                     cached_job,
@@ -1944,6 +2014,7 @@ class StratumIngressService:
                 worker=worker,
                 login=login,
                 threshold_summary=threshold_summary,
+                state=state,
             )
             return ShareHashCheck(
                 status="block-candidate",
@@ -2020,11 +2091,23 @@ class StratumIngressService:
             checked_at,
             threshold_summary.get("candidatePreparedAt"),
         )
+        latest_template_prevhash = self._job_manager.latest_template_prevhash
+        if latest_template_prevhash is not None and candidate_prevhash != latest_template_prevhash:
+            return self._record_submitblock_status(
+                _submitblock_status_result(
+                    status="submit-skipped-stale-prevblk",
+                    candidate_prev_hash=candidate_prevhash,
+                    daemon_best_hash_at_submit_decision=latest_template_prevhash,
+                    template_age_seconds=template_age_seconds,
+                    candidate_age_seconds_at_submit_decision=candidate_age_seconds_at_submit_decision,
+                )
+            )
         if not self._config.enable_real_submitblock:
             return self._record_submitblock_status(
                 _submitblock_status_result(
                     status="submit-disabled-flag-off",
                     candidate_prev_hash=candidate_prevhash,
+                    daemon_best_hash_at_submit_decision=latest_template_prevhash,
                     template_age_seconds=template_age_seconds,
                     candidate_age_seconds_at_submit_decision=(
                         candidate_age_seconds_at_submit_decision
@@ -2404,6 +2487,7 @@ class StratumIngressService:
         worker: str | None,
         login: str | None,
         threshold_summary: dict[str, Any],
+        state: ConnectionState | None = None,
     ) -> None:
         candidate_artifact = threshold_summary.get("candidateArtifact")
         if not isinstance(candidate_artifact, dict):
@@ -2415,10 +2499,7 @@ class StratumIngressService:
             threshold_summary.get("candidatePrevHash"),
             threshold_summary.get("daemonBestHashAtSubmitDecision"),
         )
-        if (
-            threshold_summary.get("candidatePrevHashMatchesDaemonBestAtSubmitDecision")
-            is not None
-        ):
+        if isinstance(threshold_summary.get("candidatePrevHashMatchesDaemonBestAtSubmitDecision"), bool):
             candidate_prevhash_matches_daemon_best_at_submit_decision = (
                 threshold_summary.get(
                     "candidatePrevHashMatchesDaemonBestAtSubmitDecision"
@@ -2428,6 +2509,42 @@ class StratumIngressService:
             candidate_freshness_status = threshold_summary.get(
                 "candidateFreshnessStatus"
             )
+        candidate_freshness = threshold_summary.get("candidate_freshness")
+        if candidate_freshness is None:
+            candidate_freshness = "unknown"
+            if candidate_prevhash_matches_daemon_best_at_submit_decision is True:
+                candidate_freshness = "fresh"
+            elif candidate_prevhash_matches_daemon_best_at_submit_decision is False:
+                candidate_freshness = "stale-prevblk"
+
+        candidate_prevhash = (
+            threshold_summary.get("candidatePrevHash")
+            or threshold_summary.get("submitblockCandidatePrevhash")
+            or getattr(cached_job, "prevhash", None)
+        )
+        latest_template_prevhash = self._job_manager.latest_template_prevhash
+        prevhash_matches_latest_template = None
+        if latest_template_prevhash is not None and candidate_prevhash is not None:
+            prevhash_matches_latest_template = (candidate_prevhash == latest_template_prevhash)
+
+        target_context = getattr(cached_job, "target_context", None)
+        if not isinstance(target_context, dict):
+            target_context = {}
+
+        bits = target_context.get("bits") or getattr(cached_job, "nbits", None)
+        nbits = getattr(cached_job, "nbits", None) or target_context.get("bits")
+
+        candidate_block_hash = (
+            candidate_artifact.get("candidateBlockHash")
+            or threshold_summary.get("submitblockPayloadHash")
+            or threshold_summary.get("candidateBlockHash")
+            or threshold_summary.get("localComputedHash")
+        )
+
+        job_status = threshold_summary.get("jobStatus")
+        if job_status is None:
+            job_status = getattr(cached_job, "job_status", None) or "current"
+
         payload = {
             "timestamp": threshold_summary.get("candidatePreparedAt")
             or _isoformat_optional(utc_now()),
@@ -2436,8 +2553,30 @@ class StratumIngressService:
             "wallet": wallet,
             "worker": worker,
             "login": login,
-            "candidateBlockHash": candidate_artifact.get("candidateBlockHash")
-            or threshold_summary.get("submitblockPayloadHash"),
+            "candidateBlockHash": candidate_block_hash,
+            "candidate_block_hash": candidate_block_hash,
+            "localComputedHash": threshold_summary.get("localComputedHash"),
+            "localComputedHashReversed": threshold_summary.get("localComputedHashReversed"),
+            "blockTargetUsed": threshold_summary.get("blockTargetUsed"),
+            "shareTargetUsed": threshold_summary.get("shareTargetUsed"),
+            "meetsBlockTarget": threshold_summary.get("meetsBlockTarget"),
+            "meetsShareTarget": threshold_summary.get("meetsShareTarget"),
+            "candidateHashInt": threshold_summary.get("candidateHashInt"),
+            "localComputedHashInt": threshold_summary.get("localComputedHashInt"),
+            "blockTargetInt": threshold_summary.get("blockTargetInt"),
+            "candidateComparisonOrder": threshold_summary.get("candidateComparisonOrder") or "canonical-big-endian-target-compare",
+            "bits": bits,
+            "nbits": nbits,
+            "targetContext": {
+                "height": target_context.get("height"),
+                "curtime": target_context.get("curtime"),
+            },
+            "jobStatus": job_status,
+            "candidate_freshness": candidate_freshness,
+            "candidateFreshnessStatus": candidate_freshness_status,
+            "candidatePrevhash": candidate_prevhash,
+            "latestTemplatePrevhash": latest_template_prevhash,
+            "prevhashMatchesLatestTemplate": prevhash_matches_latest_template,
             "candidatePrepStatus": threshold_summary.get("candidatePrepStatus"),
             "candidateCompleteEnoughForFutureSubmitblock": candidate_artifact.get(
                 "completeEnoughForFutureSubmitblock"
@@ -2503,7 +2642,6 @@ class StratumIngressService:
             "candidatePrevHashMatchesDaemonBestAtSubmitDecision": (
                 candidate_prevhash_matches_daemon_best_at_submit_decision
             ),
-            "candidateFreshnessStatus": candidate_freshness_status,
             "templateAgeSeconds": threshold_summary.get("templateAgeSeconds"),
             "submitblockException": threshold_summary.get("submitblockException"),
             "shareHashUsed": threshold_summary.get("shareHashUsed"),
@@ -3563,12 +3701,12 @@ def _classify_submit_job_id(
 ) -> str:
     if submit_job_id is None:
         return "malformed"
-    if current_job_id is not None and submit_job_id == current_job_id and cached_job is not None:
-        return "current"
-    if cached_job is not None and not is_stale_job:
-        return "previous"
     if is_stale_job:
         return "stale"
+    if current_job_id is not None and submit_job_id == current_job_id and cached_job is not None:
+        return "current"
+    if cached_job is not None:
+        return "previous"
     return "unknown"
 
 
@@ -3631,6 +3769,12 @@ def _build_share_hash_threshold_summary(
         "submitblockSubmittedAt": None,
         "submitblockDaemonResult": None,
         "submitblockException": None,
+        "localComputedHash": share_hash.hex(),
+        "localComputedHashReversed": share_hash[::-1].hex(),
+        "localComputedHashInt": share_hash_int,
+        "candidateHashInt": share_hash_int,
+        "blockTargetInt": block_target_int,
+        "candidateComparisonOrder": "canonical-big-endian-target-compare",
     }
 
 
@@ -3837,6 +3981,12 @@ def _submitblock_status_result(
         candidate_prev_hash,
         daemon_best_hash_at_submit_decision,
     )
+    candidate_freshness = "unknown"
+    if candidate_prevhash_matches_daemon_best_at_submit_decision is True:
+        candidate_freshness = "fresh"
+    elif candidate_prevhash_matches_daemon_best_at_submit_decision is False:
+        candidate_freshness = "stale-prevblk"
+
     return {
         "submitblockAttempted": attempted,
         "submitblockSent": sent,
@@ -3871,6 +4021,7 @@ def _submitblock_status_result(
             candidate_prevhash_matches_daemon_best_at_submit_decision
         ),
         "candidateFreshnessStatus": candidate_freshness_status,
+        "candidate_freshness": candidate_freshness,
         "templateAgeSeconds": template_age_seconds,
         "candidateAgeSecondsAtSubmitDecision": (
             candidate_age_seconds_at_submit_decision

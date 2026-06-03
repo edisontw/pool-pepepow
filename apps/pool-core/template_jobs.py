@@ -160,6 +160,12 @@ class TemplateJobManager:
             return self._latest_template.template_anchor
         return None
 
+    @property
+    def latest_template_prevhash(self) -> str | None:
+        if self._latest_template is not None:
+            return self._latest_template.prevhash
+        return None
+
     async def start(self) -> None:
         if self._configured_mode != TEMPLATE_MODE_DAEMON or self._task is not None:
             return
@@ -279,9 +285,21 @@ class TemplateJobManager:
         self._prune_jobs(current_time)
         self._prune_retired_jobs(current_time)
 
-        if job_id in self._jobs:
+        if job_id in self._retired_jobs:
+            return True
+
+        job = self._jobs.get(job_id)
+        if job is not None:
+            latest_prevhash = self.latest_template_prevhash
+            if (
+                latest_prevhash is not None
+                and job.prevhash is not None
+                and job.prevhash != latest_prevhash
+            ):
+                return True
             return False
-        return job_id in self._retired_jobs
+
+        return False
 
     def snapshot(self, *, now: datetime | None = None) -> dict[str, Any]:
         current_time = now or utc_now()

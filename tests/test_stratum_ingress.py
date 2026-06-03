@@ -554,6 +554,87 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(assessment.diagnostic["meetsShareTarget"])
         self.assertTrue(assessment.diagnostic["meetsBlockTarget"])
 
+    def test_candidate_evidence_fields_verification(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        config = self._make_config(tmp_path)
+        service = StratumIngressService(config)
+        state = stratum_ingress.new_connection_state()
+        state.extranonce1 = "aabbccdd"
+
+        class _Job:
+            source = "daemon-template"
+            assigned_difficulty = 32768.0
+            target_context = {
+                "target": "00000004248e0000000000000000000000000000000000000000000000000000",
+                "height": 123456,
+                "curtime": 1713225600,
+                "bits": "1d00ffff",
+            }
+            authoritative_context = {}
+            template_anchor = "anchor"
+            job_id = "job-1"
+            version = "20000000"
+            prevhash = "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa"
+            nbits = "1d00ffff"
+            ntime = "01020304"
+            coinb1 = "01"
+            coinb2 = "ff"
+            merkle_branch = ()
+            preimage_context = {"source": "template-derived"}
+
+        block_target_int = int(_Job.target_context["target"], 16)
+        share_hash = (block_target_int - 1).to_bytes(32, "big")
+
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ), mock.patch.object(
+            template_jobs.TemplateJobManager,
+            "latest_template_prevhash",
+            new_callable=mock.PropertyMock,
+            return_value="00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa",
+        ):
+            assessment = service._assess_share_hash(
+                ["wallet.rig", "job-1", "00000001", "01020304", "00000000"],
+                state=state,
+                cached_job=_Job(),
+                target_context_check=stratum_ingress.TargetContextCheck(
+                    status="candidate-possible",
+                    reject_reason=None,
+                    candidate_possible=True,
+                ),
+            )
+
+        self.assertEqual(assessment.status, "block-candidate")
+        self.assertTrue(service._candidate_event_log_path.exists())
+        lines = service._candidate_event_log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        payload = json.loads(lines[0])
+
+        self.assertEqual(payload["meetsBlockTarget"], True)
+        self.assertEqual(payload["blockTargetUsed"], _Job.target_context["target"])
+        self.assertEqual(payload["localComputedHash"], share_hash.hex())
+        self.assertEqual(payload["localComputedHashReversed"], share_hash[::-1].hex())
+        self.assertEqual(payload["localComputedHashInt"], int.from_bytes(share_hash, "big"))
+        self.assertEqual(payload["blockTargetInt"], block_target_int)
+        self.assertEqual(payload["candidateComparisonOrder"], "canonical-big-endian-target-compare")
+        self.assertEqual(payload["bits"], "1d00ffff")
+        self.assertEqual(payload["nbits"], "1d00ffff")
+        self.assertEqual(payload["targetContext"]["height"], 123456)
+        self.assertEqual(payload["targetContext"]["curtime"], 1713225600)
+        self.assertEqual(payload["candidatePrevhash"], _Job.prevhash)
+        self.assertEqual(payload["latestTemplatePrevhash"], "00000001aa59f20d1eb2b2c8407ef1dcb707927fb908704a1908006726cb42fa")
+        self.assertEqual(payload["prevhashMatchesLatestTemplate"], True)
+
     def test_candidate_followup_defaults(self):
         result = pool_core_daemon_rpc.candidate_followup_defaults()
         self.assertEqual(result["followupStatus"], "not-checked")
@@ -1560,6 +1641,124 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     writer.close()
                     await writer.wait_closed()
                 await service.stop()
+
+    def test_template_rollover_stale_prevblk_candidate_handling(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        rpc_client = MutableTemplateRpcClient(prevhash="1" * 64)
+        config = self._make_config(
+            tmp_path,
+            template_mode="daemon-template",
+            enable_real_submitblock=False,
+        )
+        service = StratumIngressService(config, rpc_client=rpc_client)
+        state = stratum_ingress.new_connection_state()
+        state.extranonce1 = "aabbccdd"
+        state.current_difficulty = 1.0
+
+        # Step 1: Initialize first template and issue first job
+        asyncio.run(service._job_manager._refresh_once())
+        job_1_notify = service._new_notify_message(state)
+        job_id_1 = job_1_notify["params"][0]
+        job_1 = service._job_manager.get_job(job_id_1)
+        self.assertIsNotNone(job_1)
+        self.assertEqual(job_1.prevhash, "1" * 64)
+        self.assertFalse(service._job_manager.is_stale_job(job_id_1))
+
+        # Check clean_jobs=true is sent
+        self.assertTrue(job_1_notify["params"][8])
+
+        # Step 2: Roll over to second template
+        rpc_client.set_prevhash("2" * 64)
+        asyncio.run(service._job_manager._refresh_once())
+
+        # Check: old job is now classified as stale!
+        self.assertTrue(service._job_manager.is_stale_job(job_id_1))
+        job_status_1 = stratum_ingress._classify_submit_job_id(
+            job_id_1,
+            current_job_id=state.current_job_id,
+            previous_job_id=state.previous_job_id,
+            cached_job=job_1,
+            is_stale_job=service._job_manager.is_stale_job(job_id_1),
+        )
+        self.assertEqual(job_status_1, "stale")
+
+        # Step 3: Issue second job on new template
+        job_2_notify = service._new_notify_message(state)
+        job_id_2 = job_2_notify["params"][0]
+        job_2 = service._job_manager.get_job(job_id_2)
+        self.assertIsNotNone(job_2)
+        self.assertEqual(job_2.prevhash, "2" * 64)
+        self.assertFalse(service._job_manager.is_stale_job(job_id_2))
+
+        # Check clean_jobs=true is sent on rollover job too
+        self.assertTrue(job_2_notify["params"][8])
+
+        # Step 4: Simulate a block-target share submit on the old stale job (job_id_1)
+        block_target_int = int("0f" * 32, 16)
+        share_hash = (block_target_int - 1).to_bytes(32, "big")
+        
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ):
+            assessment = service._assess_submit(
+                ["wallet.rig", job_id_1, "00000001", job_1.ntime, "00000000"],
+                state=state,
+                login="wallet.rig",
+                observed_at=datetime.now(timezone.utc),
+            )
+
+        # It must be rejected as stale-job
+        self.assertFalse(assessment.accepted)
+        self.assertEqual(assessment.reject_reason, "stale-job")
+        # But it must have candidate possible outcome tracked
+        self.assertEqual(assessment.target_validation_status, "candidate-possible")
+        self.assertTrue(assessment.candidate_possible)
+        self.assertEqual(assessment.share_hash_diagnostic["meetsBlockTarget"], True)
+        # Verify freshness status records stale-prevblk
+        self.assertEqual(assessment.share_hash_diagnostic["candidate_freshness"], "stale-prevblk")
+        self.assertEqual(assessment.share_hash_diagnostic["submitblockRealSubmitStatus"], "submit-skipped-stale-prevblk")
+
+        # Step 5: Simulate a block-target share submit on the latest job (job_id_2)
+        with mock.patch.object(
+            stratum_ingress,
+            "_build_share_header_preimage",
+            return_value=stratum_ingress.ShareHeaderPreimage(
+                status="preimage-ready",
+                reject_reason=None,
+                header=b"\x00" * 80,
+            ),
+        ), mock.patch.object(
+            stratum_ingress,
+            "_calculate_pepepow_share_hash",
+            return_value=share_hash,
+        ):
+            assessment_2 = service._assess_submit(
+                ["wallet.rig", job_id_2, "00000001", job_2.ntime, "00000000"],
+                state=state,
+                login="wallet.rig",
+                observed_at=datetime.now(timezone.utc),
+            )
+
+        # It is accepted as valid share, and records candidate possible
+        self.assertTrue(assessment_2.accepted)
+        self.assertEqual(assessment_2.target_validation_status, "candidate-possible")
+        self.assertTrue(assessment_2.candidate_possible)
+        self.assertEqual(assessment_2.share_hash_diagnostic["meetsBlockTarget"], True)
+        # Since real submit block is disabled, status should be submit-disabled-flag-off
+        self.assertEqual(assessment_2.share_hash_diagnostic["submitblockRealSubmitStatus"], "submit-disabled-flag-off")
+        # Freshness must be fresh
+        self.assertEqual(assessment_2.share_hash_diagnostic["candidate_freshness"], "fresh")
+
 
     async def test_authorized_connection_does_not_wake_notify_loop_for_unchanged_template(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3608,7 +3807,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 extranonce1 = subscribe_response["result"][1]
                 extranonce2 = "00000001"
                 share_target_int = stratum_ingress._share_target_from_difficulty(
-                    0.001
+                    0.0015
                 )
                 self.assertIsNotNone(share_target_int)
                 submit_nonce = None
@@ -5781,9 +5980,160 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
+    async def test_candidate_detection_and_recording_rules(self):
+        """Verify the candidate detection and recording rules:
+        - accepted pool share below share target but above block target => accepted, no candidate
+        - accepted pool share below block target => candidate event is recorded
+        - candidate recording works even when real submit is disabled
+        - stale-prevblk submit skip happens after candidate has already been recorded, not before candidate classification
+        """
+        import tempfile
+        from pathlib import Path
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            rpc_client = SuccessfulTemplateRpcClient(
+                allow_submitblock=True,
+                submitblock_result=None,
+                best_block_hash="1" * 64,
+            )
+            config = self._make_config(
+                tmp_path,
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=False,
+            )
+            service = StratumIngressService(
+                config,
+                rpc_client=rpc_client,
+            )
+            await service.start()
+            
+            state = stratum_ingress.new_connection_state()
+            state.extranonce1 = "00000001"
+            state.authorized = True
+            state.authorized_wallet = "PEPEPOW1KnownWalletAddress000000"
+            state.authorized_worker = "rig01"
+            state.current_difficulty = 1.0
+            
+            job = service._job_manager.issue_job("job-test", assigned_difficulty=1.0)
+            job.target_context["target"] = None
+            
+            # CASE 1: accepted pool share below share target but above block target => accepted, no candidate
+            share_hash_above_block = bytes.fromhex("00000fff" + "00" * 28)
+            
+            with mock.patch.object(
+                stratum_ingress,
+                "_build_share_header_preimage",
+                return_value=stratum_ingress.ShareHeaderPreimage(
+                    status="preimage-ready",
+                    reject_reason=None,
+                    header=b"\x00" * 80,
+                ),
+            ), mock.patch.object(
+                stratum_ingress,
+                "_calculate_pepepow_share_hash",
+                return_value=share_hash_above_block,
+            ):
+                assessment = service._assess_submit(
+                    ["PEPEPOW1KnownWalletAddress000000.rig01", "job-test", "00000002", job.ntime, "00000003"],
+                    state=state,
+                    login="PEPEPOW1KnownWalletAddress000000.rig01",
+                    observed_at=stratum_ingress.utc_now(),
+                )
+            
+            self.assertTrue(assessment.accepted)
+            self.assertEqual(assessment.share_hash_validation_status, "share-hash-valid")
+            self.assertFalse(assessment.candidate_possible)
+            self.assertEqual(len(self._read_candidate_events(config)), 0)
+            
+            # CASE 2 & 3: accepted pool share below block target => candidate event is recorded even when real submit is disabled
+            share_hash_below_block = bytes.fromhex("00000000" + "00" * 28)
+            
+            with mock.patch.object(
+                stratum_ingress,
+                "_build_share_header_preimage",
+                return_value=stratum_ingress.ShareHeaderPreimage(
+                    status="preimage-ready",
+                    reject_reason=None,
+                    header=b"\x00" * 80,
+                ),
+            ), mock.patch.object(
+                stratum_ingress,
+                "_calculate_pepepow_share_hash",
+                return_value=share_hash_below_block,
+            ):
+                assessment = service._assess_submit(
+                    ["PEPEPOW1KnownWalletAddress000000.rig01", "job-test", "00000003", job.ntime, "00000003"],
+                    state=state,
+                    login="PEPEPOW1KnownWalletAddress000000.rig01",
+                    observed_at=stratum_ingress.utc_now(),
+                )
+            
+            self.assertTrue(assessment.accepted)
+            self.assertEqual(assessment.share_hash_validation_status, "block-candidate")
+            self.assertTrue(assessment.candidate_possible)
+            candidate_events = self._read_candidate_events(config)
+            self.assertEqual(len(candidate_events), 1)
+            event = json.loads(candidate_events[0])
+            self.assertEqual(event["submitblockRealSubmitStatus"], "submit-disabled-flag-off")
+            
+            # CASE 4: stale-prevblk submit skip happens after candidate has already been recorded, not before candidate classification
+            config_real = self._make_config(
+                tmp_path / "real",
+                template_mode="daemon-template",
+                template_fetch_interval_seconds=5.0,
+                enable_real_submitblock=True,
+            )
+            service_real = StratumIngressService(
+                config_real,
+                rpc_client=SuccessfulTemplateRpcClient(
+                    allow_submitblock=True,
+                    submitblock_result=None,
+                    best_block_hash="2" * 64,
+                ),
+            )
+            await service_real.start()
+            
+            job_stale = service_real._job_manager.issue_job("job-stale", assigned_difficulty=1.0)
+            job_stale.target_context["target"] = None
+            
+            with mock.patch.object(
+                stratum_ingress,
+                "_build_share_header_preimage",
+                return_value=stratum_ingress.ShareHeaderPreimage(
+                    status="preimage-ready",
+                    reject_reason=None,
+                    header=b"\x00" * 80,
+                ),
+            ), mock.patch.object(
+                stratum_ingress,
+                "_calculate_pepepow_share_hash",
+                return_value=share_hash_below_block,
+            ):
+                assessment = service_real._assess_submit(
+                    ["PEPEPOW1KnownWalletAddress000000.rig01", "job-stale", "00000002", job_stale.ntime, "00000003"],
+                    state=state,
+                    login="PEPEPOW1KnownWalletAddress000000.rig01",
+                    observed_at=stratum_ingress.utc_now(),
+                )
+            
+            self.assertTrue(assessment.accepted)
+            self.assertEqual(assessment.share_hash_validation_status, "block-candidate")
+            self.assertTrue(assessment.candidate_possible)
+            candidate_events_real = self._read_candidate_events(config_real)
+            self.assertEqual(len(candidate_events_real), 1)
+            event_real = json.loads(candidate_events_real[0])
+            self.assertEqual(event_real["submitblockRealSubmitStatus"], "submit-skipped-stale-prevblk")
+            self.assertEqual(event_real["candidateFreshnessStatus"], "stale-prevblk")
+            
+            await service.stop()
+            await service_real.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 class RejectEvidenceArtifactTests(unittest.TestCase):
@@ -6301,6 +6651,7 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         
         meets_block_target = daemon_hash_int <= target_int
         self.assertFalse(meets_block_target)
+
 
 
 
