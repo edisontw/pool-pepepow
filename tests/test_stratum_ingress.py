@@ -5495,17 +5495,19 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         for line in output:
             if prefix in line:
                 return json.loads(line.split(prefix, 1)[1])
-    def test_build_submitblock_header_returns_validation_header_as_is(self):
-        header = bytes.fromhex("00400020" + "12" * 32 + "34" * 32 + "11223344" + "55667788" + "aabbccdd")
-        submit_prev = "33" * 32
-        job_prev = "44" * 32
+    def test_build_submitblock_header_serializes_prevhash_as_expected_by_daemon(self):
+        canonical_prev = "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"
+        header = bytes.fromhex("00400020" + canonical_prev + "34" * 32 + "11223344" + "55667788" + "aabbccdd")
         res = stratum_ingress._build_submitblock_header(
             header,
-            submitblock_prevhash_hex=submit_prev,
-            job_prevhash_hex=job_prev
+            submitblock_prevhash_hex=None,
+            job_prevhash_hex=None
         )
-        self.assertEqual(res, header)
-        self.assertEqual(res[:80], header[:80])
+        expected_serialized = bytes.fromhex(canonical_prev)[::-1].hex()
+        self.assertEqual(res[4:36].hex(), expected_serialized)
+        
+        extracted_canonical = stratum_ingress._extract_header_prevhash_canonical_hex(res.hex())
+        self.assertEqual(extracted_canonical, canonical_prev)
 
         display_prevhash = "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"
         expected_nomp = "030000007fcba43932787357fa4258f3007bb0ab163f62810fcd879e517a7657"
@@ -5610,11 +5612,13 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 sub_hdr_hex = artifact.get("submitblockHeaderHex")
                 c_block_hex = artifact.get("candidateBlockHex")
 
-                self.assertEqual(c_hdr_hex, c_block_hex[:160])
-                self.assertEqual(sub_hdr_hex, c_hdr_hex)
+                expected_sub_hdr = c_hdr_hex[:8] + bytes.fromhex(c_hdr_hex[8:72])[::-1].hex() + c_hdr_hex[72:]
+                self.assertEqual(sub_hdr_hex, expected_sub_hdr)
+                self.assertEqual(sub_hdr_hex, c_block_hex[:160])
+                self.assertNotEqual(sub_hdr_hex, c_hdr_hex)
 
                 from pepepow_pow import hoohash_v110, blake3_hash
-                header_bytes = bytes.fromhex(sub_hdr_hex)
+                header_bytes = bytes.fromhex(c_hdr_hex)
                 masked_header = header_bytes[:76] + (b"\x00" * 4)
                 nonce = int.from_bytes(header_bytes[76:80], byteorder="little")
                 expected_hash = hoohash_v110(blake3_hash(masked_header), blake3_hash(header_bytes), nonce)[::-1].hex()
@@ -5622,7 +5626,36 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(diag["submitblockPayloadHash"], expected_hash)
 
                 expected_unswapped_prevhash = "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"
-                self.assertEqual(sub_hdr_hex[8:72], expected_unswapped_prevhash)
+                expected_serialized_prevhash = bytes.fromhex(expected_unswapped_prevhash)[::-1].hex()
+                self.assertEqual(sub_hdr_hex[8:72], expected_serialized_prevhash)
+
+                self.assertEqual(
+                    diag["submitblockHeaderPrevhashCanonical"],
+                    expected_unswapped_prevhash,
+                )
+                self.assertEqual(
+                    diag["submitblockHeaderPrevhashRaw"],
+                    expected_serialized_prevhash,
+                )
+                self.assertTrue(
+                    diag["submitblockPrevhashGuardPayloadMatchedJob"]
+                )
+
+                await self._wait_for(
+                    lambda: len(self._read_candidate_events(config)) == 1
+                )
+                candidate_event = json.loads(self._read_candidate_events(config)[0])
+                self.assertEqual(
+                    candidate_event["submitblockHeaderPrevhashCanonical"],
+                    expected_unswapped_prevhash,
+                )
+                self.assertEqual(
+                    candidate_event["submitblockHeaderPrevhashRaw"],
+                    expected_serialized_prevhash,
+                )
+                self.assertTrue(
+                    candidate_event["submitblockPrevhashGuardPayloadMatchedJob"]
+                )
 
             finally:
                 if writer is not None:
@@ -6094,6 +6127,11 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
             await service_real.start()
+            # Wait for latest template to be populated to avoid race condition
+            for _ in range(100):
+                if service_real._job_manager.latest_template_prevhash is not None:
+                    break
+                await asyncio.sleep(0.01)
             
             job_stale = service_real._job_manager.issue_job("job-stale", assigned_difficulty=1.0)
             job_stale.target_context["target"] = None

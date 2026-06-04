@@ -1372,8 +1372,10 @@ class StratumIngressService:
             "submitblockJobPrevhash": diag.get("submitblockJobPrevhash"),
             "submitblockPayloadPrevhashRaw": diag.get("submitblockPayloadPrevhashRaw"),
             "submitblockPayloadPrevhash": diag.get("submitblockPayloadPrevhash"),
+            "submitblockPayloadPrevhashCanonical": diag.get("submitblockPayloadPrevhashCanonical"),
             "submitblockHeaderPrevhashRaw": diag.get("submitblockHeaderPrevhashRaw"),
             "submitblockHeaderPrevhash": diag.get("submitblockHeaderPrevhash"),
+            "submitblockHeaderPrevhashCanonical": diag.get("submitblockHeaderPrevhashCanonical"),
             "submitblockDaemonBestBlockHash": diag.get(
                 "submitblockDaemonBestBlockHash"
             ),
@@ -2385,6 +2387,16 @@ class StratumIngressService:
         try:
             daemon_result = rpc_client.submitblock(payload_hex)
         except Exception as exc:
+            LOGGER.error(
+                "submitblock-rpc-error %s",
+                json.dumps(
+                    {
+                        "submittedAt": submitted_at,
+                        "exception": str(exc),
+                        "candidateBlockHash": threshold_summary.get("submitblockPayloadHash"),
+                    }
+                )
+            )
             return self._record_submitblock_status(
                 _submitblock_status_result(
                     status="submit-error",
@@ -2414,6 +2426,16 @@ class StratumIngressService:
                 )
             )
 
+        LOGGER.info(
+            "submitblock-rpc-response %s",
+            json.dumps(
+                {
+                    "submittedAt": submitted_at,
+                    "daemonResult": daemon_result,
+                    "candidateBlockHash": threshold_summary.get("submitblockPayloadHash"),
+                }
+            )
+        )
         return self._record_submitblock_status(
             _submitblock_status_result(
                 status="submit-sent",
@@ -2611,11 +2633,17 @@ class StratumIngressService:
             "submitblockPayloadPrevhash": threshold_summary.get(
                 "submitblockPayloadPrevhash"
             ),
+            "submitblockPayloadPrevhashCanonical": threshold_summary.get(
+                "submitblockPayloadPrevhashCanonical"
+            ),
             "submitblockHeaderPrevhashRaw": threshold_summary.get(
                 "submitblockHeaderPrevhashRaw"
             ),
             "submitblockHeaderPrevhash": threshold_summary.get(
                 "submitblockHeaderPrevhash"
+            ),
+            "submitblockHeaderPrevhashCanonical": threshold_summary.get(
+                "submitblockHeaderPrevhashCanonical"
             ),
             "submitblockDaemonBestBlockHash": threshold_summary.get(
                 "submitblockDaemonBestBlockHash"
@@ -3926,8 +3954,10 @@ def _prepare_submitblock_dry_run(candidate_artifact: dict[str, Any]) -> dict[str
             "submitblockRpcParams": None,
             "submitblockPayloadPrevhashRaw": payload_prevhash_raw,
             "submitblockPayloadPrevhash": payload_prevhash,
+            "submitblockPayloadPrevhashCanonical": payload_prevhash,
             "submitblockHeaderPrevhashRaw": header_prevhash_raw,
             "submitblockHeaderPrevhash": header_prevhash,
+            "submitblockHeaderPrevhashCanonical": header_prevhash,
             "missingData": missing_list or ["candidate-block-hex"],
         }
     return {
@@ -3941,8 +3971,10 @@ def _prepare_submitblock_dry_run(candidate_artifact: dict[str, Any]) -> dict[str
         "submitblockRpcParams": [payload_hex],
         "submitblockPayloadPrevhashRaw": payload_prevhash_raw,
         "submitblockPayloadPrevhash": payload_prevhash,
+        "submitblockPayloadPrevhashCanonical": payload_prevhash,
         "submitblockHeaderPrevhashRaw": header_prevhash_raw,
         "submitblockHeaderPrevhash": header_prevhash,
+        "submitblockHeaderPrevhashCanonical": header_prevhash,
         "missingData": [],
     }
 
@@ -3999,8 +4031,10 @@ def _submitblock_status_result(
         "submitblockJobPrevhash": submitblock_job_prevhash,
         "submitblockPayloadPrevhashRaw": submitblock_payload_prevhash_raw,
         "submitblockPayloadPrevhash": submitblock_payload_prevhash,
+        "submitblockPayloadPrevhashCanonical": submitblock_payload_prevhash,
         "submitblockHeaderPrevhashRaw": submitblock_header_prevhash_raw,
         "submitblockHeaderPrevhash": submitblock_header_prevhash,
+        "submitblockHeaderPrevhashCanonical": submitblock_header_prevhash,
         "submitblockDaemonBestBlockHash": submitblock_daemon_best_block_hash,
         "submitblockPrevhashGuardEvaluated": submitblock_prevhash_guard_evaluated,
         "submitblockPrevhashGuardComparedField": (
@@ -4860,7 +4894,7 @@ def _extract_header_prevhash_canonical_hex(header_or_block_hex: Any) -> str | No
     if prevhash_raw is None:
         return None
     try:
-        return _swap_prevhash_words_for_pepew_header(prevhash_raw)
+        return bytes.fromhex(prevhash_raw)[::-1].hex()
     except ValueError:
         return None
 
@@ -4871,7 +4905,9 @@ def _build_submitblock_header(
     submitblock_prevhash_hex: str | None,
     job_prevhash_hex: str | None,
 ) -> bytes:
-    return header
+    if len(header) != 80:
+        return header
+    return header[:4] + header[4:36][::-1] + header[36:]
 
 
 def _configured_coinbase_dialect() -> str:
