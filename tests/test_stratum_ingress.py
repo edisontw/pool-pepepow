@@ -5612,7 +5612,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 sub_hdr_hex = artifact.get("submitblockHeaderHex")
                 c_block_hex = artifact.get("candidateBlockHex")
 
-                expected_sub_hdr = c_hdr_hex[:8] + bytes.fromhex(c_hdr_hex[8:72])[::-1].hex() + c_hdr_hex[72:]
+                expected_sub_hdr = c_hdr_hex[:8] + bytes.fromhex(c_hdr_hex[8:72])[::-1].hex() + bytes.fromhex(c_hdr_hex[72:136])[::-1].hex() + c_hdr_hex[136:]
                 self.assertEqual(sub_hdr_hex, expected_sub_hdr)
                 self.assertEqual(sub_hdr_hex, c_block_hex[:160])
                 self.assertNotEqual(sub_hdr_hex, c_hdr_hex)
@@ -5931,7 +5931,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 for i in range(0, len(layer), 2)
             ]
         
-        self.assertEqual(layer[0].hex(), header_merkle_root.hex())
+        self.assertEqual(layer[0][::-1].hex(), header_merkle_root.hex())
 
     async def test_fixed_difficulty_live_baseline_behavior(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

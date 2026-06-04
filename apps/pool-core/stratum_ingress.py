@@ -4907,7 +4907,7 @@ def _build_submitblock_header(
 ) -> bytes:
     if len(header) != 80:
         return header
-    return header[:4] + header[4:36][::-1] + header[36:]
+    return header[:4] + header[4:36][::-1] + header[36:68][::-1] + header[68:]
 
 
 def _configured_coinbase_dialect() -> str:
