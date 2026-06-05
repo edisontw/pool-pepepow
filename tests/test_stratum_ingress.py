@@ -2288,8 +2288,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         )
         job.merkle_branch = []
         reference_header80 = (
-            "0040002000000000e337df245b9978b32abebe8dbb18e943b3e478b6e51ff588"
-            "0f91d172225d252e70ccec9367447afec5a3dd480a43babf2ae84ebe5f4df4f1"
+            "004000200f91d172e51ff588b3e478b6bb18e9432abebe8d5b9978b3e337df24"
+            "00000000225d252e70ccec9367447afec5a3dd480a43babf2ae84ebe5f4df4f1"
             "b2a03330d9b5fd69fcf8021d00001d3e"
         )
 
@@ -2300,7 +2300,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             ntime="69fdb5d9",
             nonce="3e1d0000",
             prevhash_header_hex=(
-                "0000000024df37e3b378995b8dbebe2a43e918bbb678e4b388f51fe572d1910f"
+                "72d1910f88f51fe5b678e4b343e918bb8dbebe2ab378995b24df37e300000000"
             ),
         )
 
@@ -4091,7 +4091,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(
                     capture_record["wireNotifyPrevhash"],
-                    "010000000df259aac8b2b21edcf17e407f9207b74a7008b967000819fa42cb26",
+                    "26cb42fa19080067b908704ab707927f407ef1dc1eb2b2c8aa59f20d00000001",
                 )
 
                 first_submit = await self._rpc_call(
@@ -5497,13 +5497,13 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 return json.loads(line.split(prefix, 1)[1])
     def test_build_submitblock_header_serializes_prevhash_as_expected_by_daemon(self):
         canonical_prev = "0000000339a4cb7f57737832f35842faabb07b0081623f169e87cd0f57767a51"
-        header = bytes.fromhex("00400020" + canonical_prev + "34" * 32 + "11223344" + "55667788" + "aabbccdd")
+        expected_serialized = bytes.fromhex(canonical_prev)[::-1].hex()
+        header = bytes.fromhex("00400020" + expected_serialized + "34" * 32 + "11223344" + "55667788" + "aabbccdd")
         res = stratum_ingress._build_submitblock_header(
             header,
             submitblock_prevhash_hex=None,
             job_prevhash_hex=None
         )
-        expected_serialized = bytes.fromhex(canonical_prev)[::-1].hex()
         self.assertEqual(res[4:36].hex(), expected_serialized)
         
         extracted_canonical = stratum_ingress._extract_header_prevhash_canonical_hex(res.hex())
@@ -5577,7 +5577,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 cached_job = service._job_manager.get_job(job_id)
                 assert cached_job is not None
 
-                expected_nomp_prevhash = "030000007fcba43932787357fa4258f3007bb0ab163f62810fcd879e517a7657"
+                expected_nomp_prevhash = "57767a519e87cd0f81623f16abb07b00f35842fa5773783239a4cb7f00000003"
                 self.assertEqual(notify_message["params"][1], expected_nomp_prevhash)
 
                 target_context = dict(cached_job.target_context)
@@ -5612,10 +5612,8 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 sub_hdr_hex = artifact.get("submitblockHeaderHex")
                 c_block_hex = artifact.get("candidateBlockHex")
 
-                expected_sub_hdr = c_hdr_hex[:8] + bytes.fromhex(c_hdr_hex[8:72])[::-1].hex() + bytes.fromhex(c_hdr_hex[72:136])[::-1].hex() + c_hdr_hex[136:]
-                self.assertEqual(sub_hdr_hex, expected_sub_hdr)
+                self.assertEqual(sub_hdr_hex, c_hdr_hex)
                 self.assertEqual(sub_hdr_hex, c_block_hex[:160])
-                self.assertNotEqual(sub_hdr_hex, c_hdr_hex)
 
                 from pepepow_pow import hoohash_v110, blake3_hash
                 header_bytes = bytes.fromhex(c_hdr_hex)
@@ -5931,7 +5929,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 for i in range(0, len(layer), 2)
             ]
         
-        self.assertEqual(layer[0][::-1].hex(), header_merkle_root.hex())
+        self.assertEqual(layer[0].hex(), header_merkle_root.hex())
 
     async def test_fixed_difficulty_live_baseline_behavior(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

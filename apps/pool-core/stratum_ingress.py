@@ -3297,7 +3297,7 @@ class StratumIngressService:
         self._dirty_snapshot = True
         return notify_notification(
             job_id=state.current_job_id,
-            prevhash=job.prevhash,
+            prevhash=bytes.fromhex(job.prevhash)[::-1].hex(),
             coinb1=job.coinb1,
             coinb2=job.coinb2,
             merkle_branch=list(job.merkle_branch),
@@ -4629,7 +4629,7 @@ def _build_independent_authoritative_header80_reference(
                 prevhash_for_header
             )
         else:
-            prevhash_for_header = prevhash_hex
+            prevhash_for_header = bytes.fromhex(prevhash_hex)[::-1].hex()
 
         authoritative_field_bytes = {
             "version": bytes.fromhex(version_hex)[::-1],
@@ -4907,7 +4907,7 @@ def _build_submitblock_header(
 ) -> bytes:
     if len(header) != 80:
         return header
-    return header[:4] + header[4:36][::-1] + header[36:68][::-1] + header[68:]
+    return header
 
 
 def _configured_coinbase_dialect() -> str:
@@ -7228,7 +7228,7 @@ def _build_share_header_preimage(
                 prevhash_for_header
             )
         else:
-            prevhash_for_header = _swap_prevhash_words_for_pepew_header(prevhash)
+            prevhash_for_header = bytes.fromhex(prevhash)[::-1].hex()
         prevhash_le = bytes.fromhex(prevhash_for_header)
         ntime_le = bytes.fromhex(submit_ntime)[::-1]
         nbits_le = bytes.fromhex(nbits)[::-1]
