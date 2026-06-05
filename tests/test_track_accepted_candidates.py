@@ -117,8 +117,10 @@ class TrackAcceptedCandidatesTests(unittest.TestCase):
             self.assertEqual(accepted[0]["candidate_hash"], "hash2")
             self.assertEqual(accepted[0]["lifecycle_status"], "pending_followup")
             self.assertEqual(accepted[0]["job_id"], "job2")
+            self.assertTrue(accepted[0]["submitblock_daemon_accepted_likely"])
 
             # Check hash3 (chain match found)
             self.assertEqual(accepted[1]["candidate_hash"], "hash3")
             self.assertEqual(accepted[1]["lifecycle_status"], "chain_match_found")
             self.assertEqual(accepted[1]["matched_height"], 12345)
+            self.assertTrue(accepted[1]["submitblock_daemon_accepted_likely"])

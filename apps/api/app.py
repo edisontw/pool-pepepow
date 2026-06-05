@@ -223,6 +223,34 @@ def create_app(config: AppConfig | None = None) -> Flask:
             }
         )
 
+    @app.get("/api/accepted-candidates")
+    def accepted_candidates():
+        import json
+        path = app_config.runtime_snapshot_path.parent / "accepted-candidates.json"
+        if not path.exists():
+            return jsonify({"items": []})
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            candidates = data.get("accepted_candidates", [])
+        except Exception:
+            return jsonify({"items": []})
+
+        items = []
+        for c in candidates:
+            items.append({
+                "candidateHash": c.get("candidate_hash"),
+                "jobId": c.get("job_id"),
+                "submitTimestamp": c.get("submit_timestamp"),
+                "submitblockDaemonResult": c.get("daemon_result"),
+                "submitblockDaemonAcceptedLikely": c.get("submitblock_daemon_accepted_likely", True),
+                "followupStatus": c.get("followup_status"),
+                "matchedHeight": c.get("matched_height"),
+                "matchedBlockHash": c.get("matched_block_hash"),
+                "lifecycleStatus": c.get("lifecycle_status"),
+            })
+        return jsonify({"items": items})
+
     @app.get("/api/payments")
     def payments():
         record = get_snapshot_record()

@@ -394,6 +394,69 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertIsInstance(payload["items"], list)
             self.assertGreaterEqual(len(payload["items"]), 1)
 
+    def test_accepted_candidates_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            candidates_path = Path(tmp_dir) / "accepted-candidates.json"
+            candidates_payload = {
+                "updated_at": "2026-06-05T15:40:12Z",
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash-abc",
+                        "job_id": "job-123",
+                        "submit_timestamp": "2026-06-05T12:42:37Z",
+                        "daemon_result": None,
+                        "submitblock_daemon_accepted_likely": True,
+                        "followup_status": "match-found",
+                        "matched_height": 4573284,
+                        "matched_block_hash": "hash-abc",
+                        "lifecycle_status": "chain_match_found"
+                    }
+                ]
+            }
+            candidates_path.write_text(
+                json.dumps(candidates_payload), encoding="utf-8"
+            )
+
+            app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
+            client = app.test_client()
+
+            response = client.get("/api/accepted-candidates")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            items = payload["items"]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["candidateHash"], "hash-abc")
+            self.assertEqual(items[0]["jobId"], "job-123")
+            self.assertEqual(items[0]["submitTimestamp"], "2026-06-05T12:42:37Z")
+            self.assertIsNone(items[0]["submitblockDaemonResult"])
+            self.assertTrue(items[0]["submitblockDaemonAcceptedLikely"])
+            self.assertEqual(items[0]["followupStatus"], "match-found")
+            self.assertEqual(items[0]["matchedHeight"], 4573284)
+            self.assertEqual(items[0]["matchedBlockHash"], "hash-abc")
+            self.assertEqual(items[0]["lifecycleStatus"], "chain_match_found")
+
+    def test_accepted_candidates_endpoint_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
+            client = app.test_client()
+
+            response = client.get("/api/accepted-candidates")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["items"], [])
+
     def test_payments_endpoint_is_placeholder(self):
         app = create_app(
             make_config(Path("/tmp/does-not-exist.json"), FALLBACK_SNAPSHOT_PATH)

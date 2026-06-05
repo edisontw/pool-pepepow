@@ -134,6 +134,7 @@ def main() -> int:
             "job_id": row.get("jobId"),
             "submit_timestamp": row.get("submitblockSubmittedAt") or row.get("candidateTimestamp") or row.get("timestamp"),
             "daemon_result": daemon_result,
+            "submitblock_daemon_accepted_likely": daemon_accepted,
             "followup_status": followup_status,
             "matched_height": row.get("followupObservedHeight"),
             "matched_block_hash": row.get("followupObservedBlockHash"),

@@ -204,7 +204,10 @@
   }
 
   async function renderBlocks(config) {
-    const blocks = await fetchJson(`${config.apiBaseUrl}/blocks`);
+    const [blocks, candidates] = await Promise.all([
+      fetchJson(`${config.apiBaseUrl}/blocks`),
+      fetchJson(`${config.apiBaseUrl}/accepted-candidates`)
+    ]);
     setHtml(
       "blocks-table",
       renderTable(blocks.items, [
@@ -213,6 +216,25 @@
         { key: "status", label: "Status" },
         { key: "foundAt", label: "Found", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber }
+      ])
+    );
+    setHtml(
+      "accepted-candidates-table",
+      renderTable(candidates.items, [
+        { key: "jobId", label: "Job ID" },
+        { key: "submitTimestamp", label: "Submitted", render: formatDate },
+        { key: "candidateHash", label: "Candidate Hash" },
+        {
+          key: "submitblockDaemonAcceptedLikely",
+          label: "Daemon Accepted",
+          render: (val) => (val ? "Yes" : "No")
+        },
+        { key: "lifecycleStatus", label: "Lifecycle Status" },
+        {
+          key: "matchedHeight",
+          label: "Matched Height",
+          render: (val) => (val ? formatNumber(val) : "-")
+        }
       ])
     );
   }
