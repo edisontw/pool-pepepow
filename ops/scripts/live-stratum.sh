@@ -3212,6 +3212,223 @@ fresh_candidate_submit_watch_once_service() {
   fi
 }
 
+controlled_submit_drill_once_service() {
+  local timeout_limit="${2:-1800}"
+  local poll_interval="${3:-15}"
+
+  if [[ ! "${timeout_limit}" =~ ^[0-9]+$ ]] || [[ "${timeout_limit}" -lt 1 ]]; then
+    echo "controlled-submit-drill-once timeout must be a positive integer" >&2
+    return 1
+  fi
+  if [[ ! "${poll_interval}" =~ ^[0-9]+$ ]] || [[ "${poll_interval}" -lt 1 ]]; then
+    echo "controlled-submit-drill-once poll interval must be a positive integer" >&2
+    return 1
+  fi
+
+  set_effective_defaults
+  ensure_runtime_dir
+  load_launch_env_if_present
+
+  # Preflight check
+  if [[ ! -f "${ACTIVITY_SNAPSHOT}" ]]; then
+    echo "Preflight check failed: Activity snapshot is missing at ${ACTIVITY_SNAPSHOT}" >&2
+    return 1
+  fi
+
+  local preflight_valid
+  preflight_valid=$(python3 - "${ACTIVITY_SNAPSHOT}" <<'PY'
+import json, sys
+try:
+    meta = json.load(open(sys.argv[1])).get("meta", {})
+    ok = (
+        meta.get("realSubmitblockEnabled") is False
+        and meta.get("realSubmitblockSendBudget") == 1
+        and meta.get("templateFetchStatus") == "ok"
+        and meta.get("templateDaemonRpcReachable") is True
+    )
+    print("true" if ok else "false")
+except Exception as e:
+    print(f"error: {e}")
+PY
+)
+
+  if [[ "${preflight_valid}" != "true" ]]; then
+    echo "Preflight validation failed! Details:" >&2
+    python3 - "${ACTIVITY_SNAPSHOT}" <<'PY'
+import json, sys
+meta = json.load(open(sys.argv[1])).get("meta", {})
+print(f"  Current values: real_submit_enabled={meta.get('realSubmitblockEnabled')}, real_submit_send_budget={meta.get('realSubmitblockSendBudget')}, template_fetch_status={meta.get('templateFetchStatus')}, template_daemon_rpc_reachable={meta.get('templateDaemonRpcReachable')}")
+PY
+    return 1
+  fi
+
+  # Record armed_start_utc
+  armed_start_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  terminal_reason="timeout"
+
+  cleanup_and_summary() {
+    # Remove traps to prevent recursion
+    trap - INT TERM EXIT
+
+    echo "Ensuring final disarm safety..."
+    # Always disarm immediately
+    PEPEPOW_ENABLE_REAL_SUBMITBLOCK=false PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=1 systemd_restart_service >/dev/null 2>&1 || true
+
+    local disarm_utc
+    disarm_utc="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+    # Read latest candidate details from log (timestamp >= armed_start_utc)
+    local latest_candidate_info
+    latest_candidate_info=$(python3 - "${CANDIDATE_EVENT_LOG}" "${armed_start_utc}" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+armed_start_utc = sys.argv[2]
+latest = None
+if path.exists():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip(): continue
+        try:
+            evt = json.loads(line)
+            evt_time = evt.get("timestamp")
+            if evt_time and evt_time >= armed_start_utc:
+                latest = evt
+        except Exception:
+            pass
+if latest:
+    h = latest.get('candidate_block_hash') or latest.get('candidateBlockHash')
+    j = latest.get('jobId')
+    t = latest.get('timestamp')
+    s = latest.get('submitblockRealSubmitStatus')
+    exc = latest.get('submitblockException')
+    sent = latest.get('submitblockSent')
+    daemon_res = exc if exc else ("Success" if sent else "None")
+    print(f"hash: {h}")
+    print(f"job: {j}")
+    print(f"timestamp: {t}")
+    print(f"submit_status: {s}")
+    print(f"daemon_result: {daemon_res}")
+else:
+    print("hash: None")
+    print("job: None")
+    print("timestamp: None")
+    print("submit_status: None")
+    print("daemon_result: None")
+PY
+)
+
+    local final_enabled="unknown"
+    if [[ -f "${ACTIVITY_SNAPSHOT}" ]]; then
+      final_enabled=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("meta", {}).get("realSubmitblockEnabled", "unknown"))' "${ACTIVITY_SNAPSHOT}")
+    fi
+
+    echo "=== controlled-submit-drill-once safety summary ==="
+    echo "armed_start_utc: ${armed_start_utc}"
+    echo "disarm_utc: ${disarm_utc}"
+    echo "terminal_reason: ${terminal_reason}"
+    echo "latest candidate hash/job/timestamp: $(echo "${latest_candidate_info}" | grep -E 'hash:|job:|timestamp:' | xargs)"
+    echo "submit_status: $(echo "${latest_candidate_info}" | grep 'submit_status:' | cut -d' ' -f2-)"
+    echo "daemon result: $(echo "${latest_candidate_info}" | grep 'daemon_result:' | cut -d' ' -f2-)"
+    echo "final real_submit_enabled: ${final_enabled}"
+
+    local final_enabled_lower
+    final_enabled_lower="$(echo "${final_enabled:-unknown}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${final_enabled_lower}" != "false" ]]; then
+      echo "================================================="
+      echo "!!! SAFETY WARNING: real_submit_enabled IS STILL TRUE/UNKNOWN !!!"
+      echo "================================================="
+      exit 1
+    fi
+    exit 0
+  }
+
+  # Trap settings
+  trap 'terminal_reason="interrupted"; cleanup_and_summary' INT TERM
+  trap 'cleanup_and_summary' EXIT
+
+  # Arm
+  echo "Arming drill: enabling real submit and restarting stratum service..."
+  PEPEPOW_ENABLE_REAL_SUBMITBLOCK=true PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=1 systemd_restart_service >/dev/null
+
+  # Give a moment for the service to start
+  sleep 2
+
+  local elapsed=0
+  echo "Watching for controlled submit drill terminal events (timeout: ${timeout_limit}s, poll: ${poll_interval}s)..."
+
+  while (( elapsed < timeout_limit )); do
+    # Check if systemd unit is still active
+    if ! systemd_unit_active; then
+      terminal_reason="service_not_running"
+      break
+    fi
+
+    # Check snapshot status
+    local poll_status
+    poll_status=$(python3 - "${ACTIVITY_SNAPSHOT}" "${CANDIDATE_EVENT_LOG}" "${armed_start_utc}" <<'PY'
+import json, sys
+from pathlib import Path
+
+snapshot_path = Path(sys.argv[1])
+candidate_log_path = Path(sys.argv[2])
+armed_start_utc = sys.argv[3]
+
+if not snapshot_path.exists():
+    print("stop:snapshot_missing")
+    sys.exit(0)
+
+try:
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    meta = payload.get("meta", {})
+    
+    template_fetch_status = meta.get("templateFetchStatus")
+    template_daemon_rpc_reachable = meta.get("templateDaemonRpcReachable")
+    real_submit_enabled = meta.get("realSubmitblockEnabled")
+    budget_remaining = meta.get("realSubmitblockSendBudgetRemaining")
+    
+    if template_fetch_status != "ok":
+        print("stop:template_fetch_status_not_ok")
+        sys.exit(0)
+    if template_daemon_rpc_reachable is not True:
+        print("stop:daemon_rpc_unreachable")
+        sys.exit(0)
+    if budget_remaining == 0:
+        print("stop:budget_exhausted")
+        sys.exit(0)
+except Exception as e:
+    print(f"stop:snapshot_read_failed_{e}")
+    sys.exit(0)
+
+try:
+    if candidate_log_path.exists():
+        lines = [line for line in candidate_log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        for line in lines[-20:]:
+            evt = json.loads(line)
+            evt_time = evt.get("timestamp")
+            if evt_time and evt_time >= armed_start_utc:
+                submit_status = evt.get("submitblockRealSubmitStatus")
+                submit_sent = evt.get("submitblockSent")
+                if submit_sent is True or submit_status in {"submit-sent", "submit-error", "submit-skipped-stale-prevblk", "submit-skipped-send-budget-exhausted"}:
+                    print(f"stop:candidate_event_{submit_status or 'submit_sent'}")
+                    sys.exit(0)
+except Exception as e:
+    print(f"stop:candidate_log_read_failed_{e}")
+    sys.exit(0)
+
+print("continue")
+PY
+)
+
+    if [[ "${poll_status}" != "continue" ]]; then
+      terminal_reason="${poll_status#stop:}"
+      break
+    fi
+
+    sleep "${poll_interval}"
+    elapsed=$(( elapsed + poll_interval ))
+  done
+}
+
 submit_arm_watch_once_service() {
   local timeout_limit="${2:-300}"
   if [[ ! "${timeout_limit}" =~ ^[0-9]+$ ]] || [[ "${timeout_limit}" -lt 1 ]]; then
@@ -3322,6 +3539,9 @@ case "${SUBCOMMAND}" in
   submit-arm-watch-once)
     submit_arm_watch_once_service "$@"
     ;;
+  controlled-submit-drill-once)
+    controlled_submit_drill_once_service "$@"
+    ;;
   fresh-candidate-submit-watch-once)
     fresh_candidate_submit_watch_once_service "$@"
     ;;
@@ -3401,7 +3621,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
