@@ -66,7 +66,7 @@ class NotifySuppressionTests(unittest.IsolatedAsyncioTestCase):
             
             # Start notify loop
             service._stop_event = asyncio.Event()
-            loop_task = asyncio.create_task(service._notify_loop(state, writer, send_lock))
+            loop_task = asyncio.create_task(service._notify_loop(state, writer, send_lock, "127.0.0.1", asyncio.Event()))
             
             # Wait 1.5s (more than the 1.0s interval)
             await asyncio.sleep(1.5)

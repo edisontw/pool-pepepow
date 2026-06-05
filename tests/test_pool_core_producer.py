@@ -27,15 +27,15 @@ class ProducerTests(unittest.TestCase):
     def test_load_config_separates_estimation_difficulty_from_share_difficulty(self):
         original = os.environ.copy()
         try:
-            os.environ["PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY"] = "1e-08"
+            os.environ["PEPEPOW_POOL_CORE_HASHRATE_ASSUMED_SHARE_DIFFICULTY"] = "0.005"
             os.environ["PEPEPOW_POOL_CORE_ESTIMATED_HASHRATE_ASSUMED_SHARE_DIFFICULTY"] = (
-                "1e-11"
+                "0.002"
             )
             config = load_config()
-            self.assertEqual(config.hashrate_assumed_share_difficulty, 1e-08)
+            self.assertEqual(config.hashrate_assumed_share_difficulty, 0.005)
             self.assertEqual(
                 config.estimated_hashrate_assumed_share_difficulty,
-                1e-11,
+                0.002,
             )
 
             del os.environ[
@@ -44,7 +44,7 @@ class ProducerTests(unittest.TestCase):
             fallback_config = load_config()
             self.assertEqual(
                 fallback_config.estimated_hashrate_assumed_share_difficulty,
-                1e-08,
+                0.005,
             )
         finally:
             os.environ.clear()

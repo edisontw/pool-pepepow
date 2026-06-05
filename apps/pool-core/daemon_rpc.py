@@ -136,7 +136,7 @@ class DaemonRpcClient:
             detail = exc.read().decode("utf-8", errors="replace")
             with suppress(json.JSONDecodeError):
                 payload = json.loads(detail)
-                if isinstance(payload, dict) and payload.get("error"):
+                if isinstance(payload, dict) and payload.get("error") and exc.code != 401:
                     raise DaemonRpcResponseError(
                         f"RPC {method} error: {payload['error']}"
                     ) from exc
