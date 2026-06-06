@@ -360,6 +360,15 @@
       "payments-table",
       renderTable(payments.items, [
         { key: "wallet", label: "Wallet" },
+        { key: "blockHeight", label: "Height", render: (val) => (val ? formatNumber(val) : "-") },
+        {
+          key: "candidateHash",
+          label: "Candidate Hash",
+          render: (val) => {
+            if (!val) return "-";
+            return val.length > 16 ? val.slice(0, 8) + "\u2026" + val.slice(-8) : val;
+          }
+        },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Paid", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber },

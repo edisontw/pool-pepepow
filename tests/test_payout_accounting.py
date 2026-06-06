@@ -743,6 +743,119 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(items[0]["status"], "blocked")
         self.assertEqual(items[0]["reason"], "blocked_already_paid")
 
+    def test_generate_payments_snapshot_includes_metadata_when_available(self):
+        # Create a mock payout-candidates.json containing a candidate
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hashconfirmedeligibleblock9999",
+                    "height": 4573193,
+                    "blockHash": "hashconfirmedeligibleblock9999",
+                    "status": "ready_for_manual_review"
+                }
+            ]
+        }
+        with (self.tmp_path / "payout-candidates.json").open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+
+        # Record a payment
+        rc = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="hashconfirmedeligibleblock9999",
+            wallet="PEPEPOW1WalletAddressTarget001",
+            amount=500.25,
+            txid="txidhash12345678901234567890"
+        )
+        self.assertEqual(rc, 0)
+
+        # Verify payments snapshot contains metadata
+        with self.snapshot_path.open("r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+        self.assertEqual(len(snapshot["items"]), 1)
+        item = snapshot["items"][0]
+        self.assertEqual(item["wallet"], "PEPEPOW1WalletAddressTarget001")
+        self.assertEqual(item["amount"], 500.25)
+        self.assertEqual(item["txid"], "txidhash12345678901234567890")
+        self.assertEqual(item["candidateHash"], "hashconfirmedeligibleblock9999")
+        self.assertEqual(item["blockHash"], "hashconfirmedeligibleblock9999")
+        self.assertEqual(item["blockHeight"], 4573193)
+        self.assertEqual(item["status"], "ready_for_manual_review")
+
+    def test_generate_payments_snapshot_old_payment_actions_without_metadata_work(self):
+        # Record a payment for a candidate that doesn't exist in payout-candidates.json (which is absent)
+        rc = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="hashabsenteligibleblock9999",
+            wallet="PEPEPOW1WalletAddressTarget001",
+            amount=500.25,
+            txid="txidhash12345678901234567890"
+        )
+        self.assertEqual(rc, 0)
+
+        # Verify payments snapshot does not have metadata but still generated correctly without crash
+        with self.snapshot_path.open("r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+        self.assertEqual(len(snapshot["items"]), 1)
+        item = snapshot["items"][0]
+        self.assertEqual(item["wallet"], "PEPEPOW1WalletAddressTarget001")
+        self.assertEqual(item["amount"], 500.25)
+        self.assertEqual(item["txid"], "txidhash12345678901234567890")
+        self.assertNotIn("candidateHash", item)
+        self.assertNotIn("blockHash", item)
+        self.assertNotIn("blockHeight", item)
+        self.assertNotIn("status", item)
+
+    def test_rebuild_payments_snapshot_command(self):
+        # Create a mock payout-candidates.json containing a candidate
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hashconfirmedeligibleblock9999",
+                    "height": 4573193,
+                    "blockHash": "hashconfirmedeligibleblock9999",
+                    "status": "ready_for_manual_review"
+                }
+            ]
+        }
+        with (self.tmp_path / "payout-candidates.json").open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+
+        # Create manual actions log entries
+        with self.actions_log.open("w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "candidate_id": "hashconfirmedeligibleblock9999",
+                "wallet": "PEPEPOW1WalletAddressTarget001",
+                "amount": 500.25,
+                "txid": "txidhash12345678901234567890",
+                "timestamp": "2026-06-06T15:00:00Z"
+            }) + "\n")
+
+        # Invoke rebuild subcommand via main
+        sys_argv_backup = sys.argv
+        try:
+            sys.argv = [
+                "payout_helper.py",
+                "rebuild-payments-snapshot",
+                "--actions-log", str(self.actions_log),
+                "--snapshot", str(self.snapshot_path)
+            ]
+            rc = payout_helper.main()
+            self.assertEqual(rc, 0)
+        finally:
+            sys.argv = sys_argv_backup
+
+        # Verify payments snapshot contains metadata
+        with self.snapshot_path.open("r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+        self.assertEqual(len(snapshot["items"]), 1)
+        item = snapshot["items"][0]
+        self.assertEqual(item["wallet"], "PEPEPOW1WalletAddressTarget001")
+        self.assertEqual(item["candidateHash"], "hashconfirmedeligibleblock9999")
+        self.assertEqual(item["blockHeight"], 4573193)
+        self.assertEqual(item["status"], "ready_for_manual_review")
+
 if __name__ == "__main__":
     unittest.main()
 

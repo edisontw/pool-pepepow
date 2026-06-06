@@ -791,6 +791,78 @@ class ApiEndpointTests(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(payload["items"], [])
 
+    def test_payments_endpoint_returns_enriched_fields(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            payments_path = Path(tmp_dir) / "payments-snapshot.json"
+            payments_payload = {
+                "updated_at": "2026-06-06T15:00:00Z",
+                "items": [
+                    {
+                        "wallet": "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD",
+                        "amount": 6930.0,
+                        "paidAt": "2026-06-06T15:41:59.648957Z",
+                        "confirmations": 1,
+                        "txid": "c7b439336d9d326610a09404efb8de4104a1532d7d8ac46629bf61e89b56540e",
+                        "candidateHash": "000000158d4880a187ec04e02c96af5e977ca3c552e5f2e0a9536ec5411c99a2",
+                        "blockHash": "000000158d4880a187ec04e02c96af5e977ca3c552e5f2e0a9536ec5411c99a2",
+                        "blockHeight": 4573193,
+                        "status": "ready_for_manual_review"
+                    }
+                ]
+            }
+            payments_path.write_text(
+                json.dumps(payments_payload), encoding="utf-8"
+            )
+
+            config = make_config(
+                runtime_path,
+                FALLBACK_SNAPSHOT_PATH,
+                activity_snapshot_path=payments_path
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            response = client.get("/api/payments")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            items = payload["items"]
+            self.assertEqual(len(items), 1)
+            item = items[0]
+            self.assertEqual(item["wallet"], "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD")
+            self.assertEqual(item["amount"], 6930.0)
+            self.assertEqual(item["candidateHash"], "000000158d4880a187ec04e02c96af5e977ca3c552e5f2e0a9536ec5411c99a2")
+            self.assertEqual(item["blockHeight"], 4573193)
+            self.assertEqual(item["status"], "ready_for_manual_review")
+
+    def test_payments_endpoint_malformed_snapshot_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            payments_path = Path(tmp_dir) / "payments-snapshot.json"
+            payments_path.write_text("{malformed-json", encoding="utf-8")
+
+            config = make_config(
+                runtime_path,
+                FALLBACK_SNAPSHOT_PATH,
+                activity_snapshot_path=payments_path
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            response = client.get("/api/payments")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["items"], [])
 
 if __name__ == "__main__":
     unittest.main()

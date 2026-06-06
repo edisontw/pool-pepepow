@@ -389,6 +389,91 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
 
     return 0
 
+def generate_payments_snapshot(
+    actions_log_path: Path,
+    snapshot_path: Path
+) -> int:
+    existing_actions = []
+    if actions_log_path.exists():
+        try:
+            with actions_log_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        act = json.loads(line)
+                        if not isinstance(act, dict):
+                            continue
+                        existing_actions.append(act)
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as exc:
+            print(f"Error reading payment actions log: {exc}", file=sys.stderr)
+            return 1
+
+    # Load payout-candidates.json to enrich payment items with metadata if available
+    candidates_map = {}
+    candidates_file = snapshot_path.parent / "payout-candidates.json"
+    if candidates_file.exists():
+        try:
+            with candidates_file.open("r", encoding="utf-8") as f:
+                cand_data = json.load(f)
+            if isinstance(cand_data, dict) and isinstance(cand_data.get("items"), list):
+                for item in cand_data["items"]:
+                    c_id = item.get("candidate_hash") or item.get("candidateId")
+                    if c_id:
+                        candidates_map[c_id] = item
+        except Exception:
+            pass
+
+    items = []
+    for act in existing_actions:
+        c_id = act.get("candidate_id")
+        item = {
+            "wallet": act.get("wallet"),
+            "amount": act.get("amount"),
+            "paidAt": act.get("timestamp"),
+            "confirmations": 1,
+            "txid": act.get("txid")
+        }
+        cand_meta = candidates_map.get(c_id) if c_id else None
+        if cand_meta:
+            if "candidate_hash" in cand_meta or "candidateId" in cand_meta:
+                item["candidateHash"] = cand_meta.get("candidate_hash") or cand_meta.get("candidateId")
+            if "blockHash" in cand_meta:
+                item["blockHash"] = cand_meta.get("blockHash")
+            if "height" in cand_meta:
+                item["blockHeight"] = cand_meta.get("height")
+            if "status" in cand_meta:
+                item["status"] = cand_meta.get("status")
+        items.append(item)
+
+    # Sort descending by paidAt
+    items.sort(key=lambda x: x.get("paidAt", ""), reverse=True)
+
+    snapshot_data = {
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "items": items
+    }
+
+    try:
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(dir=snapshot_path.parent)
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(snapshot_data, f, indent=2, sort_keys=True)
+            os.replace(temp_path, snapshot_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
+    except Exception as exc:
+        print(f"Error writing payments snapshot atomically: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
 def record_payment(
     actions_log_path: Path,
     snapshot_path: Path,
@@ -450,42 +535,7 @@ def record_payment(
         print(f"Error writing to payment actions log: {exc}", file=sys.stderr)
         return 1
 
-    existing_actions.append(new_action)
-
-    items = []
-    for act in existing_actions:
-        items.append({
-            "wallet": act.get("wallet"),
-            "amount": act.get("amount"),
-            "paidAt": act.get("timestamp"),
-            "confirmations": 1,
-            "txid": act.get("txid")
-        })
-
-    # Sort descending by paidAt
-    items.sort(key=lambda x: x.get("paidAt", ""), reverse=True)
-
-    snapshot_data = {
-        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "items": items
-    }
-
-    try:
-        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_fd, temp_path = tempfile.mkstemp(dir=snapshot_path.parent)
-        try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-                json.dump(snapshot_data, f, indent=2, sort_keys=True)
-            os.replace(temp_path, snapshot_path)
-        except Exception:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-            raise
-    except Exception as exc:
-        print(f"Error writing payments snapshot atomically: {exc}", file=sys.stderr)
-        return 1
-
-    return 0
+    return generate_payments_snapshot(actions_log_path, snapshot_path)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
@@ -504,6 +554,10 @@ def main() -> int:
     parser_rec.add_argument("--amount", type=float, required=True, help="Payment amount")
     parser_rec.add_argument("--txid", type=str, required=True, help="Transaction ID (txid)")
 
+    parser_rebuild = subparsers.add_parser("rebuild-payments-snapshot", help="Rebuild payments snapshot from actions log")
+    parser_rebuild.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_rebuild.add_argument("--snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+
     args = parser.parse_args()
 
     if args.command == "payout-candidates":
@@ -520,6 +574,11 @@ def main() -> int:
             args.wallet,
             args.amount,
             args.txid
+        )
+    elif args.command == "rebuild-payments-snapshot":
+        return generate_payments_snapshot(
+            Path(args.actions_log),
+            Path(args.snapshot)
         )
 
     return 0
