@@ -13,6 +13,27 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+def load_pool_snapshot() -> dict[str, Any]:
+    paths = [
+        Path(os.getenv("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", "")),
+        Path(os.getenv("PEPEPOW_POOL_API_RUNTIME_SNAPSHOT_PATH", "")),
+        Path("/var/lib/pepepow-pool/pool-snapshot.json"),
+        Path(".runtime/systemd-smoke/pool-snapshot.json"),
+        Path(".runtime/pool-snapshot.json"),
+        Path("apps/api/data/mock/pool-snapshot.json"),
+    ]
+    for p in paths:
+        if p and p.exists():
+            try:
+                with p.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+    return {}
 
 def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path) -> int:
     candidates = []
@@ -38,6 +59,18 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         except Exception as exc:
             print(f"Warning: Failed to load rounds snapshot: {exc}", file=sys.stderr)
 
+    pool_snap = load_pool_snapshot()
+    snap_blocks = pool_snap.get("blocks", [])
+    snap_rewards = {}
+    if isinstance(snap_blocks, list):
+        for sb in snap_blocks:
+            if not isinstance(sb, dict):
+                continue
+            h_hash = sb.get("hash")
+            h_reward = sb.get("reward")
+            if h_hash:
+                snap_rewards[h_hash] = h_reward
+
     payout_candidates = []
     for c in candidates:
         if not isinstance(c, dict):
@@ -45,7 +78,13 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         c_hash = c.get("candidate_hash")
         l_status = c.get("lifecycle_status")
         height = c.get("matched_height")
+        
+        # Reward source lookup
         reward = c.get("reward")
+        reward_source = "candidate"
+        if reward is None:
+            reward = snap_rewards.get(c_hash)
+            reward_source = "pool-snapshot" if reward is not None else None
 
         status = "blocked"
         reason = None
@@ -68,21 +107,24 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             # 1. Reward validation
             if reward is None:
                 status = "blocked"
-                reason = "missing_reward"
+                reason = "blocked_missing_reward"
             elif isinstance(reward, str) and reward.strip().lower() == "synthetic":
                 status = "blocked"
-                reason = "synthetic_reward"
+                reason = "blocked_invalid_reward"
             else:
                 try:
                     reward_val = float(reward)
-                    if reward_val <= 0:
+                    if reward_val == 0:
                         status = "blocked"
-                        reason = "invalid_reward"
+                        reason = "blocked_zero_reward"
+                    elif reward_val < 0:
+                        status = "blocked"
+                        reason = "blocked_invalid_reward"
                     else:
                         gross_reward = reward_val
                 except (ValueError, TypeError):
                     status = "blocked"
-                    reason = "invalid_reward"
+                    reason = "blocked_invalid_reward"
 
             if not reason:
                 # 2. Candidate hash validation
@@ -166,7 +208,9 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "roundShareTotal": round_share_total,
             "payouts": payouts,
             "shares": shares_info,
-            "submit_timestamp": c.get("submit_timestamp")
+            "submit_timestamp": c.get("submit_timestamp"),
+            "reward_source": reward_source,
+            "rewardSource": reward_source
         })
 
     out_data = {

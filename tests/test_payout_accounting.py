@@ -431,16 +431,88 @@ class PayoutAccountingTests(unittest.TestCase):
         item_map = {item["candidate_hash"]: item for item in items}
 
         self.assertEqual(item_map["cand_missing_reward"]["status"], "blocked")
-        self.assertEqual(item_map["cand_missing_reward"]["reason"], "missing_reward")
+        self.assertEqual(item_map["cand_missing_reward"]["reason"], "blocked_missing_reward")
 
         self.assertEqual(item_map["cand_zero_reward"]["status"], "blocked")
-        self.assertEqual(item_map["cand_zero_reward"]["reason"], "invalid_reward")
+        self.assertEqual(item_map["cand_zero_reward"]["reason"], "blocked_zero_reward")
 
         self.assertEqual(item_map["cand_synthetic_reward"]["status"], "blocked")
-        self.assertEqual(item_map["cand_synthetic_reward"]["reason"], "synthetic_reward")
+        self.assertEqual(item_map["cand_synthetic_reward"]["reason"], "blocked_invalid_reward")
 
         self.assertEqual(item_map["cand_zero_weight"]["status"], "blocked")
         self.assertEqual(item_map["cand_zero_weight"]["reason"], "zero_total_round_weight")
+
+        # Test pool-snapshot.json reward lookup via environment variable
+        import os
+        pool_snapshot_path = self.tmp_path / "pool-snapshot.json"
+        pool_snapshot_data = {
+            "blocks": [
+                {
+                    "hash": "cand_resolved_via_snapshot",
+                    "height": 300,
+                    "reward": 60000.0,
+                    "status": "observed-network",
+                    "confirmations": 101
+                }
+            ]
+        }
+        with pool_snapshot_path.open("w", encoding="utf-8") as f:
+            json.dump(pool_snapshot_data, f)
+
+        # Set env variable
+        os.environ["PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT"] = str(pool_snapshot_path)
+
+        accepted_data_snap = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "cand_resolved_via_snapshot",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 300,
+                    "submit_timestamp": "2026-06-06T12:00:00Z"
+                    # no reward here, should be resolved from pool-snapshot.json
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data_snap, f)
+
+        rounds_data_snap = {
+            "rounds": [
+                {
+                    "candidate_hash": "cand_resolved_via_snapshot",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {
+                        "walletB": {
+                            "share_count": 10,
+                            "share_score": 10.0,
+                            "share_percent": 100.0
+                        }
+                    }
+                }
+            ]
+        }
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data_snap, f)
+
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            res_data = json.load(f)
+
+        items_snap = res_data.get("items", [])
+        self.assertEqual(len(items_snap), 1)
+        item = items_snap[0]
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertEqual(item["grossReward"], 60000.0)
+        self.assertEqual(item["rewardSource"], "pool-snapshot")
+        self.assertIsNone(item["reason"])
+
+        # Clean up env
+        os.environ.pop("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", None)
 
 if __name__ == "__main__":
     unittest.main()
