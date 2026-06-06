@@ -29,23 +29,23 @@ def tail_file(file_path: Path, max_lines: int) -> list[str]:
     if not file_path.exists():
         return []
     chunk_size = 4096
-    lines: list[str] = []
+    newline_count = 0
     with file_path.open("rb") as f:
         f.seek(0, 2)
         file_size = f.tell()
         position = file_size
-        buffer = b""
-        while position > 0 and len(lines) <= max_lines:
+        needed_newlines = max_lines + 1
+        while position > 0 and newline_count < needed_newlines:
             grab_size = min(chunk_size, position)
             position -= grab_size
             f.seek(position)
             chunk = f.read(grab_size)
-            buffer = chunk + buffer
-            lines = buffer.split(b"\n")
-            if len(lines) > max_lines + 1:
-                lines = lines[-(max_lines + 1):]
-                buffer = b"\n".join(lines)
-                break
+            newline_count += chunk.count(b"\n")
+        f.seek(position)
+        rest = f.read()
+        lines = rest.split(b"\n")
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
     return [line.decode("utf-8", errors="replace") for line in lines if line]
 
 
