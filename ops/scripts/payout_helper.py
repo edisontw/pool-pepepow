@@ -84,7 +84,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
 
     out_data = {
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "candidates": payout_candidates
+        "items": payout_candidates
     }
 
     try:

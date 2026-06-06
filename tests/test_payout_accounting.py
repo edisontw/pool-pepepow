@@ -32,7 +32,8 @@ class PayoutAccountingTests(unittest.TestCase):
 
         with self.output_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        self.assertEqual(data.get("candidates"), [])
+        self.assertEqual(data.get("items"), [])
+        self.assertNotIn("candidates", data)
 
     def test_payout_candidates_blocking_states(self):
         # Create accepted candidates
@@ -110,7 +111,9 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.output_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         
-        candidates = data.get("candidates", [])
+        self.assertIn("items", data)
+        self.assertNotIn("candidates", data)
+        candidates = data.get("items", [])
         self.assertEqual(len(candidates), 6)
 
         cand_map = {c["candidate_hash"]: c for c in candidates}
@@ -279,6 +282,42 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_review.returncode, 0)
         self.assertIn("hashconfirmedeligibleblock0001", res_review.stdout)
         self.assertIn("ELIGIBLE", res_review.stdout)
+
+        # Test backward compatibility (old candidates format)
+        payout_candidates_path = self.tmp_path / "payout-candidates.json"
+        old_data = {
+            "updated_at": "2026-06-06T12:00:00Z",
+            "candidates": [
+                {
+                    "candidate_hash": "hasholdcompatblock0001",
+                    "height": 99,
+                    "lifecycle_status": "confirmed",
+                    "status": "eligible",
+                    "reason": None,
+                    "shares": {}
+                }
+            ]
+        }
+        with payout_candidates_path.open("w", encoding="utf-8") as f:
+            json.dump(old_data, f)
+            
+        res_review_compat = subprocess.run(
+            [str(sh_path), "payout-review"],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res_review_compat.returncode, 0)
+        self.assertIn("hasholdcompatblock0001", res_review_compat.stdout)
+        
+        # Regenerate to new format
+        res = subprocess.run(
+            [str(sh_path), "payout-candidates"],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0)
 
         res_record = subprocess.run(
             [

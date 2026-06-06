@@ -1073,7 +1073,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 updated_at = data.get("updated_at")
 print(f"Payout Candidates (Last updated: {updated_at})")
 print("="*80)
-candidates = data.get("candidates", [])
+candidates = data.get("items") if "items" in data else data.get("candidates", [])
 if not candidates:
     print("No candidates found.")
 for c in candidates:
