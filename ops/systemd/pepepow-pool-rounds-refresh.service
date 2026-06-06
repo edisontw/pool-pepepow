@@ -1,0 +1,19 @@
+[Unit]
+Description=PEPEPOW Pool Round Accounting Snapshot Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pepepow
+Group=pepepow
+WorkingDirectory=/opt/pepepow-pool
+EnvironmentFile=-/opt/pepepow-pool/ops/env/pool-core.env
+Environment=PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/var/lib/pepepow-pool
+ExecStart=/opt/pepepow-pool/ops/scripts/live-stratum.sh accepted-candidates
+ExecStart=/opt/pepepow-pool/ops/scripts/live-stratum.sh track-rounds
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

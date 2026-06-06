@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for PEPEPOW Pool Round Accounting Snapshot Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
