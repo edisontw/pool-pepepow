@@ -1035,6 +1035,18 @@ accepted_candidates_service() {
   python3 "${SCRIPT_DIR}/track_accepted_candidates.py" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${output_json}"
 }
 
+track_rounds_service() {
+  ensure_runtime_dir
+  local input_candidates output_rounds
+  input_candidates="${RUNTIME_DIR}/accepted-candidates.json"
+  output_rounds="${RUNTIME_DIR}/rounds-snapshot.json"
+  python3 "${SCRIPT_DIR}/track_rounds.py" \
+    --accepted-candidates "${input_candidates}" \
+    --share-log "${SHARE_LOG}" \
+    --activity-snapshot "${ACTIVITY_SNAPSHOT}" \
+    --output "${output_rounds}"
+}
+
 candidate_probability_audit_service() {
   ensure_runtime_dir
 
@@ -3577,6 +3589,9 @@ case "${SUBCOMMAND}" in
   accepted-candidates)
     accepted_candidates_service
     ;;
+  track-rounds)
+    track_rounds_service
+    ;;
   candidate-probability-audit)
     candidate_probability_audit_service "$@"
     ;;
@@ -3635,7 +3650,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac
