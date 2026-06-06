@@ -65,6 +65,73 @@ class TrackAcceptedCandidatesTests(unittest.TestCase):
         status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row_disabled, [], 0)
         self.assertEqual(status, "candidate_recorded")
 
+    def test_robust_lifecycle_transitions(self):
+        # Case 1: immature below threshold
+        row = {
+            "followupStatus": "match-found",
+            "candidateBlockHash": "hash1",
+            "followupObservedBlockHash": "hash1",
+            "followupObservedHeight": 1000
+        }
+        snapshot_blocks = [{"height": 1000, "hash": "hash1", "confirmations": 5}]
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row, snapshot_blocks, 1004)
+        self.assertEqual(status, "immature")
+        self.assertEqual(conf, 5)
+        self.assertEqual(maturity, "immature")
+
+        # Case 2: confirmed at/above threshold
+        snapshot_blocks_conf = [{"height": 1000, "hash": "hash1", "confirmations": 100}]
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row, snapshot_blocks_conf, 1100)
+        self.assertEqual(status, "confirmed")
+        self.assertEqual(conf, 100)
+        self.assertEqual(maturity, "mature")
+
+        # Case 3: orphan when prior matched candidate no longer matches active chain evidence
+        snapshot_blocks_divergent = [{"height": 1000, "hash": "hash-different-on-active-chain", "confirmations": 10}]
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row, snapshot_blocks_divergent, 1010)
+        self.assertEqual(status, "orphan")
+        self.assertIsNone(conf)
+        self.assertIsNone(maturity)
+
+        # Case 4: missing snapshot fields safe
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row, [None, {}, {"confirmations": "not-an-int"}], 0)
+        self.assertEqual(status, "chain_match_found")
+        self.assertIsNone(conf)
+        self.assertEqual(maturity, "immature")
+
+        # Case 5: idempotent rerun
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "candidate-outcome-events.jsonl"
+            out_path = Path(tmpdir) / "accepted-candidates.json"
+            event = {
+                "candidateBlockHash": "hash1",
+                "followupStatus": "match-found",
+                "followupObservedBlockHash": "hash1",
+                "followupObservedHeight": 1000,
+                "timestamp": "2026-06-05T12:00:00Z"
+            }
+            log_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            
+            orig_argv = sys.argv
+            sys.argv = ["track_accepted_candidates.py", str(log_path), str(out_path)]
+            try:
+                # Run first time
+                exit_1 = track_accepted_candidates.main()
+                self.assertEqual(exit_1, 0)
+                data_1 = json.loads(out_path.read_text(encoding="utf-8"))
+                
+                # Run second time
+                exit_2 = track_accepted_candidates.main()
+                self.assertEqual(exit_2, 0)
+                data_2 = json.loads(out_path.read_text(encoding="utf-8"))
+                
+                # Compare (ignore updated_at timestamps which might differ by milliseconds if we generated them separately, but wait, the content must be identical otherwise)
+                data_1.pop("updated_at")
+                data_2.pop("updated_at")
+                self.assertEqual(data_1, data_2)
+            finally:
+                sys.argv = orig_argv
+
     def test_track_candidates_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "candidate-outcome-events.jsonl"

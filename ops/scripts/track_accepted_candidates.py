@@ -36,11 +36,14 @@ def map_lifecycle_status(row: dict[str, Any], snapshot_blocks: list[dict[str, An
 
     # Determine confirmations
     confirmations = None
-    for sb in snapshot_blocks:
-        sb_hash = sb.get("hash")
-        if sb_hash and (sb_hash == candidate_hash or (matched_block_hash and sb_hash == matched_block_hash)):
-            confirmations = sb.get("confirmations")
-            break
+    if isinstance(snapshot_blocks, list):
+        for sb in snapshot_blocks:
+            if not isinstance(sb, dict):
+                continue
+            sb_hash = sb.get("hash")
+            if sb_hash and (sb_hash == candidate_hash or (matched_block_hash and sb_hash == matched_block_hash)):
+                confirmations = sb.get("confirmations")
+                break
 
     if confirmations is None and matched_height is not None and current_height > 0:
         try:
@@ -49,6 +52,34 @@ def map_lifecycle_status(row: dict[str, Any], snapshot_blocks: list[dict[str, An
                 confirmations = current_height - m_h + 1
         except (ValueError, TypeError):
             pass
+
+    # Check if a block at matched_height exists in snapshot_blocks but has a divergent hash
+    is_divergent = False
+    if matched_height is not None and isinstance(snapshot_blocks, list):
+        try:
+            m_h = int(matched_height)
+            for sb in snapshot_blocks:
+                if isinstance(sb, dict) and sb.get("height") is not None:
+                    if int(sb["height"]) == m_h:
+                        sb_hash = sb.get("hash")
+                        matches_candidate = (sb_hash and candidate_hash and sb_hash == candidate_hash)
+                        matches_matched = (sb_hash and matched_block_hash and sb_hash == matched_block_hash)
+                        if not (matches_candidate or matches_matched):
+                            is_divergent = True
+                        break
+        except (ValueError, TypeError):
+            pass
+
+    # Check for orphan (takes precedence if matched block is no longer on the active chain or mismatched)
+    is_orphan = (
+        followup_status == "no-match-found"
+        or outcome_status == "chain-match-not-found"
+        or is_divergent
+        or (matched_block_hash is not None and candidate_hash is not None and matched_block_hash != candidate_hash)
+    )
+
+    if is_orphan:
+        return "orphan", None, None
 
     # Check for chain match (chain_match_found, immature, confirmed)
     is_match = (
@@ -75,15 +106,6 @@ def map_lifecycle_status(row: dict[str, Any], snapshot_blocks: list[dict[str, An
             status = "chain_match_found"
             maturity_label = "immature"
         return status, confirmations, maturity_label
-
-    # Check for orphan
-    is_orphan = (
-        followup_status == "no-match-found"
-        or outcome_status == "chain-match-not-found"
-        or (matched_height is not None and matched_block_hash and matched_block_hash != candidate_hash)
-    )
-    if is_orphan:
-        return "orphan", None, None
 
     # Check for submit_accepted
     is_accepted = (
