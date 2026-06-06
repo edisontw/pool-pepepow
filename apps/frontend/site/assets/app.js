@@ -300,13 +300,54 @@
               .sort(([, a], [, b]) => b.sharePercent - a.sharePercent)
               .slice(0, 3);
             if (entries.length === 0) return "-";
-            return entries
+
+            const summaryText = entries
               .map(([wallet, d]) => {
                 const pct = d.sharePercent.toFixed(2);
                 const short = wallet.length > 12 ? wallet.slice(0, 6) + "\u2026" + wallet.slice(-4) : wallet;
                 return `${short}\u00a0${pct}%`;
               })
               .join(" / ");
+
+            const detailLines = entries.map(([wallet, d]) => {
+              const pct = d.sharePercent.toFixed(2);
+              const score = typeof d.shareScore === "number" ? d.shareScore.toFixed(2) : "-";
+              const short = wallet.length > 12 ? wallet.slice(0, 6) + "\u2026" + wallet.slice(-4) : wallet;
+
+              let line = `<div style="margin-bottom: 0.15rem;">
+                <span style="color: var(--text); font-weight: 500;">${short}</span>: 
+                <strong>${pct}%</strong> (Score: ${score})
+              </div>`;
+
+              if (d.workers && typeof d.workers === "object") {
+                const workersList = Object.entries(d.workers)
+                  .filter(([, w]) => w && typeof w.shareScore === "number")
+                  .sort(([, a], [, b]) => b.shareScore - a.shareScore);
+
+                if (workersList.length > 0) {
+                  const workerLines = workersList.slice(0, 2).map(([wName, wData]) => {
+                    const wPct = wData.sharePercent.toFixed(2);
+                    const wWalletPct = wData.walletSharePercent.toFixed(2);
+                    return `${wName}&nbsp;(${wPct}%&nbsp;total,&nbsp;${wWalletPct}%&nbsp;of&nbsp;wallet)`;
+                  }).join(", ");
+
+                  line += `<div style="padding-left: 0.75rem; font-size: 0.9em; opacity: 0.85;">
+                    &bull; Workers: ${workerLines}
+                  </div>`;
+                }
+              }
+              return line;
+            }).join("");
+
+            return `<div>
+              <div>${summaryText}</div>
+              <details style="margin-top: 0.35rem; font-size: 0.85em;">
+                <summary style="cursor: pointer; color: var(--accent-alt); font-weight: 500; outline: none; user-select: none;">Details</summary>
+                <div style="margin-top: 0.3rem; padding-left: 0.5rem; border-left: 2px solid var(--panel-border); line-height: 1.45;">
+                  ${detailLines}
+                </div>
+              </details>
+            </div>`;
           }
         }
       ], "No rounds tracked in this snapshot.")
