@@ -199,7 +199,7 @@
         { key: "wallet", label: "Wallet" },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Paid", render: formatDate }
-      ], "Payments remain placeholder data until payout accounting is implemented.")
+      ], "No manual payments recorded.")
     );
   }
 
@@ -364,7 +364,7 @@
         { key: "paidAt", label: "Paid", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber },
         { key: "txid", label: "TXID" }
-      ], "No payment records available. Payout accounting is currently paused.")
+      ], "No manual payment records available.")
     );
   }
 

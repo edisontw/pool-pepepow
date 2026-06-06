@@ -1047,6 +1047,79 @@ track_rounds_service() {
     --output "${output_rounds}"
 }
 
+payout_candidates_service() {
+  ensure_runtime_dir
+  local input_candidates input_rounds output_payout_candidates
+  input_candidates="${RUNTIME_DIR}/accepted-candidates.json"
+  input_rounds="${RUNTIME_DIR}/rounds-snapshot.json"
+  output_payout_candidates="${RUNTIME_DIR}/payout-candidates.json"
+  python3 "${SCRIPT_DIR}/payout_helper.py" payout-candidates \
+    --accepted-candidates "${input_candidates}" \
+    --rounds-snapshot "${input_rounds}" \
+    --output "${output_payout_candidates}"
+}
+
+payout_review_service() {
+  ensure_runtime_dir
+  local payout_file="${RUNTIME_DIR}/payout-candidates.json"
+  if [[ ! -f "${payout_file}" ]]; then
+    echo "No payout candidates file found at ${payout_file}. Run 'payout-candidates' first." >&2
+    return 1
+  fi
+  python3 -c '
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+updated_at = data.get("updated_at")
+print(f"Payout Candidates (Last updated: {updated_at})")
+print("="*80)
+candidates = data.get("candidates", [])
+if not candidates:
+    print("No candidates found.")
+for c in candidates:
+    h = c.get("candidate_hash")
+    status = c.get("status")
+    reason = c.get("reason")
+    height = c.get("height")
+    lifecycle = c.get("lifecycle_status")
+    print(f"Candidate: {h} (Height: {height}, Lifecycle: {lifecycle})")
+    status_str = status.upper()
+    reason_str = f" (Reason: {reason})" if reason else ""
+    print(f"  Payout Status: {status_str}{reason_str}")
+    if status == "eligible":
+        shares = c.get("shares", {})
+        print("  Shares breakdown:")
+        for wallet, info in shares.items():
+            pct = info.get("share_percent", 0.0)
+            score = info.get("share_score", 0.0)
+            cnt = info.get("share_count", 0)
+            print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
+    print("-"*80)
+' "${payout_file}"
+}
+
+record_payment_service() {
+  ensure_runtime_dir
+  local candidate_id="${2:-}"
+  local wallet="${3:-}"
+  local amount="${4:-}"
+  local txid="${5:-}"
+
+  if [[ -z "${candidate_id}" || -z "${wallet}" || -z "${amount}" || -z "${txid}" ]]; then
+    echo "usage: live-stratum.sh record-payment <candidate_id> <wallet> <amount> <txid>" >&2
+    return 1
+  fi
+
+  python3 "${SCRIPT_DIR}/payout_helper.py" record-payment \
+    --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \
+    --snapshot "${RUNTIME_DIR}/payments-snapshot.json" \
+    --candidate-id "${candidate_id}" \
+    --wallet "${wallet}" \
+    --amount "${amount}" \
+    --txid "${txid}"
+}
+
+
 candidate_probability_audit_service() {
   ensure_runtime_dir
 
@@ -3592,6 +3665,15 @@ case "${SUBCOMMAND}" in
   track-rounds)
     track_rounds_service
     ;;
+  payout-candidates)
+    payout_candidates_service
+    ;;
+  payout-review)
+    payout_review_service
+    ;;
+  record-payment)
+    record_payment_service "$@"
+    ;;
   candidate-probability-audit)
     candidate_probability_audit_service "$@"
     ;;
@@ -3650,7 +3732,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-review|record-payment <candidate_id> <wallet> <amount> <txid>|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac

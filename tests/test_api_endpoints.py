@@ -467,8 +467,6 @@ class ApiEndpointTests(unittest.TestCase):
         response = client.get("/api/payments")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["status"], "placeholder")
-        self.assertEqual(payload["dataStatus"], "fallback")
         self.assertEqual(payload["items"], [])
 
     def test_miner_endpoint_returns_wallet_summary_and_workers(self):

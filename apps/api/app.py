@@ -330,14 +330,20 @@ def create_app(config: AppConfig | None = None) -> Flask:
 
     @app.get("/api/payments")
     def payments():
-        record = get_snapshot_record()
-        return jsonify(
-            {
-                "items": record.data["payments"],
-                "status": record.meta.get("paymentsStatus", "placeholder"),
-                "dataStatus": record.data_status,
-            }
-        )
+        import json
+        path = app_config.activity_snapshot_path.parent / "payments-snapshot.json"
+        if not path.exists():
+            path = app_config.runtime_snapshot_path.parent / "payments-snapshot.json"
+        if not path.exists():
+            return jsonify({"items": []})
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "items" in data:
+                return jsonify(data)
+            return jsonify({"items": []})
+        except Exception:
+            return jsonify({"items": []})
 
     @app.get("/api/miner/<wallet>")
     def miner(wallet: str):
