@@ -350,6 +350,30 @@ def create_app(config: AppConfig | None = None) -> Flask:
         if not wallet_pattern.fullmatch(wallet):
             return json_error(HTTPStatus.BAD_REQUEST, "Wallet format is invalid")
 
+        # Load recorded manual payments from payments-snapshot.json
+        recent_payments = []
+        total_paid_manual = 0.0
+
+        import json
+        payments_path = app_config.activity_snapshot_path.parent / "payments-snapshot.json"
+        if not payments_path.exists():
+            payments_path = app_config.runtime_snapshot_path.parent / "payments-snapshot.json"
+
+        if payments_path.exists():
+            try:
+                with payments_path.open("r", encoding="utf-8") as f:
+                    payments_data = json.load(f)
+                if isinstance(payments_data, dict) and isinstance(payments_data.get("items"), list):
+                    for item in payments_data["items"]:
+                        if isinstance(item, dict) and item.get("wallet") == wallet:
+                            recent_payments.append(item)
+                            try:
+                                total_paid_manual += float(item.get("amount", 0.0))
+                            except (ValueError, TypeError):
+                                pass
+            except Exception:
+                pass
+
         record = get_snapshot_record()
         if not bool(record.meta.get("minerLookupImplemented", False)):
             return jsonify(
@@ -359,6 +383,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     "summary": None,
                     "workers": [],
                     "payments": [],
+                    "recentPayments": recent_payments,
+                    "totalPaidManual": total_paid_manual,
                     "implemented": False,
                     "status": "not-implemented",
                     "dataStatus": record.data_status,
@@ -378,6 +404,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     "summary": None,
                     "workers": [],
                     "payments": [],
+                    "recentPayments": recent_payments,
+                    "totalPaidManual": total_paid_manual,
                     "implemented": True,
                     "status": "ok",
                     "dataStatus": record.data_status,
@@ -393,6 +421,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "summary": miner_record.get("summary", {}),
                 "workers": miner_record.get("workers", []),
                 "payments": miner_record.get("payments", []),
+                "recentPayments": recent_payments,
+                "totalPaidManual": total_paid_manual,
                 "implemented": True,
                 "status": "ok",
                 "dataStatus": record.data_status,

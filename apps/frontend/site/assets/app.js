@@ -382,61 +382,67 @@
       `${config.apiBaseUrl}/miner/${encodeURIComponent(wallet)}`
     );
 
+    let htmlContent = "";
+
     if (!result.found) {
-      setHtml(
-        "miner-result",
-        `<div class="muted">No active miner data found for <strong>${wallet}</strong>.<br><small style="display: block; margin-top: 0.5rem; opacity: 0.8;">Note: Miner statistics are generated dynamically from active share submissions and are only retained while there is active mining activity within the snapshot tracking window.</small></div>`
+      htmlContent += `<div class="muted">No active miner data found for <strong>${wallet}</strong>.<br><small style="display: block; margin-top: 0.5rem; opacity: 0.8;">Note: Miner statistics are generated dynamically from active share submissions and are only retained while there is active mining activity within the snapshot tracking window.</small></div>`;
+    } else {
+      const summary = result.summary || {};
+      const workers = Array.isArray(result.workers) ? result.workers : [];
+
+      htmlContent += renderCards(
+        [
+          {
+            label: "Active Workers",
+            value: formatNumber(summary.activeWorkers)
+          },
+          {
+            label: "Hashrate (estimated from shares)",
+            value: formatHashrate(summary.hashrate)
+          },
+          {
+            label: "Accepted Shares",
+            value: formatNumber(summary.acceptedShares)
+          },
+          {
+            label: "Last Share",
+            value: formatDate(summary.lastShareAt)
+          }
+        ],
+        [
+          { key: "label", label: "Metric" },
+          { key: "value", label: "Value" }
+        ]
       );
-      return;
+
+      htmlContent += "<h3>Workers</h3>";
+      htmlContent += renderTable(workers, [
+        { key: "name", label: "Worker" },
+        { key: "acceptedShares", label: "Accepted Shares", render: formatNumber },
+        { key: "hashrate", label: "Hashrate (estimated from shares)", render: formatHashrate },
+        { key: "lastShareAt", label: "Last Share", render: formatDate }
+      ]);
     }
 
-    const summary = result.summary || {};
-    const workers = Array.isArray(result.workers) ? result.workers : [];
-    const payments = Array.isArray(result.payments) ? result.payments : [];
+    const recentPayments = Array.isArray(result.recentPayments) ? result.recentPayments : [];
 
-    setHtml(
-      "miner-result",
-      [
-        renderCards(
-          [
-            {
-              label: "Active Workers",
-              value: formatNumber(summary.activeWorkers)
-            },
-            {
-              label: "Hashrate (estimated from shares)",
-              value: formatHashrate(summary.hashrate)
-            },
-            {
-              label: "Accepted Shares",
-              value: formatNumber(summary.acceptedShares)
-            },
-            {
-              label: "Last Share",
-              value: formatDate(summary.lastShareAt)
-            }
-          ],
-          [
-            { key: "label", label: "Metric" },
-            { key: "value", label: "Value" }
-          ]
-        ),
-        "<h3>Workers</h3>",
-        renderTable(workers, [
-          { key: "name", label: "Worker" },
-          { key: "acceptedShares", label: "Accepted Shares", render: formatNumber },
-          { key: "hashrate", label: "Hashrate (estimated from shares)", render: formatHashrate },
-          { key: "lastShareAt", label: "Last Share", render: formatDate }
-        ]),
-        "<h3>Recent Payments</h3>",
-        renderTable(payments, [
-          { key: "amount", label: "Amount", render: formatNumber },
-          { key: "paidAt", label: "Paid", render: formatDate },
-          { key: "confirmations", label: "Confirms", render: formatNumber },
-          { key: "txid", label: "TXID" }
-        ])
-      ].join("")
-    );
+    htmlContent += "<h3>Manual payments recorded</h3>";
+    htmlContent += renderTable(recentPayments, [
+      { key: "paidAt", label: "Paid", render: formatDate },
+      { key: "amount", label: "Amount", render: formatNumber },
+      {
+        key: "txid",
+        label: "TXID",
+        render: (val) => {
+          if (!val) return "-";
+          return val.length > 16 ? val.slice(0, 8) + "\u2026" + val.slice(-8) : val;
+        }
+      },
+      { key: "blockHeight", label: "Height", render: (val) => (val ? formatNumber(val) : "-") },
+      { key: "confirmations", label: "Confirms", render: formatNumber }
+    ], "No recorded manual payments for this wallet yet.");
+
+    setHtml("miner-result", htmlContent);
   }
 
   async function renderMiner(config) {
