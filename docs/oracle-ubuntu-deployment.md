@@ -31,6 +31,33 @@ Keep private services bound to `127.0.0.1` or a private subnet only.
 - share log: `/var/lib/pepepow-pool/share-events.jsonl`
 - env files: `/opt/pepepow-pool/ops/env`
 
+## Live Deployment Paths (pool.pepepow.net)
+
+The production host at `pool.pepepow.net` (`192.9.160.179`) was bootstrapped
+before the `/var/lib/pepepow-pool` layout was finalised. The live systemd units
+therefore use paths under the repo's `.runtime/systemd-smoke/` directory
+instead of the suggested `/var/lib` paths above.
+
+Effective live paths as of 2026-06-06:
+
+| Purpose | Live path |
+|---|---|
+| Core env | `.runtime/systemd-smoke/core.env` |
+| Stratum env | `.runtime/systemd-smoke/stratum.env` |
+| API env | `.runtime/systemd-smoke/api.env` |
+| Pool snapshot | `.runtime/systemd-smoke/pool-snapshot.json` |
+| Activity snapshot | `.runtime/live-stratum/activity-snapshot.json` |
+| Share log | `.runtime/live-stratum/share-events.jsonl` |
+| Stratum live env | `.runtime/live-stratum/launch.env` |
+
+These paths are **not renamed in this release**. They remain stable and all
+three systemd services (`pepepow-pool-core`, `pepepow-pool-stratum`,
+`pepepow-pool-api`) point to them via their `EnvironmentFile` directives.
+
+nginx and the static frontend are **not yet deployed** on this host.
+Port 80 and 443 are not listening. The stratum port `39333/tcp` is the only
+public TCP service beyond SSH.
+
 ## Bootstrap
 
 ```bash

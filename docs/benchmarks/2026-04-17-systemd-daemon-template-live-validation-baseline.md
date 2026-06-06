@@ -13,7 +13,7 @@ It does not make this a full validating pool.
 - daemon: `PEPEPOWd v2.9.0.4-c1394e6`
 - stratum service: `pepepow-pool-stratum.service`
 - stratum mode: `daemon-template`
-- endpoint: `stratum+tcp://192.9.160.179:39333`
+- endpoint: `stratum+tcp://pool.pepepow.net:39333`
 - observed miner remote: `36.227.104.10:50238`
 
 ## Live Accepted Share Evidence

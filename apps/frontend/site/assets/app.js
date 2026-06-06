@@ -2,7 +2,7 @@
   const DEFAULT_CONFIG = {
     apiBaseUrl: "/api",
     refreshIntervalMs: 60000,
-    stratumHost: "stratum+tcp://pool.example.com:3333"
+    stratumHost: "stratum+tcp://pool.pepepow.net:39333"
   };
 
   async function loadRuntimeConfig() {

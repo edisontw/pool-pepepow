@@ -228,7 +228,7 @@ smoke without daemon/template dependencies.
 Recommended external smoke command:
 
 ```bash
-PEPEPOW_PREFLIGHT_PUBLIC_HOST=192.9.160.179 \
+PEPEPOW_PREFLIGHT_PUBLIC_HOST=pool.pepepow.net \
 PEPEPOW_PREFLIGHT_SHARE_DIFFICULTY=0.000001 \
 /home/ubuntu/pool-pepepow/ops/scripts/run-stratum-preflight.sh
 ```
@@ -279,7 +279,7 @@ nc -vz 127.0.0.1 39333
 From an external host:
 
 ```bash
-nc -vz 192.9.160.179 39333
+nc -vz pool.pepepow.net 39333
 ```
 
 ---
@@ -299,7 +299,7 @@ nc -vz 192.9.160.179 39333
 External miner example:
 
 ```bash
-./hoo_gpu -o stratum+tcp://192.9.160.179:39333 -u <wallet>.<worker> -gpu-id 0 -p x --pepepow
+./hoo_gpu -o stratum+tcp://pool.pepepow.net:39333 -u <wallet>.<worker> -gpu-id 0 -p x --pepepow
 ```
 
 Expected behavior in this phase:
@@ -342,8 +342,8 @@ python3 /home/ubuntu/pool-pepepow/ops/scripts/stratum_smoke_report.py \
   --source-provenance 'https://pepepow.org/mining/ ; https://htn.foztor.net/hoo_gpu.tar.gz' \
   --build-method 'wget -c https://htn.foztor.net/hoo_gpu.tar.gz -O - | tar -xz' \
   --environment-platform 'x86_64 Ubuntu + NVIDIA GPU' \
-  --pool-command 'PEPEPOW_PREFLIGHT_PUBLIC_HOST=192.9.160.179 PEPEPOW_PREFLIGHT_SHARE_DIFFICULTY=0.000001 /home/ubuntu/pool-pepepow/ops/scripts/run-stratum-preflight.sh' \
-  --miner-command './hoo_gpu -o stratum+tcp://192.9.160.179:39333 -u PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD -gpu-id 0 -p x --pepepow'
+  --pool-command 'PEPEPOW_PREFLIGHT_PUBLIC_HOST=pool.pepepow.net PEPEPOW_PREFLIGHT_SHARE_DIFFICULTY=0.000001 /home/ubuntu/pool-pepepow/ops/scripts/run-stratum-preflight.sh' \
+  --miner-command './hoo_gpu -o stratum+tcp://pool.pepepow.net:39333 -u PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD -gpu-id 0 -p x --pepepow'
 ```
 
 For the formally recorded external GPU smoke, see:

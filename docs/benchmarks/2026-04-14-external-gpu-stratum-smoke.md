@@ -42,7 +42,7 @@ wget -c https://htn.foztor.net/hoo_gpu.tar.gz -O - | tar -xz
 ## Environment / Platform
 
 - miner environment: `x86_64 Ubuntu + NVIDIA GPU`
-- pool endpoint used by external miner: `192.9.160.179:39333`
+- pool endpoint used by external miner: `pool.pepepow.net:39333`
 - preflight listener observed: `0.0.0.0:39333`
 - external remote address observed in accepted-share evidence: `36.227.95.132:49832`
 
@@ -53,7 +53,7 @@ wget -c https://htn.foztor.net/hoo_gpu.tar.gz -O - | tar -xz
 Pool preflight command:
 
 ```bash
-PEPEPOW_PREFLIGHT_PUBLIC_HOST=192.9.160.179 \
+PEPEPOW_PREFLIGHT_PUBLIC_HOST=pool.pepepow.net \
 PEPEPOW_PREFLIGHT_SHARE_DIFFICULTY=0.000001 \
 /home/ubuntu/pool-pepepow/ops/scripts/run-stratum-preflight.sh
 ```
@@ -61,7 +61,7 @@ PEPEPOW_PREFLIGHT_SHARE_DIFFICULTY=0.000001 \
 Miner command:
 
 ```bash
-./hoo_gpu -o stratum+tcp://192.9.160.179:39333 -u PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD -gpu-id 0 -p x --pepepow
+./hoo_gpu -o stratum+tcp://pool.pepepow.net:39333 -u PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD -gpu-id 0 -p x --pepepow
 ```
 
 ---

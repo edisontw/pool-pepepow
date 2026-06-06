@@ -11,7 +11,7 @@ upstream pepepow_pool_api {
 server {
     listen 80;
     listen [::]:80;
-    server_name pool.example.com;
+    server_name pool.pepepow.net;
 
     client_max_body_size 1m;
 

@@ -2,12 +2,12 @@
 
 ## Endpoint
 
-- `stratum+tcp://192.9.160.179:39333`
+- `stratum+tcp://pool.pepepow.net:39333`
 
 ## Known-Good External Miner Command
 
 ```bash
-./hoo_gpu -o stratum+tcp://192.9.160.179:39333 -u PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD -gpu-id 0 -p x --pepepow
+./hoo_gpu -o stratum+tcp://pool.pepepow.net:39333 -u PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD -gpu-id 0 -p x --pepepow
 ```
 
 ## Effective Difficulty
