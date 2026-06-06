@@ -250,6 +250,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "matchedHeight": c.get("matched_height"),
                 "matchedBlockHash": c.get("matched_block_hash"),
                 "lifecycleStatus": c.get("lifecycle_status"),
+                "confirmations": c.get("confirmations"),
             })
         return jsonify({"items": items})
 

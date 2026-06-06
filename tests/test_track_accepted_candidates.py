@@ -124,3 +124,63 @@ class TrackAcceptedCandidatesTests(unittest.TestCase):
             self.assertEqual(accepted[1]["lifecycle_status"], "chain_match_found")
             self.assertEqual(accepted[1]["matched_height"], 12345)
             self.assertTrue(accepted[1]["submitblock_daemon_accepted_likely"])
+            self.assertIsNone(accepted[1]["confirmations"])
+
+    def test_track_candidates_observed_confirmations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "candidate-outcome-events.jsonl"
+            out_path = Path(tmpdir) / "accepted-candidates.json"
+            snapshot_path = Path(tmpdir) / "pool-snapshot.json"
+
+            events = [
+                {
+                    "candidateBlockHash": "hash3",
+                    "jobId": "job3",
+                    "followupStatus": "match-found",
+                    "submitblockSent": True,
+                    "submitblockDaemonAcceptedLikely": True,
+                    "followupObservedHeight": 12345,
+                    "followupObservedBlockHash": "hash3",
+                    "submitblockSubmittedAt": "2026-06-05T12:10:00Z",
+                    "timestamp": "2026-06-05T12:12:00Z",
+                }
+            ]
+
+            snapshot_data = {
+                "blocks": [
+                    {
+                        "hash": "hash3",
+                        "confirmations": 10,
+                        "height": 12345
+                    }
+                ]
+            }
+
+            with log_path.open("w", encoding="utf-8") as f:
+                for event in events:
+                    f.write(json.dumps(event) + "\n")
+
+            with snapshot_path.open("w", encoding="utf-8") as f:
+                json.dump(snapshot_data, f)
+
+            orig_argv = sys.argv
+            sys.argv = [
+                "track_accepted_candidates.py",
+                str(log_path),
+                str(out_path),
+                "--pool-snapshot",
+                str(snapshot_path)
+            ]
+            try:
+                exit_code = track_accepted_candidates.main()
+                self.assertEqual(exit_code, 0)
+            finally:
+                sys.argv = orig_argv
+
+            self.assertTrue(out_path.exists())
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+            accepted = data["accepted_candidates"]
+            self.assertEqual(len(accepted), 1)
+            self.assertEqual(accepted[0]["candidate_hash"], "hash3")
+            self.assertEqual(accepted[0]["lifecycle_status"], "observed_confirmations")
+            self.assertEqual(accepted[0]["confirmations"], 10)
