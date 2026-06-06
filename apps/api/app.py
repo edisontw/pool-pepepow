@@ -226,7 +226,9 @@ def create_app(config: AppConfig | None = None) -> Flask:
     @app.get("/api/accepted-candidates")
     def accepted_candidates():
         import json
-        path = app_config.runtime_snapshot_path.parent / "accepted-candidates.json"
+        path = app_config.activity_snapshot_path.parent / "accepted-candidates.json"
+        if not path.exists():
+            path = app_config.runtime_snapshot_path.parent / "accepted-candidates.json"
         if not path.exists():
             return jsonify({"items": []})
         try:
