@@ -411,12 +411,10 @@ class ApiEndpointTests(unittest.TestCase):
                         "job_id": "job-123",
                         "submit_timestamp": "2026-06-05T12:42:37Z",
                         "daemon_result": None,
-                        "submitblock_daemon_accepted_likely": True,
                         "followup_status": "match-found",
                         "matched_height": 4573284,
                         "matched_block_hash": "hash-abc",
-                        "lifecycle_status": "observed_confirmations",
-                        "confirmations": 5
+                        "lifecycle_status": "chain_match_found",
                     }
                 ]
             }
@@ -436,12 +434,10 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(items[0]["jobId"], "job-123")
             self.assertEqual(items[0]["submitTimestamp"], "2026-06-05T12:42:37Z")
             self.assertIsNone(items[0]["submitblockDaemonResult"])
-            self.assertTrue(items[0]["submitblockDaemonAcceptedLikely"])
             self.assertEqual(items[0]["followupStatus"], "match-found")
             self.assertEqual(items[0]["matchedHeight"], 4573284)
             self.assertEqual(items[0]["matchedBlockHash"], "hash-abc")
-            self.assertEqual(items[0]["lifecycleStatus"], "observed_confirmations")
-            self.assertEqual(items[0]["confirmations"], 5)
+            self.assertEqual(items[0]["lifecycleStatus"], "chain_match_found")
 
     def test_accepted_candidates_endpoint_file_missing(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

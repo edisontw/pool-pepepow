@@ -17,7 +17,6 @@ from typing import Any
 LIFECYCLE_STATUSES = {
     "submitted",
     "chain_match_found",
-    "observed_confirmations",
     "pending_followup",
     "chain_match_not_found",
     "unknown",
@@ -137,9 +136,6 @@ def main() -> int:
         print(f"Error reading outcome log: {exc}", file=sys.stderr)
         return 1
 
-    # Load pool snapshot blocks
-    snapshot_blocks = load_snapshot_blocks(args.pool_snapshot, output_path)
-
     accepted_list = []
     for block_hash, row in candidates_by_hash.items():
         # Check acceptance criteria:
@@ -166,27 +162,15 @@ def main() -> int:
         lifecycle = map_lifecycle_status(row)
         matched_block_hash = row.get("followupObservedBlockHash")
 
-        confirmations = None
-        if lifecycle == "chain_match_found" and matched_block_hash:
-            match_str = str(matched_block_hash).lower()
-            snapshot_block = next((b for b in snapshot_blocks if str(b.get("hash")).lower() == match_str), None)
-            if snapshot_block:
-                conf = snapshot_block.get("confirmations")
-                if conf is not None and isinstance(conf, (int, float)) and conf > 0:
-                    lifecycle = "observed_confirmations"
-                    confirmations = int(conf)
-
         record = {
             "candidate_hash": block_hash,
             "job_id": row.get("jobId"),
             "submit_timestamp": row.get("submitblockSubmittedAt") or row.get("candidateTimestamp") or row.get("timestamp"),
             "daemon_result": daemon_result,
-            "submitblock_daemon_accepted_likely": daemon_accepted,
             "followup_status": followup_status,
             "matched_height": row.get("followupObservedHeight"),
             "matched_block_hash": matched_block_hash,
             "lifecycle_status": lifecycle,
-            "confirmations": confirmations
         }
         accepted_list.append(record)
 

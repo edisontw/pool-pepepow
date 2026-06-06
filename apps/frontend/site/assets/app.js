@@ -225,18 +225,9 @@
         { key: "submitTimestamp", label: "Submitted", render: formatDate },
         { key: "candidateHash", label: "Candidate Hash" },
         {
-          key: "submitblockDaemonAcceptedLikely",
-          label: "Daemon Accepted",
-          render: (val) => (val ? "Yes" : "No")
-        },
-        {
           key: "lifecycleStatus",
           label: "Lifecycle Status",
-          render: (val, item) => {
-            if (val === "observed_confirmations") {
-              const confs = item.confirmations ?? 0;
-              return `Observed confirmations (${confs})`;
-            }
+          render: (val) => {
             if (!val) return "-";
             return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
           }

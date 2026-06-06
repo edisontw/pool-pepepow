@@ -245,12 +245,10 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "jobId": c.get("job_id"),
                 "submitTimestamp": c.get("submit_timestamp"),
                 "submitblockDaemonResult": c.get("daemon_result"),
-                "submitblockDaemonAcceptedLikely": c.get("submitblock_daemon_accepted_likely", True),
                 "followupStatus": c.get("followup_status"),
                 "matchedHeight": c.get("matched_height"),
                 "matchedBlockHash": c.get("matched_block_hash"),
                 "lifecycleStatus": c.get("lifecycle_status"),
-                "confirmations": c.get("confirmations"),
             })
         return jsonify({"items": items})
 
