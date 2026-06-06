@@ -415,6 +415,8 @@ class ApiEndpointTests(unittest.TestCase):
                         "matched_height": 4573284,
                         "matched_block_hash": "hash-abc",
                         "lifecycle_status": "chain_match_found",
+                        "confirmations": 5,
+                        "maturity_label": "immature",
                     }
                 ]
             }
@@ -438,6 +440,8 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(items[0]["matchedHeight"], 4573284)
             self.assertEqual(items[0]["matchedBlockHash"], "hash-abc")
             self.assertEqual(items[0]["lifecycleStatus"], "chain_match_found")
+            self.assertEqual(items[0]["confirmations"], 5)
+            self.assertEqual(items[0]["maturityLabel"], "immature")
 
     def test_accepted_candidates_endpoint_file_missing(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

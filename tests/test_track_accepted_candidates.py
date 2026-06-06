@@ -15,43 +15,55 @@ import track_accepted_candidates
 
 class TrackAcceptedCandidatesTests(unittest.TestCase):
     def test_map_lifecycle_status(self):
-        # Case 1: Match found
+        # Case 1: Match found, no confirmations in snapshot
         row_match = {
             "followupStatus": "match-found",
             "candidateOutcomeStatus": "chain-match-found",
+            "candidateBlockHash": "hash3",
         }
-        self.assertEqual(track_accepted_candidates.map_lifecycle_status(row_match), "chain_match_found")
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row_match, [], 0)
+        self.assertEqual(status, "chain_match_found")
+        self.assertIsNone(conf)
+        self.assertEqual(maturity, "immature")
 
-        # Case 2: No match found
+        # Case 2: No match found (orphan)
         row_no_match = {
             "followupStatus": "no-match-found",
             "candidateOutcomeStatus": "chain-match-not-found",
         }
-        self.assertEqual(track_accepted_candidates.map_lifecycle_status(row_no_match), "chain_match_not_found")
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row_no_match, [], 0)
+        self.assertEqual(status, "orphan")
 
-        # Case 3: Submitted but not checked (recent)
-        row_recent = {
-            "followupStatus": "not-checked",
-            "submitblockSent": True,
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        # Case 3: Match found, but immature confirmations (e.g. 5 confirms)
+        row_immature = {
+            "followupStatus": "match-found",
+            "candidateBlockHash": "hash-imm",
         }
-        self.assertEqual(track_accepted_candidates.map_lifecycle_status(row_recent), "submitted")
+        snapshot_blocks = [{"hash": "hash-imm", "confirmations": 5}]
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row_immature, snapshot_blocks, 0)
+        self.assertEqual(status, "immature")
+        self.assertEqual(conf, 5)
+        self.assertEqual(maturity, "immature")
 
-        # Case 4: Submitted but not checked (old -> pending followup)
-        row_old = {
-            "followupStatus": "not-checked",
-            "submitblockSent": True,
-            "timestamp": "2026-06-05T12:00:00Z",
+        # Case 4: Match found, confirmed (e.g. 100 confirms)
+        row_confirmed = {
+            "followupStatus": "match-found",
+            "candidateBlockHash": "hash-conf",
         }
-        self.assertEqual(track_accepted_candidates.map_lifecycle_status(row_old), "pending_followup")
+        snapshot_blocks = [{"hash": "hash-conf", "confirmations": 105}]
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row_confirmed, snapshot_blocks, 0)
+        self.assertEqual(status, "confirmed")
+        self.assertEqual(conf, 105)
+        self.assertEqual(maturity, "mature")
 
-        # Case 5: Unknown/disabled status
+        # Case 5: Disabled submit - candidate_recorded
         row_disabled = {
             "followupStatus": "not-checked",
             "submitblockSent": False,
             "submitblockRealSubmitStatus": "submit-disabled-flag-off",
         }
-        self.assertEqual(track_accepted_candidates.map_lifecycle_status(row_disabled), "unknown")
+        status, conf, maturity = track_accepted_candidates.map_lifecycle_status(row_disabled, [], 0)
+        self.assertEqual(status, "candidate_recorded")
 
     def test_track_candidates_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -59,7 +71,7 @@ class TrackAcceptedCandidatesTests(unittest.TestCase):
             out_path = Path(tmpdir) / "accepted-candidates.json"
 
             events = [
-                # Submitted but disabled - should NOT be included
+                # Submitted but disabled - should be included as candidate_recorded
                 {
                     "candidateBlockHash": "hash1",
                     "followupStatus": "not-checked",
@@ -67,7 +79,7 @@ class TrackAcceptedCandidatesTests(unittest.TestCase):
                     "submitblockRealSubmitStatus": "submit-disabled-flag-off",
                     "timestamp": "2026-06-05T12:00:00Z",
                 },
-                # Submitted successfully, not checked (old) - should be included as pending_followup
+                # Submitted successfully, not checked - should be included as submit_accepted
                 {
                     "candidateBlockHash": "hash2",
                     "jobId": "job2",
@@ -111,15 +123,19 @@ class TrackAcceptedCandidatesTests(unittest.TestCase):
 
             self.assertIn("updated_at", data)
             accepted = data["accepted_candidates"]
-            self.assertEqual(len(accepted), 2)  # hash2 and hash3
+            self.assertEqual(len(accepted), 3)  # hash1, hash2 and hash3
 
-            # Check hash2 (pending followup)
-            self.assertEqual(accepted[0]["candidate_hash"], "hash2")
-            self.assertEqual(accepted[0]["lifecycle_status"], "pending_followup")
-            self.assertEqual(accepted[0]["job_id"], "job2")
+            # Check hash1 (candidate_recorded)
+            self.assertEqual(accepted[0]["candidate_hash"], "hash1")
+            self.assertEqual(accepted[0]["lifecycle_status"], "candidate_recorded")
 
-            # Check hash3 (chain match found)
-            self.assertEqual(accepted[1]["candidate_hash"], "hash3")
-            self.assertEqual(accepted[1]["lifecycle_status"], "chain_match_found")
-            self.assertEqual(accepted[1]["matched_height"], 12345)
+            # Check hash2 (submit_accepted)
+            self.assertEqual(accepted[1]["candidate_hash"], "hash2")
+            self.assertEqual(accepted[1]["lifecycle_status"], "submit_accepted")
+            self.assertEqual(accepted[1]["job_id"], "job2")
+
+            # Check hash3 (chain_match_found because confirmations are not in empty snapshot blocks)
+            self.assertEqual(accepted[2]["candidate_hash"], "hash3")
+            self.assertEqual(accepted[2]["lifecycle_status"], "chain_match_found")
+            self.assertEqual(accepted[2]["matched_height"], 12345)
 

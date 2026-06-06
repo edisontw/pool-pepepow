@@ -15,49 +15,88 @@ from typing import Any
 
 # Allowed lifecycle statuses
 LIFECYCLE_STATUSES = {
-    "submitted",
+    "candidate_recorded",
+    "submit_accepted",
     "chain_match_found",
-    "pending_followup",
-    "chain_match_not_found",
+    "immature",
+    "confirmed",
+    "orphan",
     "unknown",
 }
 
-def map_lifecycle_status(row: dict[str, Any]) -> str:
+def map_lifecycle_status(row: dict[str, Any], snapshot_blocks: list[dict[str, Any]], current_height: int) -> tuple[str, int | None, str | None]:
     followup_status = row.get("followupStatus")
     outcome_status = row.get("candidateOutcomeStatus")
     sent = row.get("submitblockSent")
     daemon_accepted = row.get("submitblockDaemonAcceptedLikely")
     daemon_result = row.get("submitblockDaemonResult")
+    candidate_hash = row.get("candidateBlockHash")
+    matched_block_hash = row.get("followupObservedBlockHash")
+    matched_height = row.get("followupObservedHeight")
 
-    if followup_status == "match-found" or outcome_status == "chain-match-found":
-        return "chain_match_found"
-    if followup_status == "no-match-found" or outcome_status == "chain-match-not-found":
-        return "chain_match_not_found"
+    # Determine confirmations
+    confirmations = None
+    for sb in snapshot_blocks:
+        sb_hash = sb.get("hash")
+        if sb_hash and (sb_hash == candidate_hash or (matched_block_hash and sb_hash == matched_block_hash)):
+            confirmations = sb.get("confirmations")
+            break
 
-    # If it was sent/accepted but followup not checked yet
-    is_accepted_or_sent = (
-        sent
-        or daemon_accepted is True
-        or (daemon_result is None and sent)
-        or daemon_result == "Success"
+    if confirmations is None and matched_height is not None and current_height > 0:
+        try:
+            m_h = int(matched_height)
+            if current_height >= m_h:
+                confirmations = current_height - m_h + 1
+        except (ValueError, TypeError):
+            pass
+
+    # Check for chain match (chain_match_found, immature, confirmed)
+    is_match = (
+        followup_status == "match-found"
+        or outcome_status == "chain-match-found"
+        or (matched_block_hash and matched_block_hash == candidate_hash)
     )
-    if is_accepted_or_sent:
-        # Check elapsed time
-        submitted_at_str = row.get("submitblockSubmittedAt") or row.get("timestamp")
-        if submitted_at_str:
+
+    if is_match:
+        maturity_label = None
+        if confirmations is not None:
             try:
-                dt = datetime.fromisoformat(submitted_at_str.replace("Z", "+00:00"))
-                now = datetime.now(timezone.utc)
-                elapsed = (now - dt).total_seconds()
-                if elapsed < 30:
-                    return "submitted"
-            except Exception:
-                pass
-        return "pending_followup"
+                conf_int = int(confirmations)
+                if conf_int >= 100:
+                    status = "confirmed"
+                    maturity_label = "mature"
+                else:
+                    status = "immature"
+                    maturity_label = "immature"
+            except (ValueError, TypeError):
+                status = "chain_match_found"
+                maturity_label = "immature"
+        else:
+            status = "chain_match_found"
+            maturity_label = "immature"
+        return status, confirmations, maturity_label
 
-    return "unknown"
+    # Check for orphan
+    is_orphan = (
+        followup_status == "no-match-found"
+        or outcome_status == "chain-match-not-found"
+        or (matched_height is not None and matched_block_hash and matched_block_hash != candidate_hash)
+    )
+    if is_orphan:
+        return "orphan", None, None
 
-def load_snapshot_blocks(snapshot_path_arg: str | None, output_path: Path) -> list[dict[str, Any]]:
+    # Check for submit_accepted
+    is_accepted = (
+        daemon_result == "Success"
+        or daemon_accepted is True
+    )
+    if is_accepted:
+        return "submit_accepted", None, None
+
+    # Check for candidate_recorded
+    return "candidate_recorded", None, None
+
+def load_snapshot_data(snapshot_path_arg: str | None, output_path: Path) -> dict[str, Any] | None:
     candidates = []
     if snapshot_path_arg:
         candidates.append(Path(snapshot_path_arg))
@@ -80,12 +119,11 @@ def load_snapshot_blocks(snapshot_path_arg: str | None, output_path: Path) -> li
             try:
                 with p.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                blocks = data.get("blocks")
-                if isinstance(blocks, list):
-                    return blocks
+                if isinstance(data, dict):
+                    return data
             except Exception:
                 pass
-    return []
+    return None
 
 
 def main() -> int:
@@ -113,6 +151,19 @@ def main() -> int:
             pass
         return 0
 
+    snapshot_data = load_snapshot_data(args.pool_snapshot, output_path)
+    snapshot_blocks = []
+    current_height = 0
+    if snapshot_data:
+        snapshot_blocks = snapshot_data.get("blocks", [])
+        if not isinstance(snapshot_blocks, list):
+            snapshot_blocks = []
+        current_height = snapshot_data.get("network", {}).get("height", 0)
+        try:
+            current_height = int(current_height)
+        except (ValueError, TypeError):
+            current_height = 0
+
     # Load JSON lines
     candidates_by_hash: dict[str, dict[str, Any]] = {}
     try:
@@ -138,29 +189,14 @@ def main() -> int:
 
     accepted_list = []
     for block_hash, row in candidates_by_hash.items():
-        # Check acceptance criteria:
-        # - reached submitblockDaemonResult=Success
-        # - or submitblockDaemonAcceptedLikely=True
-        # - or follow-up chain-match-found
         daemon_result = row.get("submitblockDaemonResult")
-        daemon_accepted = row.get("submitblockDaemonAcceptedLikely")
         followup_status = row.get("followupStatus")
-        outcome_status = row.get("candidateOutcomeStatus")
-        sent = row.get("submitblockSent")
-
-        is_success = (
-            daemon_result == "Success"
-            or (daemon_result is None and sent)
-            or daemon_accepted is True
-            or followup_status == "match-found"
-            or outcome_status == "chain-match-found"
-        )
-
-        if not is_success:
-            continue
-
-        lifecycle = map_lifecycle_status(row)
+        matched_height = row.get("followupObservedHeight")
         matched_block_hash = row.get("followupObservedBlockHash")
+
+        lifecycle_status, confirmations, maturity_label = map_lifecycle_status(
+            row, snapshot_blocks, current_height
+        )
 
         record = {
             "candidate_hash": block_hash,
@@ -168,9 +204,11 @@ def main() -> int:
             "submit_timestamp": row.get("submitblockSubmittedAt") or row.get("candidateTimestamp") or row.get("timestamp"),
             "daemon_result": daemon_result,
             "followup_status": followup_status,
-            "matched_height": row.get("followupObservedHeight"),
+            "matched_height": matched_height,
             "matched_block_hash": matched_block_hash,
-            "lifecycle_status": lifecycle,
+            "lifecycle_status": lifecycle_status,
+            "confirmations": confirmations,
+            "maturity_label": maturity_label,
         }
         accepted_list.append(record)
 

@@ -236,6 +236,19 @@
           key: "matchedHeight",
           label: "Matched Height",
           render: (val) => (val ? formatNumber(val) : "-")
+        },
+        {
+          key: "confirmations",
+          label: "Confirmations",
+          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
+        },
+        {
+          key: "maturityLabel",
+          label: "Maturity",
+          render: (val) => {
+            if (!val) return "-";
+            return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          }
         }
       ], "No accepted block candidates found yet (real block submission is default-off).")
     );
@@ -288,14 +301,6 @@
             {
               label: "Accepted Shares",
               value: formatNumber(summary.acceptedShares)
-            },
-            {
-              label: "Pending Balance",
-              value: formatNumber(summary.pendingBalance)
-            },
-            {
-              label: "Total Paid",
-              value: formatNumber(summary.totalPaid)
             },
             {
               label: "Last Share",
