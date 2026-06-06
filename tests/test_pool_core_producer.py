@@ -206,3 +206,110 @@ class ProducerTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
             self.assertEqual(payload, original_payload)
+
+    def test_producer_block_rewards_handling(self):
+        from unittest.mock import MagicMock
+        from producer import SnapshotProducer
+        from config import PoolCoreConfig
+
+        # Create a mock config
+        config = PoolCoreConfig(
+            coin_name="PEPEPOW",
+            algorithm="hoohashv110-pepew",
+            fee_percent=1.0,
+            min_payout=10.0,
+            stratum_host="127.0.0.1",
+            stratum_port=3333,
+            stratum_tls=False,
+            stratum_bind_host="0.0.0.0",
+            stratum_bind_port=3333,
+            rpc_url="http://127.0.0.1:1",
+            rpc_user="user",
+            rpc_password="pwd",
+            rpc_timeout_seconds=2,
+            snapshot_output_path=Path("/tmp") / "snap.json",
+            activity_snapshot_output_path=Path("/tmp") / "act.json",
+            snapshot_interval_seconds=60,
+            activity_snapshot_interval_seconds=1.0,
+            rpc_cache_ttl_seconds=5,
+            recent_blocks_limit=2,
+            stale_after_seconds=180,
+            producer_name="test-producer",
+            activity_log_path=Path("/tmp") / "activity.jsonl",
+            activity_window_seconds=900,
+            activity_mode="testing-local-ingest",
+            stratum_queue_maxsize=100,
+            hashrate_assumed_share_difficulty=0.001,
+            estimated_hashrate_assumed_share_difficulty=0.001,
+            synthetic_job_interval_seconds=30.0,
+            template_mode="synthetic",
+            template_fetch_interval_seconds=15.0,
+            template_job_ttl_seconds=180,
+            template_job_cache_size=4,
+            enable_real_submitblock=False,
+            real_submitblock_max_sends=0,
+            activity_log_rotate_bytes=1024,
+            activity_log_retention_files=1,
+            low_diff_share_full_log_every_n=1,
+            notify_debug_capture_limit=0,
+            stratum_notify_clean_jobs_legacy=False,
+            stratum_wire_difficulty_scale=65536.0,
+            stratum_vardiff_enabled=False,
+            stratum_vardiff_initial_difficulty=0.1,
+            stratum_vardiff_min_difficulty=0.0001,
+            stratum_vardiff_max_difficulty=10.0,
+            stratum_vardiff_target_share_interval_seconds=15.0,
+            stratum_vardiff_retarget_interval_seconds=60.0,
+            stratum_vardiff_min_shares=4,
+            stratum_vardiff_fast_share_interval_seconds=8.0,
+            stratum_vardiff_slow_share_interval_seconds=25.0,
+        )
+
+        rpc_client = MagicMock()
+        rpc_client.get_blockchain_info.return_value = {
+            "bestblockhash": "best_hash",
+            "blocks": 100,
+            "headers": 100,
+            "verificationprogress": 0.9999
+        }
+        rpc_client.get_block_header.return_value = {
+            "height": 100,
+            "hash": "best_hash",
+            "time": 123456789,
+            "confirmations": 1
+        }
+        rpc_client.get_recent_block_headers.return_value = [
+            {"height": 100, "hash": "best_hash", "time": 123456789, "confirmations": 1},
+            {"height": 99, "hash": "prev_hash", "time": 123456700, "confirmations": 2}
+        ]
+        
+        # Scenario 1: Both blocks have valid reward
+        def get_block_mock(block_hash, verbosity=2):
+            if block_hash == "best_hash":
+                return {"tx": [{"vout": [{"value": 50000.0}]}]}
+            else:
+                return {"tx": [{"vout": [{"value": 45000.0}]}]}
+
+        rpc_client.get_block = MagicMock(side_effect=get_block_mock)
+        rpc_client.get_mining_info.return_value = {"networkhashps": 1000}
+        rpc_client.get_network_info.return_value = {"warnings": ""}
+
+        producer = SnapshotProducer(config, rpc_client)
+        snap = producer.run_once()
+        
+        self.assertEqual(snap["blocks"][0]["reward"], 50000.0)
+        self.assertEqual(snap["blocks"][1]["reward"], 45000.0)
+        self.assertEqual(snap["network"]["reward"], 50000.0)
+
+        # Scenario 2: One block fails to return reward / has no reward
+        def get_block_mock_null(block_hash, verbosity=2):
+            if block_hash == "best_hash":
+                return {"tx": []} # lacks reward
+            else:
+                raise RuntimeError("RPC error") # failed request
+
+        rpc_client.get_block = MagicMock(side_effect=get_block_mock_null)
+        snap = producer.run_once()
+        self.assertIsNone(snap["blocks"][0]["reward"])
+        self.assertIsNone(snap["blocks"][1]["reward"])
+        self.assertIsNone(snap["network"]["reward"])

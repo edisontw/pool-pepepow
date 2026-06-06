@@ -511,6 +511,33 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["rewardSource"], "pool-snapshot")
         self.assertIsNone(item["reason"])
 
+        # Test null reward rejection
+        pool_snapshot_data_null = {
+            "blocks": [
+                {
+                    "hash": "cand_resolved_via_snapshot",
+                    "height": 300,
+                    "reward": None,
+                    "status": "observed-network",
+                    "confirmations": 101
+                }
+            ]
+        }
+        with pool_snapshot_path.open("w", encoding="utf-8") as f:
+            json.dump(pool_snapshot_data_null, f)
+
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            res_data_null = json.load(f)
+        item_null = res_data_null.get("items", [])[0]
+        self.assertEqual(item_null["status"], "blocked")
+        self.assertEqual(item_null["reason"], "blocked_missing_reward")
+        self.assertIsNone(item_null["grossReward"])
+
         # Clean up env
         os.environ.pop("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", None)
 

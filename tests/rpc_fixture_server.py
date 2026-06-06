@@ -91,6 +91,24 @@ class RpcFixtureServer:
                     return load_fixture(
                         fixture_root, f"getblockheader-{params[0]}.json"
                     )
+                if method == "getblock":
+                    block_hash = params[0]
+                    if block_hash.startswith("fail_"):
+                        return {
+                            "hash": block_hash,
+                            "tx": []
+                        }
+                    return {
+                        "hash": block_hash,
+                        "tx": [
+                            {
+                                "txid": "coinbase_txid_for_" + block_hash[:8],
+                                "vout": [
+                                    {"value": 50000.0}
+                                ]
+                            }
+                        ]
+                    }
                 return load_fixture(fixture_root, f"{method}.json")
 
             @staticmethod

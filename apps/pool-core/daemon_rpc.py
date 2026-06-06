@@ -91,6 +91,35 @@ class DaemonRpcClient:
             )
         return result
 
+    def get_block(self, block_hash: str, verbosity: int = 2) -> dict[str, Any]:
+        try:
+            result = self.call("getblock", [block_hash, verbosity])
+        except DaemonRpcResponseError as exc:
+            if "boolean" in str(exc).lower():
+                result = self.call("getblock", [block_hash, True])
+            else:
+                raise
+
+        if isinstance(result, dict):
+            tx_list = result.get("tx")
+            if isinstance(tx_list, list) and tx_list:
+                coinbase_tx = tx_list[0]
+                if isinstance(coinbase_tx, str):
+                    try:
+                        coinbase_tx_detail = self.get_raw_transaction(coinbase_tx, 1)
+                        result["tx"] = [coinbase_tx_detail] + tx_list[1:]
+                    except Exception:
+                        pass
+        return result
+
+    def get_raw_transaction(self, txid: str, verbosity: int = 1) -> dict[str, Any]:
+        result = self.call("getrawtransaction", [txid, verbosity])
+        if not isinstance(result, dict):
+            raise DaemonRpcResponseError(
+                f"getrawtransaction returned an invalid payload for {txid}"
+            )
+        return result
+
     def get_recent_block_headers(self, tip_height: int, limit: int) -> list[dict[str, Any]]:
         start_height = max(0, tip_height - limit + 1)
         headers: list[dict[str, Any]] = []
@@ -442,3 +471,28 @@ def append_candidate_followup_event(
             recorded_at=recorded_at,
         )
     return payload
+
+
+def extract_block_reward(block_data: dict[str, Any]) -> float | None:
+    try:
+        tx_list = block_data.get("tx")
+        if not isinstance(tx_list, list) or not tx_list:
+            return None
+        coinbase_tx = tx_list[0]
+        if not isinstance(coinbase_tx, dict):
+            return None
+        vout_list = coinbase_tx.get("vout")
+        if not isinstance(vout_list, list):
+            return None
+        
+        total_reward = 0.0
+        for out in vout_list:
+            if not isinstance(out, dict):
+                continue
+            val = out.get("value")
+            if val is not None:
+                total_reward += float(val)
+        return total_reward
+    except (ValueError, TypeError, IndexError, AttributeError):
+        return None
+

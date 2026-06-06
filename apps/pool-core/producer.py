@@ -13,7 +13,7 @@ from pathlib import Path
 from accounting import build_activity_snapshot
 from activity_ingest import ShareEventLoadError, load_share_events
 from config import PoolCoreConfig, load_config
-from daemon_rpc import DaemonRpcClient, DaemonRpcError
+from daemon_rpc import DaemonRpcClient, DaemonRpcError, extract_block_reward
 from runtime_io import write_json_atomic
 from snapshot_builder import build_snapshot
 
@@ -53,6 +53,28 @@ class SnapshotProducer:
             int(best_block_header.get("height", blockchain_info.get("blocks", 0))),
             self._config.recent_blocks_limit,
         )
+
+        for header in recent_headers:
+            block_hash = header.get("hash")
+            if block_hash:
+                try:
+                    block_data = self._rpc_client.get_block(block_hash, verbosity=2)
+                    reward = extract_block_reward(block_data)
+                    header["reward"] = reward
+                except Exception as exc:
+                    LOGGER.warning("Failed to fetch block reward for %s: %s", block_hash, exc)
+                    header["reward"] = None
+            else:
+                header["reward"] = None
+
+        if recent_headers and recent_headers[0].get("hash") == best_block_hash:
+            best_block_header["reward"] = recent_headers[0].get("reward")
+        else:
+            try:
+                block_data = self._rpc_client.get_block(best_block_hash, verbosity=2)
+                best_block_header["reward"] = extract_block_reward(block_data)
+            except Exception:
+                best_block_header["reward"] = None
 
         degraded = False
         last_errors: list[str] = []

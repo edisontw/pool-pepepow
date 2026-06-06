@@ -71,7 +71,7 @@ def build_snapshot(
             "hash": str(header.get("hash", "")),
             "status": "observed-network",
             "foundAt": isoformat_from_timestamp(header.get("time")),
-            "reward": None,
+            "reward": header.get("reward"),
             "confirmations": int(header.get("confirmations", 0)),
         }
         for header in recent_headers
@@ -161,7 +161,7 @@ def build_snapshot(
             "difficulty": float(blockchain_info.get("difficulty", 0.0)),
             "networkHashrate": network_hashrate,
             "lastBlockAt": isoformat_from_timestamp(best_block_header.get("time")),
-            "reward": None,
+            "reward": best_block_header.get("reward"),
             "synced": synced,
         },
         "blocks": blocks,
