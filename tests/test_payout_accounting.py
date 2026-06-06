@@ -541,5 +541,151 @@ class PayoutAccountingTests(unittest.TestCase):
         # Clean up env
         os.environ.pop("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", None)
 
+    def test_payout_candidates_daemon_rpc_fallback_and_orphan(self):
+        # Mock payout_helper.query_rpc
+        original_query_rpc = payout_helper.query_rpc
+        
+        rpc_calls = []
+        def mock_query_rpc(method, params):
+            rpc_calls.append((method, params))
+            # Mock getblock
+            if method == "getblock":
+                block_hash = params[0]
+                if block_hash == "hash_resolved_via_daemon_rpc":
+                    return {
+                        "confirmations": 12,
+                        "tx": ["coinbase_tx_hash_123"]
+                    }
+                elif block_hash == "hash_orphan_via_daemon_rpc":
+                    return {
+                        "confirmations": -1,
+                        "tx": ["coinbase_tx_hash_456"]
+                    }
+            # Mock getrawtransaction
+            elif method == "getrawtransaction":
+                txid = params[0]
+                if txid == "coinbase_tx_hash_123":
+                    return {
+                        "vout": [
+                            {"value": 3500.0},
+                            {"value": 3500.0}
+                        ]
+                    }
+                elif txid == "coinbase_tx_hash_456":
+                    return {
+                        "vout": [
+                            {"value": 7000.0}
+                        ]
+                    }
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash_resolved_via_daemon_rpc",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 500,
+                        "submit_timestamp": "2026-06-06T12:00:00Z"
+                        # No reward field -> triggers daemon RPC fallback
+                    },
+                    {
+                        "candidate_hash": "hash_orphan_via_daemon_rpc",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 501,
+                        "submit_timestamp": "2026-06-06T12:01:00Z"
+                        # Confirmed in accepted candidate, but orphan on-chain
+                    },
+                    {
+                        "candidate_hash": "hash_orphan_via_rounds_snapshot",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 502,
+                        "submit_timestamp": "2026-06-06T12:02:00Z",
+                        "reward": 7000.0
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+
+            rounds_data = {
+                "rounds": [
+                    {
+                        "candidate_hash": "hash_resolved_via_daemon_rpc",
+                        "total_share_score": 10.0,
+                        "total_share_count": 10,
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 100.0
+                            }
+                        }
+                    },
+                    {
+                        "candidate_hash": "hash_orphan_via_daemon_rpc",
+                        "total_share_score": 10.0,
+                        "total_share_count": 10,
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 100.0
+                            }
+                        }
+                    },
+                    {
+                        "candidate_hash": "hash_orphan_via_rounds_snapshot",
+                        "status": "orphan",  # Marked as orphan in rounds snapshot
+                        "total_share_score": 10.0,
+                        "total_share_count": 10,
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 100.0
+                            }
+                        }
+                    }
+                ]
+            }
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump(rounds_data, f)
+
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            self.assertEqual(rc, 0)
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            items = data.get("items", [])
+            self.assertEqual(len(items), 3)
+            item_map = {item["candidate_hash"]: item for item in items}
+
+            # 1. Block resolved via daemon RPC
+            c1 = item_map["hash_resolved_via_daemon_rpc"]
+            self.assertEqual(c1["status"], "ready_for_manual_review")
+            self.assertEqual(c1["grossReward"], 7000.0)
+            self.assertEqual(c1["rewardSource"], "daemon-rpc")
+            self.assertIsNone(c1["reason"])
+
+            # 2. Block orphaned via daemon RPC confirmations
+            c2 = item_map["hash_orphan_via_daemon_rpc"]
+            self.assertEqual(c2["status"], "blocked")
+            self.assertEqual(c2["reason"], "orphan_block")
+
+            # 3. Block orphaned via rounds snapshot status
+            c3 = item_map["hash_orphan_via_rounds_snapshot"]
+            self.assertEqual(c3["status"], "blocked")
+            self.assertEqual(c3["reason"], "orphan_block")
+
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+
 if __name__ == "__main__":
     unittest.main()
+

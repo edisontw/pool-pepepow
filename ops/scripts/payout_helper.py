@@ -11,6 +11,9 @@ import os
 import re
 import sys
 import tempfile
+import base64
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +37,102 @@ def load_pool_snapshot() -> dict[str, Any]:
             except Exception:
                 pass
     return {}
+
+def load_env_vars() -> dict[str, str]:
+    paths = [
+        Path(os.getenv("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR", "")) / "launch.env",
+        Path(".runtime/live-stratum/launch.env"),
+        Path(".runtime/systemd-smoke/core.env"),
+    ]
+    env = {}
+    for p in paths:
+        if p and p.exists():
+            try:
+                with p.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            env[k.strip()] = v.strip()
+                break
+            except Exception:
+                pass
+    return env
+
+def query_rpc(method: str, params: list[Any]) -> Any:
+    env = load_env_vars()
+    rpc_url = env.get("PEPEPOWD_RPC_URL")
+    if not rpc_url:
+        rpc_host = env.get("PEPEPOWD_RPC_HOST", "127.0.0.1")
+        rpc_port = env.get("PEPEPOWD_RPC_PORT", "8834")
+        rpc_url = f"http://{rpc_host}:{rpc_port}"
+    rpc_user = env.get("PEPEPOWD_RPC_USER", "")
+    rpc_password = env.get("PEPEPOWD_RPC_PASSWORD", "")
+    
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": "payout_helper",
+        "method": method,
+        "params": params,
+    }).encode("utf-8")
+    
+    auth = base64.b64encode(f"{rpc_user}:{rpc_password}".encode("utf-8")).decode("ascii")
+    req = urllib.request.Request(
+        rpc_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {auth}"
+        },
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            if isinstance(res_data, dict):
+                if res_data.get("error"):
+                    return None
+                return res_data.get("result")
+    except Exception:
+        pass
+    return None
+
+def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
+    # Try verbosity=2
+    block_data = query_rpc("getblock", [block_hash, 2])
+    if not isinstance(block_data, dict):
+        # Fallback to verbosity=True
+        block_data = query_rpc("getblock", [block_hash, True])
+        
+    if isinstance(block_data, dict):
+        confirmations = block_data.get("confirmations")
+        if confirmations is not None:
+            try:
+                confirmations = int(confirmations)
+            except (ValueError, TypeError):
+                confirmations = None
+        
+        tx_list = block_data.get("tx")
+        total_reward = None
+        if isinstance(tx_list, list) and tx_list:
+            coinbase_tx = tx_list[0]
+            if isinstance(coinbase_tx, str):
+                coinbase_tx = query_rpc("getrawtransaction", [coinbase_tx, 1])
+                
+            if isinstance(coinbase_tx, dict):
+                vout_list = coinbase_tx.get("vout")
+                if isinstance(vout_list, list):
+                    total_reward = 0.0
+                    for out in vout_list:
+                        if isinstance(out, dict):
+                            val = out.get("value")
+                            if val is not None:
+                                total_reward += float(val)
+        return confirmations, total_reward
+    return None, None
 
 def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path) -> int:
     candidates = []
@@ -86,6 +185,14 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             reward = snap_rewards.get(c_hash)
             reward_source = "pool-snapshot" if reward is not None else None
 
+        daemon_confirmations = None
+        if l_status == "confirmed":
+            d_conf, d_reward = fetch_block_info_from_daemon(c_hash)
+            daemon_confirmations = d_conf
+            if reward is None and d_reward is not None:
+                reward = d_reward
+                reward_source = "daemon-rpc" if reward is not None else None
+
         status = "blocked"
         reason = None
         gross_reward = None
@@ -96,10 +203,17 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         round_share_total = None
         payouts = []
 
-        if l_status != "confirmed":
+        is_orphan = (l_status == "orphan")
+        if (daemon_confirmations is not None and daemon_confirmations < 0) or (c_hash in rounds_map and rounds_map[c_hash].get("status") == "orphan"):
+            is_orphan = True
+
+        if is_orphan:
             status = "blocked"
-            if l_status in ("immature", "orphan"):
-                reason = f"{l_status}_block"
+            reason = "orphan_block"
+        elif l_status != "confirmed":
+            status = "blocked"
+            if l_status == "immature":
+                reason = "immature_block"
             else:
                 reason = f"unconfirmed_status_{l_status}"
         else:
@@ -135,6 +249,9 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 elif c_hash not in rounds_map:
                     status = "blocked"
                     reason = "missing_round_data"
+                elif rounds_map[c_hash].get("status") == "orphan":
+                    status = "blocked"
+                    reason = "orphan_block"
                 else:
                     r_data = rounds_map[c_hash]
                     shares = r_data.get("shares")
