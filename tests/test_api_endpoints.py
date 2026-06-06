@@ -683,16 +683,20 @@ class ApiEndpointTests(unittest.TestCase):
                             "walletA": {
                                 "share_count": 10,
                                 "share_score": 10.0,
+                                "share_percent": 66.666667,
                                 "workers": {
                                     "rig01": {
                                         "share_count": 10,
-                                        "share_score": 10.0
+                                        "share_score": 10.0,
+                                        "share_percent": 66.666667,
+                                        "wallet_share_percent": 100.0,
                                     }
                                 }
                             },
                             "walletB": {
                                 "share_count": 5,
-                                "share_score": 5.0
+                                "share_score": 5.0,
+                                "share_percent": 33.333333,
                             }
                         },
                         "total_share_count": 15,
@@ -735,10 +739,14 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(r["workerCount"], 1)
             self.assertEqual(r["shares"]["walletA"]["shareCount"], 10)
             self.assertEqual(r["shares"]["walletA"]["shareScore"], 10.0)
+            self.assertAlmostEqual(r["shares"]["walletA"]["sharePercent"], 66.666667, places=4)
             self.assertEqual(r["shares"]["walletA"]["workers"]["rig01"]["shareCount"], 10)
             self.assertEqual(r["shares"]["walletA"]["workers"]["rig01"]["shareScore"], 10.0)
+            self.assertAlmostEqual(r["shares"]["walletA"]["workers"]["rig01"]["sharePercent"], 66.666667, places=4)
+            self.assertAlmostEqual(r["shares"]["walletA"]["workers"]["rig01"]["walletSharePercent"], 100.0, places=4)
             self.assertEqual(r["shares"]["walletB"]["shareCount"], 5)
             self.assertEqual(r["shares"]["walletB"]["shareScore"], 5.0)
+            self.assertAlmostEqual(r["shares"]["walletB"]["sharePercent"], 33.333333, places=4)
 
     def test_rounds_endpoint_missing_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

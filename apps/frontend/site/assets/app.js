@@ -282,13 +282,32 @@
         },
         {
           key: "walletCount",
-          label: "Wallet Count",
+          label: "Wallets",
           render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
         },
         {
           key: "confirmations",
           label: "Confirmations",
           render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
+        },
+        {
+          key: "shares",
+          label: "Contribution %",
+          render: (sharesObj) => {
+            if (!sharesObj || typeof sharesObj !== "object") return "-";
+            const entries = Object.entries(sharesObj)
+              .filter(([, d]) => d && typeof d.sharePercent === "number")
+              .sort(([, a], [, b]) => b.sharePercent - a.sharePercent)
+              .slice(0, 3);
+            if (entries.length === 0) return "-";
+            return entries
+              .map(([wallet, d]) => {
+                const pct = d.sharePercent.toFixed(2);
+                const short = wallet.length > 12 ? wallet.slice(0, 6) + "\u2026" + wallet.slice(-4) : wallet;
+                return `${short}\u00a0${pct}%`;
+              })
+              .join(" / ");
+          }
         }
       ], "No rounds tracked in this snapshot.")
     );

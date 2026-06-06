@@ -281,6 +281,27 @@ def main() -> int:
                 total_round_shares += 1
                 total_round_score += diff
 
+        # Annotate share_percent and wallet_share_percent after all shares are tallied
+        for wallet_addr, wallet_data in attributed_shares.items():
+            w_score = wallet_data["share_score"]
+            wallet_data["share_percent"] = (
+                round(w_score / total_round_score * 100, 6)
+                if total_round_score > 0
+                else 0.0
+            )
+            for worker_name, worker_data in wallet_data["workers"].items():
+                wk_score = worker_data["share_score"]
+                worker_data["share_percent"] = (
+                    round(wk_score / total_round_score * 100, 6)
+                    if total_round_score > 0
+                    else 0.0
+                )
+                worker_data["wallet_share_percent"] = (
+                    round(wk_score / w_score * 100, 6)
+                    if w_score > 0
+                    else 0.0
+                )
+
         status = c.get("lifecycle_status")
         round_item = {
             "round_id": c.get("candidate_hash"),

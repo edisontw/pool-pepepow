@@ -152,8 +152,11 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertNotIn("balance", r0)
             self.assertEqual(r0["shares"]["walletA"]["share_count"], 1)
             self.assertEqual(r0["shares"]["walletA"]["share_score"], 0.5)
+            self.assertEqual(r0["shares"]["walletA"]["share_percent"], 100.0)
             self.assertEqual(r0["shares"]["walletA"]["workers"]["default"]["share_count"], 1)
             self.assertEqual(r0["shares"]["walletA"]["workers"]["default"]["share_score"], 0.5)
+            self.assertEqual(r0["shares"]["walletA"]["workers"]["default"]["share_percent"], 100.0)
+            self.assertEqual(r0["shares"]["walletA"]["workers"]["default"]["wallet_share_percent"], 100.0)
             self.assertEqual(r0["total_share_count"], 1)
             self.assertEqual(r0["total_share_score"], 0.5)
             self.assertEqual(r0["wallet_count"], 1)
@@ -168,6 +171,7 @@ class TrackRoundsTests(unittest.TestCase):
             # walletB had a 1.0 difficulty share, a rejected 10.0 share (ignored), and a 0.05 low-difficulty share (ignored)
             self.assertEqual(r1["shares"]["walletB"]["share_count"], 1)
             self.assertEqual(r1["shares"]["walletB"]["share_score"], 1.0)
+            self.assertEqual(r1["shares"]["walletB"]["share_percent"], 100.0)
             self.assertEqual(r1["total_share_count"], 1)
             self.assertEqual(r1["total_share_score"], 1.0)
             self.assertEqual(r1["wallet_count"], 1)
@@ -182,6 +186,7 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertNotIn("balance", r2)
             self.assertEqual(r2["shares"]["walletA"]["share_count"], 1)
             self.assertEqual(r2["shares"]["walletA"]["share_score"], 2.0)
+            self.assertEqual(r2["shares"]["walletA"]["share_percent"], 100.0)
             self.assertEqual(r2["total_share_count"], 1)
             self.assertEqual(r2["total_share_score"], 2.0)
 
@@ -197,6 +202,7 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertNotIn("reward-ready", r3)
             self.assertEqual(r3["shares"]["walletC"]["share_count"], 1)
             self.assertEqual(r3["shares"]["walletC"]["share_score"], 3.0)
+            self.assertEqual(r3["shares"]["walletC"]["share_percent"], 100.0)
             self.assertEqual(r3["total_share_count"], 1)
             self.assertEqual(r3["total_share_score"], 3.0)
 
@@ -308,6 +314,7 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r1["candidate_hash"], "hash-r1")
             self.assertEqual(r1["shares"]["walletA"]["share_count"], 1)
             self.assertEqual(r1["shares"]["walletA"]["share_score"], 1.0)
+            self.assertEqual(r1["shares"]["walletA"]["share_percent"], 100.0)
             self.assertEqual(r1["total_share_count"], 1)
             self.assertEqual(r1["total_share_score"], 1.0)
             self.assertEqual(r1["wallet_count"], 1)
@@ -318,12 +325,20 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(dup1["candidate_hash"], "hash-dup1")
             self.assertEqual(dup1["shares"]["walletA"]["share_count"], 2)
             self.assertEqual(dup1["shares"]["walletA"]["share_score"], 1.0)
+            # walletA = 1.0 / 3.0 * 100 ≈ 33.333333%
+            self.assertAlmostEqual(dup1["shares"]["walletA"]["share_percent"], 100 / 3, places=4)
             self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker1"]["share_count"], 1)
             self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker1"]["share_score"], 0.5)
+            # worker1 = 0.5 / 3.0 * 100 ≈ 16.666667%
+            self.assertAlmostEqual(dup1["shares"]["walletA"]["workers"]["worker1"]["share_percent"], 50 / 3, places=4)
+            # worker1 wallet_share_percent = 0.5 / 1.0 * 100 = 50%
+            self.assertAlmostEqual(dup1["shares"]["walletA"]["workers"]["worker1"]["wallet_share_percent"], 50.0, places=4)
             self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker2"]["share_count"], 1)
             self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker2"]["share_score"], 0.5)
             self.assertEqual(dup1["shares"]["walletB"]["share_count"], 1)
             self.assertEqual(dup1["shares"]["walletB"]["share_score"], 2.0)
+            # walletB = 2.0 / 3.0 * 100 ≈ 66.666667%
+            self.assertAlmostEqual(dup1["shares"]["walletB"]["share_percent"], 200 / 3, places=4)
             self.assertEqual(dup1["total_share_count"], 3)
             self.assertEqual(dup1["total_share_score"], 3.0)
             self.assertEqual(dup1["wallet_count"], 2)
@@ -363,4 +378,211 @@ class TrackRoundsTests(unittest.TestCase):
             data1_stripped = {k: v for k, v in data1.items() if k != "updated_at"}
             data2_stripped = {k: v for k, v in data2.items() if k != "updated_at"}
             self.assertEqual(data1_stripped, data2_stripped)
+
+
+class TestRoundSharePercent(unittest.TestCase):
+    """Focused tests for share percent correctness."""
+
+    def _run_track(self, candidates_data, shares, act_data=None, min_diff=None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cand_path = Path(tmpdir) / "accepted-candidates.json"
+            share_log = Path(tmpdir) / "share-events.jsonl"
+            act_path = Path(tmpdir) / "activity-snapshot.json"
+            out_path = Path(tmpdir) / "rounds-snapshot.json"
+
+            with cand_path.open("w", encoding="utf-8") as f:
+                json.dump(candidates_data, f)
+            with share_log.open("w", encoding="utf-8") as f:
+                for s in shares:
+                    f.write(json.dumps(s) + "\n")
+            act_payload = act_data or {"meta": {"assumedShareDifficulty": 0.001}}
+            with act_path.open("w", encoding="utf-8") as f:
+                json.dump(act_payload, f)
+
+            argv = [
+                "track_rounds.py",
+                "--accepted-candidates", str(cand_path),
+                "--share-log", str(share_log),
+                "--activity-snapshot", str(act_path),
+                "--output", str(out_path),
+            ]
+            if min_diff is not None:
+                argv += ["--min-share-difficulty", str(min_diff)]
+
+            orig_argv = sys.argv
+            sys.argv = argv
+            try:
+                exit_code = track_rounds.main()
+            finally:
+                sys.argv = orig_argv
+
+            self.assertEqual(exit_code, 0)
+            return json.loads(out_path.read_text(encoding="utf-8"))
+
+    def test_single_wallet_is_100_percent(self):
+        """A round with one wallet should report 100% share_percent."""
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-solo",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 500,
+                    "submit_timestamp": "2026-06-05T13:00:00Z",
+                    "confirmations": 120,
+                }]
+            },
+            shares=[
+                {
+                    "wallet": "walletSolo",
+                    "timestamp": "2026-06-05T12:55:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 5.0},
+                },
+                {
+                    "wallet": "walletSolo",
+                    "timestamp": "2026-06-05T12:57:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 3.0},
+                },
+            ],
+        )
+        rounds = data["rounds"]
+        self.assertEqual(len(rounds), 1)
+        r = rounds[0]
+        self.assertEqual(r["total_share_score"], 8.0)
+        self.assertEqual(r["shares"]["walletSolo"]["share_percent"], 100.0)
+        for wk_data in r["shares"]["walletSolo"]["workers"].values():
+            self.assertEqual(wk_data["wallet_share_percent"], 100.0)
+
+    def test_multi_wallet_split_percent(self):
+        """Two wallets with known scores should split percentages correctly."""
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-split",
+                    "lifecycle_status": "immature",
+                    "matched_height": 600,
+                    "submit_timestamp": "2026-06-05T14:00:00Z",
+                    "confirmations": 10,
+                }]
+            },
+            shares=[
+                # walletA contributes 1.0 (25%)
+                {
+                    "wallet": "walletA",
+                    "timestamp": "2026-06-05T13:55:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                },
+                # walletB contributes 3.0 (75%)
+                {
+                    "wallet": "walletB",
+                    "timestamp": "2026-06-05T13:56:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 3.0},
+                },
+            ],
+        )
+        rounds = data["rounds"]
+        r = rounds[0]
+        self.assertEqual(r["total_share_score"], 4.0)
+        self.assertAlmostEqual(r["shares"]["walletA"]["share_percent"], 25.0, places=4)
+        self.assertAlmostEqual(r["shares"]["walletB"]["share_percent"], 75.0, places=4)
+
+    def test_multi_worker_under_one_wallet(self):
+        """Multiple workers under one wallet should split wallet_share_percent correctly."""
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-workers",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 700,
+                    "submit_timestamp": "2026-06-05T15:00:00Z",
+                    "confirmations": 200,
+                }]
+            },
+            shares=[
+                {
+                    "login": "walletX.rig1",
+                    "timestamp": "2026-06-05T14:55:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 6.0},
+                },
+                {
+                    "login": "walletX.rig2",
+                    "timestamp": "2026-06-05T14:56:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 2.0},
+                },
+            ],
+        )
+        rounds = data["rounds"]
+        r = rounds[0]
+        self.assertEqual(r["total_share_score"], 8.0)
+        # walletX is the sole wallet → 100%
+        self.assertEqual(r["shares"]["walletX"]["share_percent"], 100.0)
+        # rig1: 6/8 = 75% of round, 6/8 = 75% of wallet
+        self.assertAlmostEqual(r["shares"]["walletX"]["workers"]["rig1"]["share_percent"], 75.0, places=4)
+        self.assertAlmostEqual(r["shares"]["walletX"]["workers"]["rig1"]["wallet_share_percent"], 75.0, places=4)
+        # rig2: 2/8 = 25% of round, 2/8 = 25% of wallet
+        self.assertAlmostEqual(r["shares"]["walletX"]["workers"]["rig2"]["share_percent"], 25.0, places=4)
+        self.assertAlmostEqual(r["shares"]["walletX"]["workers"]["rig2"]["wallet_share_percent"], 25.0, places=4)
+
+    def test_zero_score_round_does_not_crash(self):
+        """A round with no matching shares should produce 0 percent fields (no division by zero)."""
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-empty",
+                    "lifecycle_status": "orphan",
+                    "matched_height": 800,
+                    "submit_timestamp": "2026-06-05T16:00:00Z",
+                    "confirmations": 0,
+                }]
+            },
+            shares=[],  # No shares at all
+        )
+        rounds = data["rounds"]
+        self.assertEqual(len(rounds), 1)
+        r = rounds[0]
+        self.assertEqual(r["total_share_score"], 0.0)
+        self.assertEqual(r["shares"], {})
+
+    def test_rejected_shares_excluded_from_percent(self):
+        """Rejected shares must not inflate percent calculations."""
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-reject",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 900,
+                    "submit_timestamp": "2026-06-05T17:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[
+                # Valid share
+                {
+                    "wallet": "walletGood",
+                    "timestamp": "2026-06-05T16:55:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 4.0},
+                },
+                # Rejected share — must be excluded
+                {
+                    "wallet": "walletBad",
+                    "timestamp": "2026-06-05T16:56:00Z",
+                    "accepted": False,
+                    "submit": {"difficulty": 100.0},
+                },
+            ],
+        )
+        rounds = data["rounds"]
+        r = rounds[0]
+        # Only walletGood should appear; rejected share must not affect total
+        self.assertEqual(r["total_share_score"], 4.0)
+        self.assertIn("walletGood", r["shares"])
+        self.assertNotIn("walletBad", r["shares"])
+        self.assertEqual(r["shares"]["walletGood"]["share_percent"], 100.0)
+
 

@@ -277,6 +277,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     wallet_mapped = {
                         "shareCount": data.get("share_count"),
                         "shareScore": data.get("share_score"),
+                        "sharePercent": data.get("share_percent"),
                     }
                     if "workers" in data and isinstance(data["workers"], dict):
                         workers_mapped = {}
@@ -285,6 +286,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
                                 workers_mapped[worker] = {
                                     "shareCount": w_data.get("share_count"),
                                     "shareScore": w_data.get("share_score"),
+                                    "sharePercent": w_data.get("share_percent"),
+                                    "walletSharePercent": w_data.get("wallet_share_percent"),
                                 }
                             else:
                                 workers_mapped[worker] = w_data
@@ -295,6 +298,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     mapped[wallet] = {
                         "shareCount": None,
                         "shareScore": data,
+                        "sharePercent": None,
                     }
             return mapped
 
