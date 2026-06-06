@@ -595,6 +595,106 @@ def record_payment(
 
     return generate_payments_snapshot(actions_log_path, snapshot_path)
 
+def generate_carry_snapshot(candidates_path: Path, output_path: Path) -> int:
+    items = []
+    malformed = False
+
+    if candidates_path.exists():
+        try:
+            with candidates_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                malformed = True
+            else:
+                cands = data.get("items")
+                if cands is None:
+                    cands = data.get("candidates")
+                if not isinstance(cands, list):
+                    malformed = True
+                else:
+                    seen = set()
+                    for c in cands:
+                        if not isinstance(c, dict):
+                            malformed = True
+                            break
+                        c_id = c.get("candidateId") or c.get("candidate_hash")
+                        height = c.get("height")
+                        block_hash = c.get("blockHash") or c.get("candidate_hash")
+                        
+                        # Validate candidate metadata
+                        if not c_id or height is None or not block_hash:
+                            malformed = True
+                            break
+                        try:
+                            height_val = int(height)
+                        except (ValueError, TypeError):
+                            malformed = True
+                            break
+                            
+                        payouts = c.get("payouts")
+                        if not isinstance(payouts, list):
+                            malformed = True
+                            break
+                        
+                        for p in payouts:
+                            if not isinstance(p, dict):
+                                malformed = True
+                                break
+                            wallet = p.get("wallet")
+                            amount = p.get("amount")
+                            status = p.get("status")
+                            if not wallet or amount is None or not status:
+                                malformed = True
+                                break
+                            try:
+                                amount_val = float(amount)
+                            except (ValueError, TypeError):
+                                malformed = True
+                                break
+                                
+                            if status in ("below_threshold", "below_threshold_carried"):
+                                pair = (wallet, c_id)
+                                if pair not in seen:
+                                    seen.add(pair)
+                                    items.append({
+                                        "wallet": wallet,
+                                        "amount": amount_val,
+                                        "sourceCandidateId": c_id,
+                                        "sourceBlockHeight": height_val,
+                                        "sourceBlockHash": block_hash,
+                                        "status": "below_threshold_carried"
+                                    })
+        except Exception:
+            malformed = True
+
+    if malformed:
+        items = []
+
+    # Sort items deterministically
+    items.sort(key=lambda x: (x["wallet"], x["sourceCandidateId"]))
+
+    out_data = {
+        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "items": items
+    }
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(dir=output_path.parent)
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(out_data, f, indent=2, sort_keys=True)
+            os.replace(temp_path, output_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
+    except Exception as exc:
+        print(f"Error: Failed to write carry snapshot atomically: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -619,6 +719,10 @@ def main() -> int:
     parser_refresh = subparsers.add_parser("refresh-payment-confirmations", help="Refresh payment confirmations in snapshot")
     parser_refresh.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
     parser_refresh.add_argument("--snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+
+    parser_carry = subparsers.add_parser("build-carry-snapshot", help="Build carry snapshot from payout candidates")
+    parser_carry.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_carry.add_argument("--snapshot", type=str, required=True, help="Path to output payout-carry-snapshot.json")
 
     args = parser.parse_args()
 
@@ -647,8 +751,14 @@ def main() -> int:
             Path(args.actions_log),
             Path(args.snapshot)
         )
+    elif args.command == "build-carry-snapshot":
+        return generate_carry_snapshot(
+            Path(args.candidates),
+            Path(args.snapshot)
+        )
 
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -1126,6 +1126,17 @@ refresh_payment_confirmations_service() {
     --snapshot "${RUNTIME_DIR}/payments-snapshot.json"
 }
 
+payout_carry_service() {
+  ensure_runtime_dir
+  local input_payout_candidates output_carry_snapshot
+  input_payout_candidates="${RUNTIME_DIR}/payout-candidates.json"
+  output_carry_snapshot="${RUNTIME_DIR}/payout-carry-snapshot.json"
+  python3 "${SCRIPT_DIR}/payout_helper.py" build-carry-snapshot \
+    --candidates "${input_payout_candidates}" \
+    --snapshot "${output_carry_snapshot}"
+}
+
+
 
 candidate_probability_audit_service() {
   ensure_runtime_dir
@@ -3675,6 +3686,9 @@ case "${SUBCOMMAND}" in
   payout-candidates)
     payout_candidates_service
     ;;
+  payout-carry)
+    payout_carry_service
+    ;;
   payout-review)
     payout_review_service
     ;;
@@ -3742,7 +3756,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-review|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-review|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths}" >&2
     exit 1
     ;;
 esac

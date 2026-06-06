@@ -986,7 +986,156 @@ class PayoutAccountingTests(unittest.TestCase):
         finally:
             os.environ.pop("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", None)
 
+    def test_build_carry_snapshot_behavior(self):
+        # Setup inputs
+        candidates_file = self.tmp_path / "test-payout-candidates.json"
+        carry_snapshot_file = self.tmp_path / "payout-carry-snapshot.json"
+        
+        candidates_data = {
+            "updated_at": "2026-06-06T12:00:00Z",
+            "items": [
+                {
+                    "candidateId": "height-100",
+                    "blockHash": "hash100",
+                    "height": 100,
+                    "lifecycleStatus": "confirmed",
+                    "status": "ready_for_manual_review",
+                    "payouts": [
+                        {
+                            "wallet": "wallet_below1",
+                            "amount": 10.0,
+                            "status": "below_threshold"
+                        },
+                        {
+                            "wallet": "wallet_below2",
+                            "amount": 20.0,
+                            "status": "below_threshold_carried"
+                        },
+                        {
+                            "wallet": "wallet_ready",
+                            "amount": 150000.0,
+                            "status": "ready_for_manual_review"
+                        }
+                    ]
+                },
+                {
+                    "candidateId": "height-101",
+                    "blockHash": "hash101",
+                    "height": 101,
+                    "lifecycleStatus": "immature",
+                    "status": "blocked",
+                    "reason": "immature_block",
+                    "payouts": [
+                        {
+                            "wallet": "wallet_immature",
+                            "amount": 150.0,
+                            "status": "blocked_immature"
+                        }
+                    ]
+                },
+                {
+                    "candidateId": "height-102",
+                    "blockHash": "hash102",
+                    "height": 102,
+                    "lifecycleStatus": "orphan",
+                    "status": "blocked",
+                    "reason": "orphan_block",
+                    "payouts": [
+                        {
+                            "wallet": "wallet_orphan",
+                            "amount": 150.0,
+                            "status": "blocked_orphan"
+                        }
+                    ]
+                },
+                {
+                    "candidateId": "height-100",
+                    "blockHash": "hash100",
+                    "height": 100,
+                    "lifecycleStatus": "confirmed",
+                    "status": "ready_for_manual_review",
+                    "payouts": [
+                        {
+                            "wallet": "wallet_below1",
+                            "amount": 10.0,
+                            "status": "below_threshold"
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+            
+        # Execute carry builder
+        rc = payout_helper.generate_carry_snapshot(candidates_file, carry_snapshot_file)
+        self.assertEqual(rc, 0)
+        self.assertTrue(carry_snapshot_file.exists())
+        
+        with carry_snapshot_file.open("r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+            
+        self.assertIn("generatedAt", snapshot)
+        items = snapshot.get("items", [])
+        
+        # We expect exactly 2 items: wallet_below1 (deduplicated) and wallet_below2
+        self.assertEqual(len(items), 2)
+        
+        item1 = items[0]
+        self.assertEqual(item1["wallet"], "wallet_below1")
+        self.assertEqual(item1["amount"], 10.0)
+        self.assertEqual(item1["sourceCandidateId"], "height-100")
+        self.assertEqual(item1["sourceBlockHeight"], 100)
+        self.assertEqual(item1["sourceBlockHash"], "hash100")
+        self.assertEqual(item1["status"], "below_threshold_carried")
+        
+        item2 = items[1]
+        self.assertEqual(item2["wallet"], "wallet_below2")
+        self.assertEqual(item2["amount"], 20.0)
+        self.assertEqual(item2["sourceCandidateId"], "height-100")
+        self.assertEqual(item2["sourceBlockHeight"], 100)
+        self.assertEqual(item2["sourceBlockHash"], "hash100")
+        self.assertEqual(item2["status"], "below_threshold_carried")
+        
+        # Test missing file produces empty items safely
+        missing_file = self.tmp_path / "nonexistent-candidates.json"
+        rc_missing = payout_helper.generate_carry_snapshot(missing_file, carry_snapshot_file)
+        self.assertEqual(rc_missing, 0)
+        with carry_snapshot_file.open("r", encoding="utf-8") as f:
+            snap_missing = json.load(f)
+        self.assertEqual(snap_missing.get("items"), [])
+        
+        # Test malformed JSON file produces empty items safely
+        malformed_file = self.tmp_path / "malformed-candidates.json"
+        with malformed_file.open("w", encoding="utf-8") as f:
+            f.write("{invalid_json}")
+        rc_malformed = payout_helper.generate_carry_snapshot(malformed_file, carry_snapshot_file)
+        self.assertEqual(rc_malformed, 0)
+        with carry_snapshot_file.open("r", encoding="utf-8") as f:
+            snap_malformed = json.load(f)
+        self.assertEqual(snap_malformed.get("items"), [])
+
+        # Test CLI main invocation works
+        sys_argv_backup = sys.argv
+        try:
+            sys.argv = [
+                "payout_helper.py",
+                "build-carry-snapshot",
+                "--candidates", str(candidates_file),
+                "--snapshot", str(carry_snapshot_file)
+            ]
+            rc_main = payout_helper.main()
+            self.assertEqual(rc_main, 0)
+        finally:
+            sys.argv = sys_argv_backup
+            
+        with carry_snapshot_file.open("r", encoding="utf-8") as f:
+            snap_main = json.load(f)
+        self.assertEqual(len(snap_main.get("items", [])), 2)
+
 if __name__ == "__main__":
+
     unittest.main()
 
 
