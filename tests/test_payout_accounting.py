@@ -856,6 +856,136 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["blockHeight"], 4573193)
         self.assertEqual(item["status"], "ready_for_manual_review")
 
+    def test_refresh_payment_confirmations(self):
+        # 1. Setup mock pool-snapshot.json to provide current Height
+        pool_snap_path = self.tmp_path / "pool-snapshot.json"
+        pool_snap_data = {
+            "network": {
+                "height": 4577623
+            }
+        }
+        with pool_snap_path.open("w", encoding="utf-8") as f:
+            json.dump(pool_snap_data, f)
+        
+        # Set environment variable so payout_helper loads this mock snapshot
+        import os
+        os.environ["PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT"] = str(pool_snap_path)
+        
+        try:
+            # Create a mock payout-candidates.json containing candidate height info
+            candidates_data = {
+                "items": [
+                    {
+                        "candidate_hash": "hashconfirmedeligibleblock9999",
+                        "height": 4573193,
+                        "blockHash": "hashconfirmedeligibleblock9999",
+                        "status": "ready_for_manual_review"
+                    }
+                ]
+            }
+            with (self.tmp_path / "payout-candidates.json").open("w", encoding="utf-8") as f:
+                json.dump(candidates_data, f)
+
+            # Create manual actions log entries
+            with self.actions_log.open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "candidate_id": "hashconfirmedeligibleblock9999",
+                    "wallet": "PEPEPOW1WalletAddressTarget001",
+                    "amount": 500.25,
+                    "txid": "txidhash12345678901234567890",
+                    "timestamp": "2026-06-06T15:00:00Z"
+                }) + "\n")
+
+            # First run rebuild to generate the initial snapshot (with confirmations = 1 since current Height is loaded)
+            sys_argv_backup = sys.argv
+            try:
+                sys.argv = [
+                    "payout_helper.py",
+                    "rebuild-payments-snapshot",
+                    "--actions-log", str(self.actions_log),
+                    "--snapshot", str(self.snapshot_path)
+                ]
+                rc = payout_helper.main()
+                self.assertEqual(rc, 0)
+            finally:
+                sys.argv = sys_argv_backup
+
+            # Confirmations should be max(0, currentHeight - blockHeight + 1)
+            # max(0, 4577623 - 4573193 + 1) = 4431
+            with self.snapshot_path.open("r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+            self.assertEqual(snapshot["items"][0]["confirmations"], 4431)
+            self.assertEqual(snapshot["items"][0]["candidateHash"], "hashconfirmedeligibleblock9999")
+            self.assertEqual(snapshot["items"][0]["status"], "ready_for_manual_review")
+
+            # 2. Test refresh command preserving existing properties but recomputing confirmations on new height
+            pool_snap_data["network"]["height"] = 4577630
+            with pool_snap_path.open("w", encoding="utf-8") as f:
+                json.dump(pool_snap_data, f)
+
+            sys_argv_backup = sys.argv
+            try:
+                sys.argv = [
+                    "payout_helper.py",
+                    "refresh-payment-confirmations",
+                    "--actions-log", str(self.actions_log),
+                    "--snapshot", str(self.snapshot_path)
+                ]
+                rc = payout_helper.main()
+                self.assertEqual(rc, 0)
+            finally:
+                sys.argv = sys_argv_backup
+
+            # Confirmations should now be max(0, 4577630 - 4573193 + 1) = 4438
+            with self.snapshot_path.open("r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+            item = snapshot["items"][0]
+            self.assertEqual(item["confirmations"], 4438)
+            # Preserves other attributes
+            self.assertEqual(item["wallet"], "PEPEPOW1WalletAddressTarget001")
+            self.assertEqual(item["amount"], 500.25)
+            self.assertEqual(item["txid"], "txidhash12345678901234567890")
+            self.assertEqual(item["candidateHash"], "hashconfirmedeligibleblock9999")
+            self.assertEqual(item["blockHash"], "hashconfirmedeligibleblock9999")
+            self.assertEqual(item["blockHeight"], 4573193)
+            self.assertEqual(item["status"], "ready_for_manual_review")
+
+            # 3. Test missing blockHeight preserves safe fallback and doesn't crash
+            # We will create an action with no metadata in candidates map, and no existing metadata in snapshot
+            with self.actions_log.open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "candidate_id": "missing_metadata_hash",
+                    "wallet": "PEPEPOW1WalletAddressTarget001",
+                    "amount": 100.0,
+                    "txid": "txidhash99999999999999999999",
+                    "timestamp": "2026-06-06T15:00:00Z"
+                }) + "\n")
+            
+            # Remove candidates and snapshot file to test pure missing case
+            if self.snapshot_path.exists():
+                self.snapshot_path.unlink()
+            
+            sys_argv_backup = sys.argv
+            try:
+                sys.argv = [
+                    "payout_helper.py",
+                    "refresh-payment-confirmations",
+                    "--actions-log", str(self.actions_log),
+                    "--snapshot", str(self.snapshot_path)
+                ]
+                rc = payout_helper.main()
+                self.assertEqual(rc, 0)
+            finally:
+                sys.argv = sys_argv_backup
+
+            with self.snapshot_path.open("r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+            self.assertEqual(snapshot["items"][0]["confirmations"], 1) # Fallback to default 1
+            self.assertNotIn("blockHeight", snapshot["items"][0])
+
+        finally:
+            os.environ.pop("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", None)
+
 if __name__ == "__main__":
     unittest.main()
 

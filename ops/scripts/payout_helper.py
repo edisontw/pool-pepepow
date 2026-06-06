@@ -412,6 +412,10 @@ def generate_payments_snapshot(
             print(f"Error reading payment actions log: {exc}", file=sys.stderr)
             return 1
 
+    # Load pool snapshot to get current chain height
+    pool_snap = load_pool_snapshot()
+    current_height = pool_snap.get("network", {}).get("height") if isinstance(pool_snap, dict) else None
+
     # Load payout-candidates.json to enrich payment items with metadata if available
     candidates_map = {}
     candidates_file = snapshot_path.parent / "payout-candidates.json"
@@ -427,26 +431,80 @@ def generate_payments_snapshot(
         except Exception:
             pass
 
+    # Load existing payments-snapshot.json to preserve fields and read existing metadata/confirmations
+    existing_snapshot_items = {}
+    if snapshot_path.exists():
+        try:
+            with snapshot_path.open("r", encoding="utf-8") as f:
+                old_snap = json.load(f)
+            if isinstance(old_snap, dict) and isinstance(old_snap.get("items"), list):
+                for item in old_snap["items"]:
+                    w = item.get("wallet")
+                    txid = item.get("txid")
+                    if w and txid:
+                        existing_snapshot_items[(txid, w)] = item
+        except Exception:
+            pass
+
     items = []
     for act in existing_actions:
+        txid = act.get("txid")
+        w = act.get("wallet")
         c_id = act.get("candidate_id")
+
+        # Initial default confirmations
+        confirmations = 1
+
+        # Locate existing item if available
+        existing_item = existing_snapshot_items.get((txid, w)) if (txid and w) else None
+        if existing_item:
+            confirmations = existing_item.get("confirmations", 1)
+
         item = {
-            "wallet": act.get("wallet"),
+            "wallet": w,
             "amount": act.get("amount"),
             "paidAt": act.get("timestamp"),
-            "confirmations": 1,
-            "txid": act.get("txid")
+            "confirmations": confirmations,
+            "txid": txid
         }
+
         cand_meta = candidates_map.get(c_id) if c_id else None
+
+        # Determine block height, candidate hash, block hash, status
+        candidate_hash = None
+        block_hash = None
+        block_height = None
+        status = None
+
         if cand_meta:
-            if "candidate_hash" in cand_meta or "candidateId" in cand_meta:
-                item["candidateHash"] = cand_meta.get("candidate_hash") or cand_meta.get("candidateId")
-            if "blockHash" in cand_meta:
-                item["blockHash"] = cand_meta.get("blockHash")
-            if "height" in cand_meta:
-                item["blockHeight"] = cand_meta.get("height")
-            if "status" in cand_meta:
-                item["status"] = cand_meta.get("status")
+            candidate_hash = cand_meta.get("candidate_hash") or cand_meta.get("candidateId")
+            block_hash = cand_meta.get("blockHash")
+            block_height = cand_meta.get("height")
+            status = cand_meta.get("status")
+        elif existing_item:
+            candidate_hash = existing_item.get("candidateHash")
+            block_hash = existing_item.get("blockHash")
+            block_height = existing_item.get("blockHeight")
+            status = existing_item.get("status")
+
+        # Populate metadata in item if found
+        if candidate_hash is not None:
+            item["candidateHash"] = candidate_hash
+        if block_hash is not None:
+            item["blockHash"] = block_hash
+        if block_height is not None:
+            item["blockHeight"] = block_height
+        if status is not None:
+            item["status"] = status
+
+        # Recompute confirmations if blockHeight and currentHeight are available
+        if current_height is not None and block_height is not None:
+            try:
+                h_val = int(block_height)
+                item["confirmations"] = max(0, int(current_height) - h_val + 1)
+            except (ValueError, TypeError):
+                pass
+
         items.append(item)
 
     # Sort descending by paidAt
@@ -558,6 +616,10 @@ def main() -> int:
     parser_rebuild.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
     parser_rebuild.add_argument("--snapshot", type=str, required=True, help="Path to payments-snapshot.json")
 
+    parser_refresh = subparsers.add_parser("refresh-payment-confirmations", help="Refresh payment confirmations in snapshot")
+    parser_refresh.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_refresh.add_argument("--snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+
     args = parser.parse_args()
 
     if args.command == "payout-candidates":
@@ -576,6 +638,11 @@ def main() -> int:
             args.txid
         )
     elif args.command == "rebuild-payments-snapshot":
+        return generate_payments_snapshot(
+            Path(args.actions_log),
+            Path(args.snapshot)
+        )
+    elif args.command == "refresh-payment-confirmations":
         return generate_payments_snapshot(
             Path(args.actions_log),
             Path(args.snapshot)
