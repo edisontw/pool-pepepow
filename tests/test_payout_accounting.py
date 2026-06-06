@@ -1333,6 +1333,177 @@ class PayoutAccountingTests(unittest.TestCase):
         finally:
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
 
+    def test_record_payment_clears_carry(self):
+        # 1. Setup mock files
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "candpaid1000000000000000000000001",
+                    "height": 100,
+                    "blockHash": "hash1000000000000000000000000001",
+                    "payouts": [
+                        {
+                            "wallet": "walletA00000000000000000000000001",
+                            "amount": 100.0,
+                            "baseAmount": 40.0,
+                            "carryInAmount": 60.0,
+                            "status": "pending_manual_payment",
+                            "carrySourceCandidateIds": ["candsource1000000000000000000001", "candsource2000000000000000000001"]
+                        },
+                        {
+                            "wallet": "walletB00000000000000000000000001",
+                            "amount": 50.0,
+                            "baseAmount": 50.0,
+                            "carryInAmount": 0.0,
+                            "status": "below_threshold_carried",
+                            "carrySourceCandidateIds": []
+                        }
+                    ]
+                }
+            ]
+        }
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+            
+        carry_data = {
+            "generatedAt": "2026-06-06T12:00:00Z",
+            "items": [
+                {
+                    "wallet": "walletA00000000000000000000000001",
+                    "amount": 40.0,
+                    "sourceCandidateId": "candsource1000000000000000000001",
+                    "status": "below_threshold_carried"
+                },
+                {
+                    "wallet": "walletA00000000000000000000000001",
+                    "amount": 20.0,
+                    "sourceCandidateId": "candsource2000000000000000000001",
+                    "status": "below_threshold_carried"
+                },
+                {
+                    "wallet": "walletA00000000000000000000000001",
+                    "amount": 5.0,
+                    "sourceCandidateId": "candunrelatedsource1000000000001", # Unrelated source id for same wallet
+                    "status": "below_threshold_carried"
+                },
+                {
+                    "wallet": "walletB00000000000000000000000001", # Unrelated wallet
+                    "amount": 15.0,
+                    "sourceCandidateId": "candsource1000000000000000000001",
+                    "status": "below_threshold_carried"
+                }
+            ]
+        }
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+
+        # 2. Test recording a payment for walletA on candpaid1000000000000000000000001 clears consumed carry
+        rc = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candpaid1000000000000000000000001",
+            wallet="walletA00000000000000000000000001",
+            amount=100.0,
+            txid="txid1234567890abcdef1234567890ab"
+        )
+        self.assertEqual(rc, 0)
+        
+        # Verify carry_file items: only candunrelatedsource1000000000001 and walletB should remain
+        with carry_file.open("r", encoding="utf-8") as f:
+            updated_carry = json.load(f)
+            
+        items = updated_carry.get("items", [])
+        self.assertEqual(len(items), 2)
+        
+        item_map = {(item["wallet"], item["sourceCandidateId"]): item for item in items}
+        self.assertIn(("walletA00000000000000000000000001", "candunrelatedsource1000000000001"), item_map)
+        self.assertIn(("walletB00000000000000000000000001", "candsource1000000000000000000001"), item_map)
+        self.assertNotIn(("walletA00000000000000000000000001", "candsource1000000000000000000001"), item_map)
+        self.assertNotIn(("walletA00000000000000000000000001", "candsource2000000000000000000001"), item_map)
+        
+        # 3. Test failed duplicate payment does not clear carry
+        # Record duplicate payment (same candidate + wallet) -> should fail
+        rc_dup = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candpaid1000000000000000000000001",
+            wallet="walletA00000000000000000000000001",
+            amount=100.0,
+            txid="txiddifferent12345600000000000ab"
+        )
+        self.assertEqual(rc_dup, 1)
+        
+        # Verify carry remains unchanged
+        with carry_file.open("r", encoding="utf-8") as f:
+            carry_after_dup = json.load(f)
+        self.assertEqual(len(carry_after_dup.get("items", [])), 2)
+
+        # 4. Test failed duplicate/invalid format check does not clear carry
+        rc_invalid = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="invalid!!!!!!!!!!", # too short or invalid chars
+            wallet="walletA00000000000000000000000001",
+            amount=100.0,
+            txid="txid12300000000000000000000000ab"
+        )
+        self.assertEqual(rc_invalid, 1)
+        
+        # Verify carry remains unchanged
+        with carry_file.open("r", encoding="utf-8") as f:
+            carry_after_invalid = json.load(f)
+        self.assertEqual(len(carry_after_invalid.get("items", [])), 2)
+
+        # 5. Test no carry metadata does not touch carry snapshot
+        # Recording payment for walletB (which has carryInAmount = 0.0)
+        rc_b = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candpaid1000000000000000000000001",
+            wallet="walletB00000000000000000000000001",
+            amount=50.0,
+            txid="txidb1234567890abcdef123456789ab"
+        )
+        self.assertEqual(rc_b, 0)
+        
+        # Verify walletB's carry of candsource1000000000000000000001 is still present since it wasn't consumed
+        with carry_file.open("r", encoding="utf-8") as f:
+            carry_after_b = json.load(f)
+        items_b = carry_after_b.get("items", [])
+        self.assertEqual(len(items_b), 2)
+        
+        # 6. Test missing carry snapshot does not crash
+        carry_file.unlink()
+        rc_missing = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candpaid1000000000000000000000002",
+            wallet="walletA00000000000000000000000001",
+            amount=200.0,
+            txid="txidnew1234567890abcdef1234567ab"
+        )
+        self.assertEqual(rc_missing, 0)
+        
+        # 7. Test malformed carry snapshot does not crash and does not invent state
+        with carry_file.open("w", encoding="utf-8") as f:
+            f.write("{invalid_json}")
+        rc_malformed = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candpaid1000000000000000000000003",
+            wallet="walletA00000000000000000000000001",
+            amount=300.0,
+            txid="txidnew2224567890abcdef1234567ab"
+        )
+        self.assertEqual(rc_malformed, 0)
+        # Verify it remains unchanged as malformed string
+        with carry_file.open("r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertEqual(content, "{invalid_json}")
+
 if __name__ == "__main__":
 
     unittest.main()

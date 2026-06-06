@@ -587,6 +587,72 @@ def generate_payments_snapshot(
 
     return 0
 
+def clear_consumed_carry(candidates_path: Path, carry_path: Path, candidate_id: str, wallet: str) -> None:
+    if not candidates_path.exists() or not carry_path.exists():
+        return
+
+    payout_row = None
+    try:
+        with candidates_path.open("r", encoding="utf-8") as f:
+            cand_data = json.load(f)
+        if isinstance(cand_data, dict) and isinstance(cand_data.get("items"), list):
+            for item in cand_data["items"]:
+                c_id = item.get("candidateId") or item.get("candidate_hash")
+                if c_id == candidate_id:
+                    payouts = item.get("payouts")
+                    if isinstance(payouts, list):
+                        for p in payouts:
+                            if isinstance(p, dict) and p.get("wallet") == wallet:
+                                payout_row = p
+                                break
+                    break
+    except Exception:
+        return
+
+    if not payout_row:
+        return
+
+    carry_in = payout_row.get("carryInAmount", 0.0)
+    carry_source_ids = payout_row.get("carrySourceCandidateIds")
+    if not (carry_in and isinstance(carry_in, (int, float)) and carry_in > 0) or not isinstance(carry_source_ids, list) or not carry_source_ids:
+        return
+
+    try:
+        with carry_path.open("r", encoding="utf-8") as f:
+            carry_data = json.load(f)
+        if not isinstance(carry_data, dict) or not isinstance(carry_data.get("items"), list):
+            return
+    except Exception:
+        return
+
+    orig_items = carry_data["items"]
+    new_items = []
+    for item in orig_items:
+        if not isinstance(item, dict):
+            continue
+        w = item.get("wallet")
+        src_id = item.get("sourceCandidateId")
+        if w == wallet and src_id in carry_source_ids:
+            continue
+        new_items.append(item)
+
+    carry_data["items"] = new_items
+    carry_data["generatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    try:
+        carry_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(dir=carry_path.parent)
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(carry_data, f, indent=2, sort_keys=True)
+            os.replace(temp_path, carry_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
+    except Exception as exc:
+        print(f"Warning: Failed to update carry snapshot atomically: {exc}", file=sys.stderr)
+
 def record_payment(
     actions_log_path: Path,
     snapshot_path: Path,
@@ -647,6 +713,11 @@ def record_payment(
     except Exception as exc:
         print(f"Error writing to payment actions log: {exc}", file=sys.stderr)
         return 1
+
+    # Clear consumed carry if any
+    candidates_path = snapshot_path.parent / "payout-candidates.json"
+    carry_path = snapshot_path.parent / "payout-carry-snapshot.json"
+    clear_consumed_carry(candidates_path, carry_path, candidate_id, wallet)
 
     return generate_payments_snapshot(actions_log_path, snapshot_path)
 
