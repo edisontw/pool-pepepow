@@ -1086,7 +1086,7 @@ for c in candidates:
     status_str = status.upper()
     reason_str = f" (Reason: {reason})" if reason else ""
     print(f"  Payout Status: {status_str}{reason_str}")
-    if status == "eligible":
+    if status in ("eligible", "ready_for_manual_review"):
         shares = c.get("shares", {})
         print("  Shares breakdown:")
         for wallet, info in shares.items():

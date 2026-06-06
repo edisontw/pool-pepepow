@@ -45,28 +45,98 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         c_hash = c.get("candidate_hash")
         l_status = c.get("lifecycle_status")
         height = c.get("matched_height")
+        reward = c.get("reward")
 
         status = "blocked"
         reason = None
+        gross_reward = None
+        net_reward = None
+        pool_fee_percent = None
+        pool_fee_amount = None
+        weight_mode = None
+        round_share_total = None
+        payouts = []
 
-        if l_status == "confirmed":
-            if not c_hash:
-                reason = "missing_candidate_hash"
-            elif c_hash not in rounds_map:
-                reason = "missing_round_data"
+        if l_status != "confirmed":
+            status = "blocked"
+            if l_status in ("immature", "orphan"):
+                reason = f"{l_status}_block"
             else:
-                r_data = rounds_map[c_hash]
-                shares = r_data.get("shares")
-                if not isinstance(shares, dict):
-                    reason = "missing_share_data"
-                else:
-                    status = "eligible"
-        elif l_status in ("immature", "orphan"):
-            status = "blocked"
-            reason = f"{l_status}_block"
+                reason = f"unconfirmed_status_{l_status}"
         else:
-            status = "blocked"
-            reason = f"unconfirmed_status_{l_status}"
+            # Enforce validations
+            # 1. Reward validation
+            if reward is None:
+                status = "blocked"
+                reason = "missing_reward"
+            elif isinstance(reward, str) and reward.strip().lower() == "synthetic":
+                status = "blocked"
+                reason = "synthetic_reward"
+            else:
+                try:
+                    reward_val = float(reward)
+                    if reward_val <= 0:
+                        status = "blocked"
+                        reason = "invalid_reward"
+                    else:
+                        gross_reward = reward_val
+                except (ValueError, TypeError):
+                    status = "blocked"
+                    reason = "invalid_reward"
+
+            if not reason:
+                # 2. Candidate hash validation
+                if not c_hash:
+                    status = "blocked"
+                    reason = "missing_candidate_hash"
+                # 3. Round validation
+                elif c_hash not in rounds_map:
+                    status = "blocked"
+                    reason = "missing_round_data"
+                else:
+                    r_data = rounds_map[c_hash]
+                    shares = r_data.get("shares")
+                    # 4. Wallet weights / shares validation
+                    if not isinstance(shares, dict) or not shares:
+                        status = "blocked"
+                        reason = "missing_share_data"
+                    else:
+                        # 5. Round weight validation
+                        total_score = r_data.get("total_share_score", 0.0)
+                        total_count = r_data.get("total_share_count", 0)
+
+                        weight_mode = "share_difficulty_sum"
+                        total_weight = total_score
+                        if total_weight <= 0:
+                            weight_mode = "accepted_share_count"
+                            total_weight = total_count
+
+                        if total_weight <= 0:
+                            status = "blocked"
+                            reason = "zero_total_round_weight"
+                        else:
+                            # 6. Internally consistent ready state
+                            status = "ready_for_manual_review"
+                            round_share_total = total_weight
+                            
+                            pool_fee_pct = float(os.getenv("PEPEPOW_POOL_FEE_PERCENT", "1.0"))
+                            pool_fee_percent = pool_fee_pct
+                            pool_fee_amount = gross_reward * pool_fee_pct / 100.0
+                            net_reward = gross_reward - pool_fee_amount
+
+                            for wallet, share_info in shares.items():
+                                if weight_mode == "share_difficulty_sum":
+                                    weight = share_info.get("share_score", 0.0)
+                                else:
+                                    weight = share_info.get("share_count", 0.0)
+                                
+                                amount = net_reward * weight / total_weight
+                                payouts.append({
+                                    "wallet": wallet,
+                                    "weight": weight,
+                                    "amount": amount,
+                                    "status": "pending_manual_payment"
+                                })
 
         shares_info = {}
         if c_hash in rounds_map:
@@ -74,10 +144,27 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
 
         payout_candidates.append({
             "candidate_hash": c_hash,
+            "candidateId": c_hash,
+            "blockHash": c_hash,
             "height": height,
             "lifecycle_status": l_status,
+            "lifecycleStatus": l_status,
             "status": status,
             "reason": reason,
+            "blockedReason": reason,
+            "gross_reward": gross_reward,
+            "grossReward": gross_reward,
+            "net_reward": net_reward,
+            "netReward": net_reward,
+            "pool_fee_percent": pool_fee_percent,
+            "poolFeePercent": pool_fee_percent,
+            "pool_fee_amount": pool_fee_amount,
+            "poolFeeAmount": pool_fee_amount,
+            "weight_mode": weight_mode,
+            "weightMode": weight_mode,
+            "round_share_total": round_share_total,
+            "roundShareTotal": round_share_total,
+            "payouts": payouts,
             "shares": shares_info,
             "submit_timestamp": c.get("submit_timestamp")
         })

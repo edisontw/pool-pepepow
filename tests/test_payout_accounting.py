@@ -43,37 +43,43 @@ class PayoutAccountingTests(unittest.TestCase):
                     "candidate_hash": "hash_confirmed_eligible",
                     "lifecycle_status": "confirmed",
                     "matched_height": 100,
-                    "submit_timestamp": "2026-06-06T12:00:00Z"
+                    "submit_timestamp": "2026-06-06T12:00:00Z",
+                    "reward": 50000.0
                 },
                 {
                     "candidate_hash": "hash_confirmed_no_round",
                     "lifecycle_status": "confirmed",
                     "matched_height": 101,
-                    "submit_timestamp": "2026-06-06T12:01:00Z"
+                    "submit_timestamp": "2026-06-06T12:01:00Z",
+                    "reward": 50000.0
                 },
                 {
                     "candidate_hash": "hash_confirmed_no_shares",
                     "lifecycle_status": "confirmed",
                     "matched_height": 102,
-                    "submit_timestamp": "2026-06-06T12:02:00Z"
+                    "submit_timestamp": "2026-06-06T12:02:00Z",
+                    "reward": 50000.0
                 },
                 {
                     "candidate_hash": "hash_immature",
                     "lifecycle_status": "immature",
                     "matched_height": 103,
-                    "submit_timestamp": "2026-06-06T12:03:00Z"
+                    "submit_timestamp": "2026-06-06T12:03:00Z",
+                    "reward": 50000.0
                 },
                 {
                     "candidate_hash": "hash_orphan",
                     "lifecycle_status": "orphan",
                     "matched_height": 104,
-                    "submit_timestamp": "2026-06-06T12:04:00Z"
+                    "submit_timestamp": "2026-06-06T12:04:00Z",
+                    "reward": 50000.0
                 },
                 {
                     "candidate_hash": "hash_recorded",
                     "lifecycle_status": "candidate_recorded",
                     "matched_height": 105,
-                    "submit_timestamp": "2026-06-06T12:05:00Z"
+                    "submit_timestamp": "2026-06-06T12:05:00Z",
+                    "reward": 50000.0
                 }
             ]
         }
@@ -85,6 +91,8 @@ class PayoutAccountingTests(unittest.TestCase):
             "rounds": [
                 {
                     "candidate_hash": "hash_confirmed_eligible",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
                     "shares": {
                         "walletA": {
                             "share_count": 10,
@@ -95,6 +103,8 @@ class PayoutAccountingTests(unittest.TestCase):
                 },
                 {
                     "candidate_hash": "hash_confirmed_no_shares",
+                    "total_share_score": 0.0,
+                    "total_share_count": 0
                     # missing shares key
                 }
             ]
@@ -120,7 +130,7 @@ class PayoutAccountingTests(unittest.TestCase):
 
         # 1. Eligible block
         c1 = cand_map["hash_confirmed_eligible"]
-        self.assertEqual(c1["status"], "eligible")
+        self.assertEqual(c1["status"], "ready_for_manual_review")
         self.assertIsNone(c1["reason"])
         self.assertEqual(c1["shares"]["walletA"]["share_count"], 10)
 
@@ -236,7 +246,8 @@ class PayoutAccountingTests(unittest.TestCase):
                     "candidate_hash": "hashconfirmedeligibleblock0001",
                     "lifecycle_status": "confirmed",
                     "matched_height": 100,
-                    "submit_timestamp": "2026-06-06T12:00:00Z"
+                    "submit_timestamp": "2026-06-06T12:00:00Z",
+                    "reward": 50000.0
                 }
             ]
         }
@@ -247,6 +258,8 @@ class PayoutAccountingTests(unittest.TestCase):
             "rounds": [
                 {
                     "candidate_hash": "hashconfirmedeligibleblock0001",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
                     "shares": {
                         "walletA": {
                             "share_count": 10,
@@ -281,7 +294,7 @@ class PayoutAccountingTests(unittest.TestCase):
         )
         self.assertEqual(res_review.returncode, 0)
         self.assertIn("hashconfirmedeligibleblock0001", res_review.stdout)
-        self.assertIn("ELIGIBLE", res_review.stdout)
+        self.assertIn("READY_FOR_MANUAL_REVIEW", res_review.stdout)
 
         # Test backward compatibility (old candidates format)
         payout_candidates_path = self.tmp_path / "payout-candidates.json"
@@ -309,6 +322,7 @@ class PayoutAccountingTests(unittest.TestCase):
         )
         self.assertEqual(res_review_compat.returncode, 0)
         self.assertIn("hasholdcompatblock0001", res_review_compat.stdout)
+        self.assertIn("ELIGIBLE", res_review_compat.stdout)
         
         # Regenerate to new format
         res = subprocess.run(
@@ -335,6 +349,98 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_record.returncode, 0)
         self.assertTrue((self.tmp_path / "payment-actions.jsonl").exists())
         self.assertTrue((self.tmp_path / "payments-snapshot.json").exists())
+
+    def test_payout_candidates_harden_rules(self):
+        # 1. Missing reward
+        accepted_data = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "cand_missing_reward",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 200,
+                    "submit_timestamp": "2026-06-06T12:00:00Z"
+                    # missing reward field
+                },
+                {
+                    "candidate_hash": "cand_zero_reward",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 201,
+                    "submit_timestamp": "2026-06-06T12:01:00Z",
+                    "reward": 0.0
+                },
+                {
+                    "candidate_hash": "cand_synthetic_reward",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 202,
+                    "submit_timestamp": "2026-06-06T12:02:00Z",
+                    "reward": "synthetic"
+                },
+                {
+                    "candidate_hash": "cand_zero_weight",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 203,
+                    "submit_timestamp": "2026-06-06T12:03:00Z",
+                    "reward": 50000.0
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data, f)
+
+        rounds_data = {
+            "rounds": [
+                {
+                    "candidate_hash": "cand_missing_reward",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10}}
+                },
+                {
+                    "candidate_hash": "cand_zero_reward",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10}}
+                },
+                {
+                    "candidate_hash": "cand_synthetic_reward",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10}}
+                },
+                {
+                    "candidate_hash": "cand_zero_weight",
+                    "total_share_score": 0.0,
+                    "total_share_count": 0,
+                    "shares": {"walletA": {"share_count": 0}}
+                }
+            ]
+        }
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data, f)
+
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        items = data.get("items", [])
+        self.assertEqual(len(items), 4)
+        item_map = {item["candidate_hash"]: item for item in items}
+
+        self.assertEqual(item_map["cand_missing_reward"]["status"], "blocked")
+        self.assertEqual(item_map["cand_missing_reward"]["reason"], "missing_reward")
+
+        self.assertEqual(item_map["cand_zero_reward"]["status"], "blocked")
+        self.assertEqual(item_map["cand_zero_reward"]["reason"], "invalid_reward")
+
+        self.assertEqual(item_map["cand_synthetic_reward"]["status"], "blocked")
+        self.assertEqual(item_map["cand_synthetic_reward"]["reason"], "synthetic_reward")
+
+        self.assertEqual(item_map["cand_zero_weight"]["status"], "blocked")
+        self.assertEqual(item_map["cand_zero_weight"]["reason"], "zero_total_round_weight")
 
 if __name__ == "__main__":
     unittest.main()
