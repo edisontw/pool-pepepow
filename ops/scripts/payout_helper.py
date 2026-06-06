@@ -135,6 +135,26 @@ def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | N
     return None, None
 
 def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path) -> int:
+    paid_pairs = set()
+    actions_log_path = output_path.parent / "payment-actions.jsonl"
+    if actions_log_path.exists():
+        try:
+            with actions_log_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        act = json.loads(line)
+                        c_id = act.get("candidate_id")
+                        w = act.get("wallet")
+                        if c_id and w:
+                            paid_pairs.add((c_id, w))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     candidates = []
     if accepted_path.exists():
         try:
@@ -207,7 +227,24 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         if (daemon_confirmations is not None and daemon_confirmations < 0) or (c_hash in rounds_map and rounds_map[c_hash].get("status") == "orphan"):
             is_orphan = True
 
-        if is_orphan:
+        is_already_paid = False
+        if c_hash in rounds_map:
+            r_data = rounds_map[c_hash]
+            shares = r_data.get("shares", {})
+            if isinstance(shares, dict) and shares:
+                if all((c_hash, w) in paid_pairs for w in shares):
+                    is_already_paid = True
+            else:
+                if any(p[0] == c_hash for p in paid_pairs):
+                    is_already_paid = True
+        else:
+            if any(p[0] == c_hash for p in paid_pairs):
+                is_already_paid = True
+
+        if is_already_paid:
+            status = "blocked"
+            reason = "blocked_already_paid"
+        elif is_orphan:
             status = "blocked"
             reason = "orphan_block"
         elif l_status != "confirmed":

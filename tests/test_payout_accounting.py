@@ -686,6 +686,64 @@ class PayoutAccountingTests(unittest.TestCase):
         finally:
             payout_helper.query_rpc = original_query_rpc
 
+    def test_payout_candidates_already_paid(self):
+        accepted_data = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "hash_already_paid",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 600,
+                    "submit_timestamp": "2026-06-06T12:00:00Z",
+                    "reward": 5000.0
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data, f)
+
+        rounds_data = {
+            "rounds": [
+                {
+                    "candidate_hash": "hash_already_paid",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {
+                        "walletA": {
+                            "share_count": 10,
+                            "share_score": 10.0,
+                            "share_percent": 100.0
+                        }
+                    }
+                }
+            ]
+        }
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data, f)
+
+        # Write to payment-actions.jsonl (relative to self.output_path)
+        actions_log_path = self.output_path.parent / "payment-actions.jsonl"
+        with actions_log_path.open("w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "candidate_id": "hash_already_paid",
+                "wallet": "walletA",
+                "amount": 4950.0,
+                "txid": "txid_already_paid_123"
+            }) + "\n")
+
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        items = data.get("items", [])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "blocked")
+        self.assertEqual(items[0]["reason"], "blocked_already_paid")
+
 if __name__ == "__main__":
     unittest.main()
+
 
