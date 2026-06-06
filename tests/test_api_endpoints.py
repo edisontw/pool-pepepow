@@ -660,6 +660,107 @@ class ApiEndpointTests(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(payload["dataStatus"], "fallback")
 
+    def test_rounds_endpoint_valid_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            rounds_path = Path(tmp_dir) / "rounds-snapshot.json"
+            rounds_payload = {
+                "updated_at": "2026-06-05T15:40:12Z",
+                "rounds": [
+                    {
+                        "round_id": "round-hash-123",
+                        "candidate_hash": "round-hash-123",
+                        "height": 100,
+                        "status": "confirmed",
+                        "submit_timestamp": "2026-06-05T12:00:00Z",
+                        "confirmations": 105,
+                        "shares": {"walletA": 10.0, "walletB": 5.0},
+                        "total_shares": 15.0
+                    }
+                ]
+            }
+            rounds_path.write_text(
+                json.dumps(rounds_payload), encoding="utf-8"
+            )
+
+            config = make_config(
+                runtime_path,
+                FALLBACK_SNAPSHOT_PATH,
+                activity_snapshot_path=Path(tmp_dir) / "rounds-snapshot.json"
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            response = client.get("/api/rounds")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            items = payload["items"]
+            self.assertEqual(len(items), 1)
+            r = items[0]
+            self.assertEqual(r["roundId"], "round-hash-123")
+            self.assertEqual(r["candidateHash"], "round-hash-123")
+            self.assertEqual(r["height"], 100)
+            self.assertEqual(r["matchedHeight"], 100)
+            self.assertEqual(r["status"], "confirmed")
+            self.assertEqual(r["roundStatus"], "confirmed")
+            self.assertEqual(r["lifecycleStatus"], "confirmed")
+            self.assertEqual(r["submitTimestamp"], "2026-06-05T12:00:00Z")
+            self.assertEqual(r["confirmations"], 105)
+            self.assertEqual(r["shareCount"], 15.0)
+            self.assertEqual(r["totalShares"], 15.0)
+            self.assertEqual(r["walletCount"], 2)
+            self.assertEqual(r["shares"], {"walletA": 10.0, "walletB": 5.0})
+
+    def test_rounds_endpoint_missing_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            config = make_config(
+                runtime_path,
+                FALLBACK_SNAPSHOT_PATH,
+                activity_snapshot_path=Path(tmp_dir) / "does-not-exist.json"
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            response = client.get("/api/rounds")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["items"], [])
+
+    def test_rounds_endpoint_malformed_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            rounds_path = Path(tmp_dir) / "rounds-snapshot.json"
+            rounds_path.write_text("{malformed-json", encoding="utf-8")
+
+            config = make_config(
+                runtime_path,
+                FALLBACK_SNAPSHOT_PATH,
+                activity_snapshot_path=rounds_path
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            response = client.get("/api/rounds")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["items"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

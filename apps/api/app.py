@@ -254,6 +254,47 @@ def create_app(config: AppConfig | None = None) -> Flask:
             })
         return jsonify({"items": items})
 
+    @app.get("/api/rounds")
+    def rounds():
+        import json
+        from pathlib import Path
+        path = app_config.activity_snapshot_path.parent / "rounds-snapshot.json"
+        if not path.exists():
+            path = app_config.runtime_snapshot_path.parent / "rounds-snapshot.json"
+        if not path.exists():
+            return jsonify({"items": []})
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            rounds_list = data.get("rounds", [])
+        except Exception:
+            return jsonify({"items": []})
+
+        items = []
+        for r in rounds_list:
+            item = {
+                "roundId": r.get("round_id"),
+                "candidateHash": r.get("candidate_hash"),
+                "height": r.get("height"),
+                "matchedHeight": r.get("height"),
+                "status": r.get("status"),
+                "roundStatus": r.get("status"),
+                "lifecycleStatus": r.get("status"),
+                "submitTimestamp": r.get("submit_timestamp"),
+                "confirmations": r.get("confirmations"),
+                "shareCount": r.get("total_shares"),
+                "totalShares": r.get("total_shares"),
+                "walletCount": len(r.get("shares", {})),
+                "shares": r.get("shares", {}),
+            }
+            if "payable" in r:
+                item["payable"] = r["payable"]
+            items.append(item)
+
+        items.reverse()
+        items = items[:50]
+        return jsonify({"items": items})
+
     @app.get("/api/payments")
     def payments():
         record = get_snapshot_record()

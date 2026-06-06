@@ -204,9 +204,10 @@
   }
 
   async function renderBlocks(config) {
-    const [blocks, candidates] = await Promise.all([
+    const [blocks, candidates, rounds] = await Promise.all([
       fetchJson(`${config.apiBaseUrl}/blocks`),
-      fetchJson(`${config.apiBaseUrl}/accepted-candidates`)
+      fetchJson(`${config.apiBaseUrl}/accepted-candidates`),
+      fetchJson(`${config.apiBaseUrl}/rounds`).catch(() => ({ items: [] }))
     ]);
     setHtml(
       "blocks-table",
@@ -251,6 +252,40 @@
           }
         }
       ], "No accepted block candidates found yet (real block submission is default-off).")
+    );
+    setHtml(
+      "rounds-table",
+      renderTable(rounds.items, [
+        { key: "candidateHash", label: "Candidate Hash" },
+        {
+          key: "matchedHeight",
+          label: "Matched Height",
+          render: (val) => (val ? formatNumber(val) : "-")
+        },
+        {
+          key: "roundStatus",
+          label: "Round Status",
+          render: (val) => {
+            if (!val) return "-";
+            return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          }
+        },
+        {
+          key: "shareCount",
+          label: "Share Count",
+          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
+        },
+        {
+          key: "walletCount",
+          label: "Wallet Count",
+          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
+        },
+        {
+          key: "confirmations",
+          label: "Confirmations",
+          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
+        }
+      ], "No rounds tracked in this snapshot.")
     );
   }
 
