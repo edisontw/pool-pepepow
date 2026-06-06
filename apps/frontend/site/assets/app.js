@@ -271,9 +271,14 @@
           }
         },
         {
-          key: "shareCount",
-          label: "Share Count",
+          key: "totalShareCount",
+          label: "Shares",
           render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
+        },
+        {
+          key: "totalShareScore",
+          label: "Score",
+          render: (val) => (val !== null && val !== undefined ? Number(val).toFixed(4) : "-")
         },
         {
           key: "walletCount",

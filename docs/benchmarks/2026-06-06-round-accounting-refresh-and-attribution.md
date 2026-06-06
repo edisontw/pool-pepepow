@@ -15,7 +15,8 @@ We audited and verified the correctness of the read-only round accounting attrib
   - Excluded rejected/invalid shares.
   - Excluded low-difficulty shares (filtering against the `assumedShareDifficulty` threshold, e.g., `0.00025` on MN5).
   - Excluded malformed shares (e.g. missing wallet/login fields).
-  - Verified login string resolution (`wallet.worker`) correctly strips worker suffixes and aggregates shares under the root wallet.
+  - Verified login string resolution (`wallet.worker`) correctly strips worker suffixes and attributes shares to both root wallet and worker identities.
+  - Clarified round accounting semantics: separated raw accepted share count (`total_share_count` / `Shares`) from difficulty score totals (`total_share_score` / `Score`), clarifying that the previous `total shares 0.5309999999999993` represented the accumulated difficulty/score contribution, not the raw share count.
 - **Security & Safety Isolation**:
   - Confirmed confirmed rounds strictly omit `payable`, `balance`, `earned`, `paid`, and `reward-ready` fields to avoid any payout exposure.
   - All operations are completely read-only and decoupled from wallet/payout execution.

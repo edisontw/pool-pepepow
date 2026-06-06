@@ -270,6 +270,34 @@ def create_app(config: AppConfig | None = None) -> Flask:
         except Exception:
             return jsonify({"items": []})
 
+        def map_shares(shares_dict: dict[str, Any]) -> dict[str, Any]:
+            mapped = {}
+            for wallet, data in shares_dict.items():
+                if isinstance(data, dict):
+                    wallet_mapped = {
+                        "shareCount": data.get("share_count"),
+                        "shareScore": data.get("share_score"),
+                    }
+                    if "workers" in data and isinstance(data["workers"], dict):
+                        workers_mapped = {}
+                        for worker, w_data in data["workers"].items():
+                            if isinstance(w_data, dict):
+                                workers_mapped[worker] = {
+                                    "shareCount": w_data.get("share_count"),
+                                    "shareScore": w_data.get("share_score"),
+                                }
+                            else:
+                                workers_mapped[worker] = w_data
+                        wallet_mapped["workers"] = workers_mapped
+                    mapped[wallet] = wallet_mapped
+                else:
+                    # Fallback for legacy format
+                    mapped[wallet] = {
+                        "shareCount": None,
+                        "shareScore": data,
+                    }
+            return mapped
+
         items = []
         for r in rounds_list:
             item = {
@@ -282,10 +310,11 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "lifecycleStatus": r.get("status"),
                 "submitTimestamp": r.get("submit_timestamp"),
                 "confirmations": r.get("confirmations"),
-                "shareCount": r.get("total_shares"),
-                "totalShares": r.get("total_shares"),
-                "walletCount": len(r.get("shares", {})),
-                "shares": r.get("shares", {}),
+                "totalShareCount": r.get("total_share_count", 0),
+                "totalShareScore": r.get("total_share_score", 0.0),
+                "walletCount": r.get("wallet_count", len(r.get("shares", {}))),
+                "workerCount": r.get("worker_count", 0),
+                "shares": map_shares(r.get("shares", {})),
             }
             if "payable" in r:
                 item["payable"] = r["payable"]

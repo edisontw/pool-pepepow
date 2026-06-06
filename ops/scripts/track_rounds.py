@@ -161,10 +161,23 @@ def main() -> int:
                 if not wallet or not isinstance(wallet, str):
                     continue
 
-                # Resolve wallet if login was used (e.g. login is wallet.worker)
+                # Resolve wallet and worker if login was used (e.g. login is wallet.worker)
                 wallet = wallet.strip()
+                worker = payload.get("worker")
                 if "." in wallet and not payload.get("wallet"):
-                    wallet = wallet.split(".", 1)[0].strip()
+                    parts = wallet.split(".", 1)
+                    wallet = parts[0].strip()
+                    if len(parts) > 1 and not worker:
+                        worker = parts[1].strip()
+
+                if not worker and payload.get("login") and "." in payload.get("login"):
+                    parts = payload.get("login").split(".", 1)
+                    if len(parts) > 1:
+                        worker = parts[1].strip()
+
+                if not worker:
+                    worker = "default"
+
                 if not wallet:
                     continue
 
@@ -197,7 +210,12 @@ def main() -> int:
                     continue  # Exclude low difficulty
 
                 shares.append(
-                    {"wallet": wallet, "timestamp": ts, "difficulty": diff_val}
+                    {
+                        "wallet": wallet,
+                        "worker": worker,
+                        "timestamp": ts,
+                        "difficulty": diff_val,
+                    }
                 )
 
     # Filter candidates to only those matched on-chain (rounds)
@@ -226,14 +244,42 @@ def main() -> int:
             )
 
         # Attribute shares in range (start_ts, c_ts]
-        attributed_shares: dict[str, float] = {}
+        attributed_shares: dict[str, Any] = {}
+        unique_workers_in_round = set()
+        total_round_shares = 0
+        total_round_score = 0.0
+
         for s in shares:
             s_ts = s["timestamp"]
             if start_ts < s_ts <= c_ts:
                 wallet = s["wallet"]
-                attributed_shares[wallet] = (
-                    attributed_shares.get(wallet, 0.0) + s["difficulty"]
-                )
+                worker = s["worker"]
+                diff = s["difficulty"]
+
+                if wallet not in attributed_shares:
+                    attributed_shares[wallet] = {
+                        "share_count": 0,
+                        "share_score": 0.0,
+                        "workers": {}
+                    }
+
+                wallet_data = attributed_shares[wallet]
+                wallet_data["share_count"] += 1
+                wallet_data["share_score"] += diff
+
+                if worker not in wallet_data["workers"]:
+                    wallet_data["workers"][worker] = {
+                        "share_count": 0,
+                        "share_score": 0.0
+                    }
+
+                worker_data = wallet_data["workers"][worker]
+                worker_data["share_count"] += 1
+                worker_data["share_score"] += diff
+
+                unique_workers_in_round.add((wallet, worker))
+                total_round_shares += 1
+                total_round_score += diff
 
         status = c.get("lifecycle_status")
         round_item = {
@@ -244,7 +290,10 @@ def main() -> int:
             "submit_timestamp": c.get("submit_timestamp"),
             "confirmations": c.get("confirmations"),
             "shares": attributed_shares,
-            "total_shares": sum(attributed_shares.values()),
+            "total_share_count": total_round_shares,
+            "total_share_score": total_round_score,
+            "wallet_count": len(attributed_shares),
+            "worker_count": len(unique_workers_in_round),
         }
 
         # Immature / orphan / chain_match_found safety

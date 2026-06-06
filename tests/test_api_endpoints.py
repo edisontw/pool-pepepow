@@ -679,8 +679,26 @@ class ApiEndpointTests(unittest.TestCase):
                         "status": "confirmed",
                         "submit_timestamp": "2026-06-05T12:00:00Z",
                         "confirmations": 105,
-                        "shares": {"walletA": 10.0, "walletB": 5.0},
-                        "total_shares": 15.0
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "workers": {
+                                    "rig01": {
+                                        "share_count": 10,
+                                        "share_score": 10.0
+                                    }
+                                }
+                            },
+                            "walletB": {
+                                "share_count": 5,
+                                "share_score": 5.0
+                            }
+                        },
+                        "total_share_count": 15,
+                        "total_share_score": 15.0,
+                        "wallet_count": 2,
+                        "worker_count": 1
                     }
                 ]
             }
@@ -711,10 +729,16 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(r["lifecycleStatus"], "confirmed")
             self.assertEqual(r["submitTimestamp"], "2026-06-05T12:00:00Z")
             self.assertEqual(r["confirmations"], 105)
-            self.assertEqual(r["shareCount"], 15.0)
-            self.assertEqual(r["totalShares"], 15.0)
+            self.assertEqual(r["totalShareCount"], 15)
+            self.assertEqual(r["totalShareScore"], 15.0)
             self.assertEqual(r["walletCount"], 2)
-            self.assertEqual(r["shares"], {"walletA": 10.0, "walletB": 5.0})
+            self.assertEqual(r["workerCount"], 1)
+            self.assertEqual(r["shares"]["walletA"]["shareCount"], 10)
+            self.assertEqual(r["shares"]["walletA"]["shareScore"], 10.0)
+            self.assertEqual(r["shares"]["walletA"]["workers"]["rig01"]["shareCount"], 10)
+            self.assertEqual(r["shares"]["walletA"]["workers"]["rig01"]["shareScore"], 10.0)
+            self.assertEqual(r["shares"]["walletB"]["shareCount"], 5)
+            self.assertEqual(r["shares"]["walletB"]["shareScore"], 5.0)
 
     def test_rounds_endpoint_missing_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

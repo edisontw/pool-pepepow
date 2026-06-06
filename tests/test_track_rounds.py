@@ -150,7 +150,14 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r0["status"], "orphan")
             self.assertEqual(r0["payable"], False)
             self.assertNotIn("balance", r0)
-            self.assertEqual(r0["shares"].get("walletA"), 0.5)
+            self.assertEqual(r0["shares"]["walletA"]["share_count"], 1)
+            self.assertEqual(r0["shares"]["walletA"]["share_score"], 0.5)
+            self.assertEqual(r0["shares"]["walletA"]["workers"]["default"]["share_count"], 1)
+            self.assertEqual(r0["shares"]["walletA"]["workers"]["default"]["share_score"], 0.5)
+            self.assertEqual(r0["total_share_count"], 1)
+            self.assertEqual(r0["total_share_score"], 0.5)
+            self.assertEqual(r0["wallet_count"], 1)
+            self.assertEqual(r0["worker_count"], 1)
 
             # chain_match_found round checks
             r1 = rounds[1]
@@ -159,7 +166,12 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r1["payable"], False)
             self.assertNotIn("balance", r1)
             # walletB had a 1.0 difficulty share, a rejected 10.0 share (ignored), and a 0.05 low-difficulty share (ignored)
-            self.assertEqual(r1["shares"].get("walletB"), 1.0)
+            self.assertEqual(r1["shares"]["walletB"]["share_count"], 1)
+            self.assertEqual(r1["shares"]["walletB"]["share_score"], 1.0)
+            self.assertEqual(r1["total_share_count"], 1)
+            self.assertEqual(r1["total_share_score"], 1.0)
+            self.assertEqual(r1["wallet_count"], 1)
+            self.assertEqual(r1["worker_count"], 1)
             self.assertNotIn("walletA", r1["shares"])
 
             # Immature round checks
@@ -168,7 +180,10 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r2["status"], "immature")
             self.assertEqual(r2["payable"], False)
             self.assertNotIn("balance", r2)
-            self.assertEqual(r2["shares"].get("walletA"), 2.0)
+            self.assertEqual(r2["shares"]["walletA"]["share_count"], 1)
+            self.assertEqual(r2["shares"]["walletA"]["share_score"], 2.0)
+            self.assertEqual(r2["total_share_count"], 1)
+            self.assertEqual(r2["total_share_score"], 2.0)
 
             # Confirmed round checks
             r3 = rounds[3]
@@ -180,7 +195,10 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertNotIn("earned", r3)
             self.assertNotIn("paid", r3)
             self.assertNotIn("reward-ready", r3)
-            self.assertEqual(r3["shares"].get("walletC"), 3.0)
+            self.assertEqual(r3["shares"]["walletC"]["share_count"], 1)
+            self.assertEqual(r3["shares"]["walletC"]["share_score"], 3.0)
+            self.assertEqual(r3["total_share_count"], 1)
+            self.assertEqual(r3["total_share_score"], 3.0)
 
     def test_boundary_conditions_and_idempotency(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -288,18 +306,36 @@ class TrackRoundsTests(unittest.TestCase):
             # hash-r1 (<= 12:00:00Z) should have walletA: 1.0
             r1 = rounds1[0]
             self.assertEqual(r1["candidate_hash"], "hash-r1")
-            self.assertEqual(r1["shares"].get("walletA"), 1.0)
+            self.assertEqual(r1["shares"]["walletA"]["share_count"], 1)
+            self.assertEqual(r1["shares"]["walletA"]["share_score"], 1.0)
+            self.assertEqual(r1["total_share_count"], 1)
+            self.assertEqual(r1["total_share_score"], 1.0)
+            self.assertEqual(r1["wallet_count"], 1)
+            self.assertEqual(r1["worker_count"], 1)
 
             # hash-dup1 (12:00:00Z < ts <= 12:05:00Z) should have walletA: 1.0 (0.5 from worker1 + 0.5 from worker2) and walletB: 2.0
             dup1 = rounds1[1]
             self.assertEqual(dup1["candidate_hash"], "hash-dup1")
-            self.assertEqual(dup1["shares"].get("walletA"), 1.0)
-            self.assertEqual(dup1["shares"].get("walletB"), 2.0)
+            self.assertEqual(dup1["shares"]["walletA"]["share_count"], 2)
+            self.assertEqual(dup1["shares"]["walletA"]["share_score"], 1.0)
+            self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker1"]["share_count"], 1)
+            self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker1"]["share_score"], 0.5)
+            self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker2"]["share_count"], 1)
+            self.assertEqual(dup1["shares"]["walletA"]["workers"]["worker2"]["share_score"], 0.5)
+            self.assertEqual(dup1["shares"]["walletB"]["share_count"], 1)
+            self.assertEqual(dup1["shares"]["walletB"]["share_score"], 2.0)
+            self.assertEqual(dup1["total_share_count"], 3)
+            self.assertEqual(dup1["total_share_score"], 3.0)
+            self.assertEqual(dup1["wallet_count"], 2)
+            self.assertEqual(dup1["worker_count"], 3)
 
             # hash-dup2 (12:05:00Z < ts <= 12:05:00Z) is empty range, should have 0 shares
             dup2 = rounds1[2]
             self.assertEqual(dup2["candidate_hash"], "hash-dup2")
-            self.assertEqual(dup2["total_shares"], 0)
+            self.assertEqual(dup2["total_share_count"], 0)
+            self.assertEqual(dup2["total_share_score"], 0.0)
+            self.assertEqual(dup2["wallet_count"], 0)
+            self.assertEqual(dup2["worker_count"], 0)
 
             # 4. Second execution (testing repeated run idempotence)
             orig_argv = sys.argv
