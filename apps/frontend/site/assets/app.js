@@ -263,7 +263,7 @@
     if (!result.found) {
       setHtml(
         "miner-result",
-        `<div class="muted">No miner data found for <strong>${wallet}</strong>.</div>`
+        `<div class="muted">No active miner data found for <strong>${wallet}</strong>.<br><small style="display: block; margin-top: 0.5rem; opacity: 0.8;">Note: Miner statistics are generated dynamically from active share submissions and are only retained while there is active mining activity within the snapshot tracking window.</small></div>`
       );
       return;
     }
@@ -278,8 +278,16 @@
         renderCards(
           [
             {
+              label: "Active Workers",
+              value: formatNumber(summary.activeWorkers)
+            },
+            {
               label: "Hashrate (estimated from shares)",
               value: formatHashrate(summary.hashrate)
+            },
+            {
+              label: "Accepted Shares",
+              value: formatNumber(summary.acceptedShares)
             },
             {
               label: "Pending Balance",
@@ -302,6 +310,7 @@
         "<h3>Workers</h3>",
         renderTable(workers, [
           { key: "name", label: "Worker" },
+          { key: "acceptedShares", label: "Accepted Shares", render: formatNumber },
           { key: "hashrate", label: "Hashrate (estimated from shares)", render: formatHashrate },
           { key: "lastShareAt", label: "Last Share", render: formatDate }
         ]),
