@@ -1049,14 +1049,16 @@ track_rounds_service() {
 
 payout_candidates_service() {
   ensure_runtime_dir
-  local input_candidates input_rounds output_payout_candidates
+  local input_candidates input_rounds output_payout_candidates input_carry
   input_candidates="${RUNTIME_DIR}/accepted-candidates.json"
   input_rounds="${RUNTIME_DIR}/rounds-snapshot.json"
   output_payout_candidates="${RUNTIME_DIR}/payout-candidates.json"
+  input_carry="${RUNTIME_DIR}/payout-carry-snapshot.json"
   python3 "${SCRIPT_DIR}/payout_helper.py" payout-candidates \
     --accepted-candidates "${input_candidates}" \
     --rounds-snapshot "${input_rounds}" \
-    --output "${output_payout_candidates}"
+    --output "${output_payout_candidates}" \
+    --carry-snapshot "${input_carry}"
 }
 
 payout_review_service() {

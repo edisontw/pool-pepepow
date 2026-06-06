@@ -134,7 +134,37 @@ def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | N
         return confirmations, total_reward
     return None, None
 
-def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path) -> int:
+def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path, carry_path: Path | None = None) -> int:
+    carry_map = {}
+    if carry_path and carry_path.exists():
+        try:
+            with carry_path.open("r", encoding="utf-8") as f:
+                carry_data = json.load(f)
+            if isinstance(carry_data, dict) and isinstance(carry_data.get("items"), list):
+                for item in carry_data["items"]:
+                    if isinstance(item, dict):
+                        wallet = item.get("wallet")
+                        amount_val = item.get("amount")
+                        c_id = item.get("sourceCandidateId")
+                        if wallet and amount_val is not None:
+                            try:
+                                amt = float(amount_val)
+                                carry_map.setdefault(wallet, []).append({
+                                    "amount": amt,
+                                    "sourceCandidateId": c_id
+                                })
+                            except (ValueError, TypeError):
+                                pass
+        except Exception:
+            carry_map = {}
+
+    applied_wallets_carry = set()
+
+    try:
+        min_payout = float(os.getenv("PEPEPOW_MIN_PAYOUT", "100000.0"))
+    except (ValueError, TypeError):
+        min_payout = 100000.0
+
     paid_pairs = set()
     actions_log_path = output_path.parent / "payment-actions.jsonl"
     if actions_log_path.exists():
@@ -326,12 +356,37 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                                 else:
                                     weight = share_info.get("share_count", 0.0)
                                 
-                                amount = net_reward * weight / total_weight
+                                base_amount = net_reward * weight / total_weight
+                                
+                                carry_items = carry_map.get(wallet, [])
+                                valid_carry_items = [item for item in carry_items if item.get("sourceCandidateId") != c_hash]
+                                
+                                if valid_carry_items and wallet not in applied_wallets_carry:
+                                    carry_in_amount = sum(item["amount"] for item in valid_carry_items)
+                                    carry_source_ids = [item["sourceCandidateId"] for item in valid_carry_items if item.get("sourceCandidateId")]
+                                    carry_source_count = len(carry_source_ids)
+                                    applied_wallets_carry.add(wallet)
+                                else:
+                                    carry_in_amount = 0.0
+                                    carry_source_ids = []
+                                    carry_source_count = 0
+                                    
+                                total_amount = base_amount + carry_in_amount
+                                
+                                if total_amount >= min_payout:
+                                    payout_status = "pending_manual_payment"
+                                else:
+                                    payout_status = "below_threshold_carried"
+                                    
                                 payouts.append({
                                     "wallet": wallet,
                                     "weight": weight,
-                                    "amount": amount,
-                                    "status": "pending_manual_payment"
+                                    "amount": total_amount,
+                                    "baseAmount": base_amount,
+                                    "carryInAmount": carry_in_amount,
+                                    "status": payout_status,
+                                    "carrySourceCount": carry_source_count,
+                                    "carrySourceCandidateIds": carry_source_ids
                                 })
 
         shares_info = {}
@@ -703,6 +758,7 @@ def main() -> int:
     parser_cand.add_argument("--accepted-candidates", type=str, required=True, help="Path to accepted-candidates.json")
     parser_cand.add_argument("--rounds-snapshot", type=str, required=True, help="Path to rounds-snapshot.json")
     parser_cand.add_argument("--output", type=str, required=True, help="Path to output payout-candidates.json")
+    parser_cand.add_argument("--carry-snapshot", type=str, required=False, help="Path to payout-carry-snapshot.json")
 
     parser_rec = subparsers.add_parser("record-payment", help="Record a manual payment")
     parser_rec.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
@@ -730,7 +786,8 @@ def main() -> int:
         return generate_payout_candidates(
             Path(args.accepted_candidates),
             Path(args.rounds_snapshot),
-            Path(args.output)
+            Path(args.output),
+            Path(args.carry_snapshot) if args.carry_snapshot else None
         )
     elif args.command == "record-payment":
         return record_payment(

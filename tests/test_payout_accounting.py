@@ -1134,6 +1134,205 @@ class PayoutAccountingTests(unittest.TestCase):
             snap_main = json.load(f)
         self.assertEqual(len(snap_main.get("items", [])), 2)
 
+    def test_candidate_generator_consumes_carry(self):
+        import os
+        # Set min payout env var
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "100.0"
+        
+        try:
+            # Setup carry snapshot file
+            carry_path = self.tmp_path / "payout-carry-snapshot.json"
+            carry_data = {
+                "generatedAt": "2026-06-06T12:00:00Z",
+                "items": [
+                    {
+                        "wallet": "walletA",
+                        "amount": 40.0,
+                        "sourceCandidateId": "height-99",
+                        "sourceBlockHeight": 99,
+                        "sourceBlockHash": "hash99",
+                        "status": "below_threshold_carried"
+                    },
+                    {
+                        "wallet": "walletA",
+                        "amount": 20.0,
+                        "sourceCandidateId": "height-98",
+                        "sourceBlockHeight": 98,
+                        "sourceBlockHash": "hash98",
+                        "status": "below_threshold_carried"
+                    },
+                    {
+                        "wallet": "walletC", # Other wallet
+                        "amount": 150.0,
+                        "sourceCandidateId": "height-99",
+                        "sourceBlockHeight": 99,
+                        "sourceBlockHash": "hash99",
+                        "status": "below_threshold_carried"
+                    }
+                ]
+            }
+            with carry_path.open("w", encoding="utf-8") as f:
+                json.dump(carry_data, f)
+                
+            # Setup accepted candidates and rounds snapshots
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash_immature_block",
+                        "lifecycle_status": "immature",
+                        "matched_height": 100,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "reward": 500.0
+                    },
+                    {
+                        "candidate_hash": "hash_eligible_1",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 101,
+                        "submit_timestamp": "2026-06-06T12:01:00Z",
+                        "reward": 50.0 # base net reward ~ 49.5 for A (50% share) and B (50% share)
+                    },
+                    {
+                        "candidate_hash": "hash_eligible_2",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 102,
+                        "submit_timestamp": "2026-06-06T12:02:00Z",
+                        "reward": 50.0
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+                
+            rounds_data = {
+                "rounds": [
+                    {
+                        "candidate_hash": "hash_immature_block",
+                        "total_share_score": 10.0,
+                        "total_share_count": 10,
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 100.0
+                            }
+                        }
+                    },
+                    {
+                        "candidate_hash": "hash_eligible_1",
+                        "total_share_score": 20.0,
+                        "total_share_count": 20,
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 50.0
+                            },
+                            "walletB": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 50.0
+                            }
+                        }
+                    },
+                    {
+                        "candidate_hash": "hash_eligible_2",
+                        "total_share_score": 20.0,
+                        "total_share_count": 20,
+                        "shares": {
+                            "walletA": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 50.0
+                            },
+                            "walletB": {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 50.0
+                            }
+                        }
+                    }
+                ]
+            }
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump(rounds_data, f)
+                
+            # Run candidates generator
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path, carry_path
+            )
+            self.assertEqual(rc, 0)
+            
+            with self.output_path.open("r", encoding="utf-8") as f:
+                output = json.load(f)
+                
+            items = {item["candidate_hash"]: item for item in output.get("items", [])}
+            
+            # 1. Verify immature block does not consume carry and has no payouts
+            c_immature = items["hash_immature_block"]
+            self.assertEqual(c_immature["status"], "blocked")
+            self.assertEqual(c_immature["payouts"], [])
+            
+            # 2. Verify hash_eligible_1 consumes walletA carry (40.0 + 20.0 = 60.0)
+            c_el1 = items["hash_eligible_1"]
+            payouts_el1 = {p["wallet"]: p for p in c_el1["payouts"]}
+            
+            # walletA: net share = 50 * 0.99 * 0.5 = 24.75. carry = 60.0. total = 84.75 < 100.0 (min_payout)
+            # So status is below_threshold_carried
+            p_a1 = payouts_el1["walletA"]
+            self.assertAlmostEqual(p_a1["baseAmount"], 24.75)
+            self.assertAlmostEqual(p_a1["carryInAmount"], 60.0)
+            self.assertAlmostEqual(p_a1["amount"], 84.75)
+            self.assertEqual(p_a1["status"], "below_threshold_carried")
+            self.assertEqual(p_a1["carrySourceCount"], 2)
+            self.assertIn("height-99", p_a1["carrySourceCandidateIds"])
+            self.assertIn("height-98", p_a1["carrySourceCandidateIds"])
+            
+            # walletB: net share = 24.75. no carry. total = 24.75 < 100.0.
+            # So status is below_threshold_carried
+            p_b1 = payouts_el1["walletB"]
+            self.assertAlmostEqual(p_b1["baseAmount"], 24.75)
+            self.assertAlmostEqual(p_b1["carryInAmount"], 0.0)
+            self.assertEqual(p_b1["status"], "below_threshold_carried")
+            
+            # 3. Verify hash_eligible_2 does NOT consume walletA carry again (since it was consumed in hash_eligible_1)
+            c_el2 = items["hash_eligible_2"]
+            payouts_el2 = {p["wallet"]: p for p in c_el2["payouts"]}
+            
+            p_a2 = payouts_el2["walletA"]
+            self.assertAlmostEqual(p_a2["baseAmount"], 24.75)
+            self.assertAlmostEqual(p_a2["carryInAmount"], 0.0)
+            self.assertEqual(p_a2["status"], "below_threshold_carried")
+            
+            # 4. Test above-threshold logic. If min payout is 50.0 instead, walletA (84.75) should be pending_manual_payment
+            os.environ["PEPEPOW_MIN_PAYOUT"] = "50.0"
+            rc_thresh = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path, carry_path
+            )
+            self.assertEqual(rc_thresh, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                output_thresh = json.load(f)
+            items_thresh = {item["candidate_hash"]: item for item in output_thresh.get("items", [])}
+            payouts_thresh_el1 = {p["wallet"]: p for p in items_thresh["hash_eligible_1"]["payouts"]}
+            self.assertEqual(payouts_thresh_el1["walletA"]["status"], "pending_manual_payment")
+            self.assertEqual(payouts_thresh_el1["walletB"]["status"], "below_threshold_carried")
+            
+            # 5. Test malformed carry snapshot does not crash and applies zero carry
+            with carry_path.open("w", encoding="utf-8") as f:
+                f.write("{invalid_json}")
+            rc_mal = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path, carry_path
+            )
+            self.assertEqual(rc_mal, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                output_mal = json.load(f)
+            items_mal = {item["candidate_hash"]: item for item in output_mal.get("items", [])}
+            p_a_mal = {p["wallet"]: p for p in items_mal["hash_eligible_1"]["payouts"]}["walletA"]
+            self.assertEqual(p_a_mal["carryInAmount"], 0.0)
+            self.assertEqual(p_a_mal["amount"], p_a_mal["baseAmount"])
+            
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
 if __name__ == "__main__":
 
     unittest.main()
