@@ -98,9 +98,9 @@
     });
   }
 
-  function renderCards(items, fields) {
+  function renderCards(items, fields, emptyMessage) {
     if (!Array.isArray(items) || items.length === 0) {
-      return '<div class="muted">No items available.</div>';
+      return `<div class="muted">${emptyMessage || "No items available."}</div>`;
     }
 
     return items
@@ -119,9 +119,9 @@
       .join("");
   }
 
-  function renderTable(items, columns) {
+  function renderTable(items, columns, emptyMessage) {
     if (!Array.isArray(items) || items.length === 0) {
-      return '<div class="muted">No items available.</div>';
+      return `<div class="muted">${emptyMessage || "No items available."}</div>`;
     }
 
     const head = columns.map((column) => `<th>${column.label}</th>`).join("");
@@ -190,7 +190,7 @@
         { key: "height", label: "Height", render: formatNumber },
         { key: "status", label: "Status" },
         { key: "foundAt", label: "Found", render: formatDate }
-      ])
+      ], "No network blocks tracked in this snapshot.")
     );
 
     setHtml(
@@ -199,7 +199,7 @@
         { key: "wallet", label: "Wallet" },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Paid", render: formatDate }
-      ])
+      ], "Payments remain placeholder data until payout accounting is implemented.")
     );
   }
 
@@ -216,7 +216,7 @@
         { key: "status", label: "Status" },
         { key: "foundAt", label: "Found", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber }
-      ])
+      ], "No network blocks tracked in this snapshot.")
     );
     setHtml(
       "accepted-candidates-table",
@@ -237,7 +237,7 @@
           label: "Matched Height",
           render: (val) => (val ? formatNumber(val) : "-")
         }
-      ])
+      ], "No accepted block candidates found yet (real block submission is default-off).")
     );
   }
 
@@ -251,7 +251,7 @@
         { key: "paidAt", label: "Paid", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber },
         { key: "txid", label: "TXID" }
-      ])
+      ], "No payment records available. Payout accounting is currently paused.")
     );
   }
 
