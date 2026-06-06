@@ -244,7 +244,7 @@
         },
         {
           key: "maturityLabel",
-          label: "Maturity",
+          label: "Chain maturity",
           render: (val) => {
             if (!val) return "-";
             return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
