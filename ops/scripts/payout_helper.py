@@ -15,6 +15,7 @@ import base64
 import urllib.request
 import urllib.error
 import subprocess
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -142,8 +143,19 @@ def query_wallet_cli(method: str, params: list[Any]) -> Any:
         return None
 
 def wallet_readonly_call(method: str, params: list[Any]) -> Any:
-    """Read wallet data via direct RPC, falling back to the configured CLI."""
+    """Read wallet data through a safe read-only path.
+
+    Prefer an explicitly configured wallet CLI because live payout tooling uses
+    PEPEPOW_WALLET_CLI on MN5 and tests mock that path. Fall back to direct RPC
+    only when the CLI is absent/unreadable and explicit RPC config exists.
+    """
     env = load_env_vars()
+    cli_configured = bool(env.get("PEPEPOW_WALLET_CLI"))
+    if cli_configured:
+        result = query_wallet_cli(method, params)
+        if result is not None:
+            return result
+
     rpc_configured = bool(
         env.get("PEPEPOWD_RPC_URL")
         or env.get("PEPEPOWD_RPC_USER")
@@ -153,7 +165,83 @@ def wallet_readonly_call(method: str, params: list[Any]) -> Any:
         result = query_rpc(method, params)
         if result is not None:
             return result
-    return query_wallet_cli(method, params)
+
+    if not cli_configured:
+        return query_wallet_cli(method, params)
+    return None
+
+
+def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
+    """Write JSON atomically using a temp file and os.replace."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_path = tempfile.mkstemp(dir=output_path.parent)
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(temp_path, output_path)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
+
+FAILED_PAYMENT_ACTION_STATUSES = {"failed", "send_failed", "reserved"}
+SUCCESS_PAYMENT_ACTION_STATUSES = {"sent", "paid", "paid_manual", "manual_payment_recorded"}
+
+
+def action_represents_successful_payment(action: dict[str, Any]) -> bool:
+    """Return True only for payment actions that should count as paid.
+
+    Legacy manual payment rows did not always include a status field, so a row
+    with txid + candidate_id + wallet is still treated as successful unless it
+    explicitly carries a failed/reserved status.
+    """
+    if not isinstance(action, dict):
+        return False
+    status = action.get("status")
+    if isinstance(status, str):
+        normalized = status.strip().lower()
+        if normalized in FAILED_PAYMENT_ACTION_STATUSES:
+            return False
+        if normalized in SUCCESS_PAYMENT_ACTION_STATUSES:
+            return bool(action.get("txid"))
+    return bool(action.get("txid") and action.get("candidate_id") and action.get("wallet"))
+
+
+def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: str) -> bool:
+    """Check whether candidate_id + wallet already has a successful payment."""
+    if not actions_log_path.exists():
+        return False
+    try:
+        with actions_log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    act = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(act, dict)
+                    and act.get("candidate_id") == candidate_id
+                    and act.get("wallet") == wallet
+                    and action_represents_successful_payment(act)
+                ):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def append_payment_action(actions_log_path: Path, action: dict[str, Any]) -> None:
+    actions_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with actions_log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(action, sort_keys=True) + "\n")
+
+
+def payment_actions_lock_path(actions_log_path: Path) -> Path:
+    return actions_log_path.with_name(f"{actions_log_path.stem}.lock")
 
 
 def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
