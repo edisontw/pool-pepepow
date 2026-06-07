@@ -418,8 +418,6 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         except Exception:
             carry_map = {}
 
-    applied_wallets_carry = set()
-
     try:
         min_payout = float(os.getenv("PEPEPOW_MIN_PAYOUT", "100000.0"))
     except (ValueError, TypeError):
@@ -444,6 +442,26 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                         pass
         except Exception:
             pass
+
+    wallet_carry_state: dict[str, dict[str, Any]] = {}
+    for wallet, items in carry_map.items():
+        carry_amount = 0.0
+        source_ids = []
+        for item in items:
+            source_candidate_id = item.get("sourceCandidateId")
+            if source_candidate_id and (source_candidate_id, wallet) in paid_pairs:
+                continue
+            try:
+                carry_amount += float(item.get("amount") or 0.0)
+            except (ValueError, TypeError):
+                continue
+            if source_candidate_id:
+                source_ids.append(source_candidate_id)
+        if carry_amount > 0.0 or source_ids:
+            wallet_carry_state[wallet] = {
+                "amount": carry_amount,
+                "sourceCandidateIds": source_ids,
+            }
 
     candidates = []
     if accepted_path.exists():
@@ -630,35 +648,61 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                                 
                                 base_amount = net_reward * weight / total_weight
                                 
-                                carry_items = carry_map.get(wallet, [])
-                                valid_carry_items = [item for item in carry_items if item.get("sourceCandidateId") != c_hash]
-                                
-                                if valid_carry_items and wallet not in applied_wallets_carry:
-                                    carry_in_amount = sum(item["amount"] for item in valid_carry_items)
-                                    carry_source_ids = [item["sourceCandidateId"] for item in valid_carry_items if item.get("sourceCandidateId")]
-                                    carry_source_count = len(carry_source_ids)
-                                    applied_wallets_carry.add(wallet)
-                                else:
+                                carry_state = wallet_carry_state.get(wallet, {})
+                                try:
+                                    carry_in_amount = float(carry_state.get("amount") or 0.0)
+                                except (ValueError, TypeError):
                                     carry_in_amount = 0.0
-                                    carry_source_ids = []
-                                    carry_source_count = 0
-                                    
-                                total_amount = base_amount + carry_in_amount
+                                carry_source_ids = [
+                                    source_id
+                                    for source_id in carry_state.get("sourceCandidateIds", [])
+                                    if source_id != c_hash and (source_id, wallet) not in paid_pairs
+                                ]
+                                if len(carry_source_ids) != len(carry_state.get("sourceCandidateIds", [])):
+                                    carry_in_amount = 0.0
+                                    for existing_items in carry_map.get(wallet, []):
+                                        source_id = existing_items.get("sourceCandidateId")
+                                        if source_id in carry_source_ids:
+                                            try:
+                                                carry_in_amount += float(existing_items.get("amount") or 0.0)
+                                            except (ValueError, TypeError):
+                                                pass
+
+                                total_amount = carry_in_amount + base_amount
+                                next_source_ids = list(carry_source_ids)
+                                if c_hash and (c_hash, wallet) not in paid_pairs:
+                                    next_source_ids.append(c_hash)
                                 
                                 if total_amount >= min_payout:
                                     payout_status = "pending_manual_payment"
+                                    payout_amount = total_amount
+                                    output_carry_in_amount = carry_in_amount
+                                    output_carry_source_ids = next_source_ids
+                                    output_carry_source_count = len(output_carry_source_ids)
+                                    wallet_carry_state[wallet] = {
+                                        "amount": 0.0,
+                                        "sourceCandidateIds": [],
+                                    }
                                 else:
                                     payout_status = "below_threshold_carried"
+                                    payout_amount = base_amount
+                                    output_carry_in_amount = carry_in_amount
+                                    output_carry_source_ids = carry_source_ids
+                                    output_carry_source_count = len(output_carry_source_ids)
+                                    wallet_carry_state[wallet] = {
+                                        "amount": total_amount,
+                                        "sourceCandidateIds": next_source_ids,
+                                    }
                                     
                                 payouts.append({
                                     "wallet": wallet,
                                     "weight": weight,
-                                    "amount": total_amount,
+                                    "amount": payout_amount,
                                     "baseAmount": base_amount,
-                                    "carryInAmount": carry_in_amount,
+                                    "carryInAmount": output_carry_in_amount,
                                     "status": payout_status,
-                                    "carrySourceCount": carry_source_count,
-                                    "carrySourceCandidateIds": carry_source_ids
+                                    "carrySourceCount": output_carry_source_count,
+                                    "carrySourceCandidateIds": output_carry_source_ids
                                 })
 
         shares_info = {}

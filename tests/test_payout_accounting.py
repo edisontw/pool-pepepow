@@ -1737,7 +1737,7 @@ class PayoutAccountingTests(unittest.TestCase):
             p_a1 = payouts_el1["walletA"]
             self.assertAlmostEqual(p_a1["baseAmount"], 24.75)
             self.assertAlmostEqual(p_a1["carryInAmount"], 60.0)
-            self.assertAlmostEqual(p_a1["amount"], 84.75)
+            self.assertAlmostEqual(p_a1["amount"], 24.75)
             self.assertEqual(p_a1["status"], "below_threshold_carried")
             self.assertEqual(p_a1["carrySourceCount"], 2)
             self.assertIn("height-99", p_a1["carrySourceCandidateIds"])
@@ -1750,14 +1750,16 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertAlmostEqual(p_b1["carryInAmount"], 0.0)
             self.assertEqual(p_b1["status"], "below_threshold_carried")
             
-            # 3. Verify hash_eligible_2 does NOT consume walletA carry again (since it was consumed in hash_eligible_1)
+            # 3. Verify hash_eligible_2 consumes the still-below-threshold hash_eligible_1 amount.
             c_el2 = items["hash_eligible_2"]
             payouts_el2 = {p["wallet"]: p for p in c_el2["payouts"]}
             
             p_a2 = payouts_el2["walletA"]
             self.assertAlmostEqual(p_a2["baseAmount"], 24.75)
-            self.assertAlmostEqual(p_a2["carryInAmount"], 0.0)
-            self.assertEqual(p_a2["status"], "below_threshold_carried")
+            self.assertAlmostEqual(p_a2["carryInAmount"], 84.75)
+            self.assertAlmostEqual(p_a2["amount"], 109.5)
+            self.assertEqual(p_a2["status"], "pending_manual_payment")
+            self.assertEqual(p_a2["carrySourceCandidateIds"], ["height-99", "height-98", "hash_eligible_1", "hash_eligible_2"])
             
             # 4. Test above-threshold logic. If min payout is 50.0 instead, walletA (84.75) should be pending_manual_payment
             os.environ["PEPEPOW_MIN_PAYOUT"] = "50.0"
@@ -2796,6 +2798,33 @@ class CarryFocusedTests(unittest.TestCase):
         with self.output_path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
+    def _write_same_wallet_candidates(self, candidate_ids, *, reward, wallet):
+        self._write_accepted([
+            {
+                "candidate_hash": candidate_id,
+                "lifecycle_status": "confirmed",
+                "matched_height": 100 + idx,
+                "submit_timestamp": f"2026-06-07T00:0{idx}:00Z",
+                "reward": reward,
+            }
+            for idx, candidate_id in enumerate(candidate_ids)
+        ])
+        self._write_rounds([
+            {
+                "candidate_hash": candidate_id,
+                "total_share_score": 10.0,
+                "total_share_count": 10,
+                "shares": {
+                    wallet: {
+                        "share_count": 10,
+                        "share_score": 10.0,
+                        "share_percent": 100.0,
+                    }
+                },
+            }
+            for candidate_id in candidate_ids
+        ])
+
     def test_below_threshold_amount_becomes_carried(self):
         """A payout amount below PEPEPOW_MIN_PAYOUT is marked below_threshold_carried (not pending)."""
         import os
@@ -2836,6 +2865,157 @@ class CarryFocusedTests(unittest.TestCase):
                              "Amount below min_payout must be marked below_threshold_carried")
             self.assertAlmostEqual(p["carryInAmount"], 0.0)
             self.assertLess(p["amount"], 1000.0)
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_same_run_one_below_threshold_payout_stays_carried(self):
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
+        try:
+            wallet = "walletCARRY000000000000000001"
+            self._write_same_wallet_candidates(
+                ["candcarryone000000000000000001"],
+                reward=4387.5,
+                wallet=wallet,
+            )
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+            item = self._load_output()["items"][0]
+            payout = item["payouts"][0]
+            self.assertEqual(payout["status"], "below_threshold_carried")
+            self.assertAlmostEqual(payout["amount"], 4343.625)
+            self.assertAlmostEqual(payout["carryInAmount"], 0.0)
+
+            rc_carry = payout_helper.generate_carry_snapshot(self.output_path, self.carry_path)
+            self.assertEqual(rc_carry, 0)
+            with self.carry_path.open("r", encoding="utf-8") as f:
+                carry = json.load(f)
+            self.assertEqual(len(carry["items"]), 1)
+            self.assertEqual(carry["items"][0]["wallet"], wallet)
+            self.assertAlmostEqual(carry["items"][0]["amount"], 4343.625)
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_same_run_carried_payouts_crossing_threshold_become_pending(self):
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
+        try:
+            wallet = "walletCARRY000000000000000001"
+            candidate_ids = [
+                "candcarryone000000000000000001",
+                "candcarrytwo000000000000000001",
+                "candcarrythr000000000000000001",
+            ]
+            self._write_same_wallet_candidates(candidate_ids, reward=4387.5, wallet=wallet)
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+            items = self._load_output()["items"]
+            payouts = [item["payouts"][0] for item in items]
+
+            self.assertEqual(payouts[0]["status"], "below_threshold_carried")
+            self.assertEqual(payouts[1]["status"], "below_threshold_carried")
+            self.assertAlmostEqual(payouts[1]["carryInAmount"], 4343.625)
+            self.assertEqual(payouts[1]["carrySourceCandidateIds"], [candidate_ids[0]])
+            self.assertEqual(payouts[2]["status"], "pending_manual_payment")
+            self.assertAlmostEqual(payouts[2]["carryInAmount"], 8687.25)
+            self.assertAlmostEqual(payouts[2]["amount"], 13030.875)
+            self.assertEqual(
+                payouts[2]["carrySourceCandidateIds"],
+                candidate_ids,
+            )
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_same_run_carry_state_resets_after_pending_payment(self):
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
+        try:
+            wallet = "walletCARRY000000000000000001"
+            candidate_ids = [
+                "candcarryone000000000000000001",
+                "candcarrytwo000000000000000001",
+                "candcarrythr000000000000000001",
+                "candcarryfour00000000000000001",
+            ]
+            self._write_same_wallet_candidates(candidate_ids, reward=4387.5, wallet=wallet)
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+            payouts = [item["payouts"][0] for item in self._load_output()["items"]]
+
+            self.assertEqual(payouts[2]["status"], "pending_manual_payment")
+            self.assertEqual(payouts[3]["status"], "below_threshold_carried")
+            self.assertAlmostEqual(payouts[3]["amount"], 4343.625)
+            self.assertAlmostEqual(payouts[3]["carryInAmount"], 0.0)
+            self.assertEqual(payouts[3]["carrySourceCandidateIds"], [])
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_same_run_crossing_threshold_is_ready_for_wallet_preview(self):
+        import os
+        original_wallet_readonly_call = payout_helper.wallet_readonly_call
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
+        try:
+            payout_helper.wallet_readonly_call = lambda method, params: (
+                50000.0 if method == "getbalance" else {"isvalid": True}
+            )
+            wallet = "walletCARRY000000000000000001"
+            self._write_same_wallet_candidates(
+                [
+                    "candcarryone000000000000000001",
+                    "candcarrytwo000000000000000001",
+                    "candcarrythr000000000000000001",
+                ],
+                reward=4387.5,
+                wallet=wallet,
+            )
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+
+            dry_run_path = self.tmp_path / "payout-wallet-dry-run.json"
+            rc_dry = payout_helper.payout_wallet_dry_run(self.output_path, dry_run_path)
+            self.assertEqual(rc_dry, 0)
+            with dry_run_path.open("r", encoding="utf-8") as f:
+                dry_run = json.load(f)
+            self.assertEqual(dry_run["readyCount"], 1)
+            self.assertEqual(dry_run["items"][0]["status"], "ready_for_wallet_send_preview")
+            self.assertAlmostEqual(dry_run["items"][0]["amount"], 13030.875)
+        finally:
+            payout_helper.wallet_readonly_call = original_wallet_readonly_call
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_already_paid_carry_source_is_not_reused(self):
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "100.0"
+        try:
+            wallet = "walletPAIDSRC0000000000000001"
+            with (self.output_path.parent / "payment-actions.jsonl").open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "candidate_id": "candpaidcarrysrc00000000000001",
+                    "wallet": wallet,
+                    "amount": 80.0,
+                    "txid": "txidpaidcarrysrc00000000000001",
+                }) + "\n")
+            self._write_carry([
+                {
+                    "wallet": wallet,
+                    "amount": 80.0,
+                    "sourceCandidateId": "candpaidcarrysrc00000000000001",
+                    "sourceBlockHeight": 99,
+                    "sourceBlockHash": "hashpaidcarrysrc00000000000001",
+                    "status": "below_threshold_carried",
+                }
+            ])
+            self._write_same_wallet_candidates(
+                ["candcarrynew000000000000000001"],
+                reward=30.0,
+                wallet=wallet,
+            )
+            rc = self._run_candidates()
+            self.assertEqual(rc, 0)
+            payout = self._load_output()["items"][0]["payouts"][0]
+            self.assertEqual(payout["status"], "below_threshold_carried")
+            self.assertAlmostEqual(payout["carryInAmount"], 0.0)
+            self.assertNotIn("candpaidcarrysrc00000000000001", payout["carrySourceCandidateIds"])
         finally:
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
 
