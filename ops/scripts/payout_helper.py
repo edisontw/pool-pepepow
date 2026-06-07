@@ -15,7 +15,6 @@ import base64
 import urllib.request
 import urllib.error
 import subprocess
-import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -156,58 +155,6 @@ def wallet_readonly_call(method: str, params: list[Any]) -> Any:
             return result
     return query_wallet_cli(method, params)
 
-
-def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_fd, temp_path = tempfile.mkstemp(dir=output_path.parent)
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-        os.replace(temp_path, output_path)
-    except Exception:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-        raise
-
-FAILED_PAYMENT_ACTION_STATUSES = {"failed", "send_failed", "reserved"}
-
-def action_represents_successful_payment(action: dict[str, Any]) -> bool:
-    status = action.get("status")
-    if isinstance(status, str) and status in FAILED_PAYMENT_ACTION_STATUSES:
-        return False
-    return bool(action.get("txid"))
-
-def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: str) -> bool:
-    if not actions_log_path.exists():
-        return False
-    try:
-        with actions_log_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    act = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (
-                    isinstance(act, dict)
-                    and act.get("candidate_id") == candidate_id
-                    and act.get("wallet") == wallet
-                    and action_represents_successful_payment(act)
-                ):
-                    return True
-    except Exception:
-        return False
-    return False
-
-def append_payment_action(actions_log_path: Path, action: dict[str, Any]) -> None:
-    actions_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with actions_log_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(action, sort_keys=True) + "\n")
-
-def payment_actions_lock_path(actions_log_path: Path) -> Path:
-    return actions_log_path.with_name(f"{actions_log_path.stem}.lock")
 
 def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
     # Try verbosity=2
