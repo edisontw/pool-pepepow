@@ -15,6 +15,7 @@ import base64
 import urllib.request
 import urllib.error
 import subprocess
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,14 @@ def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
             os.unlink(temp_path)
         raise
 
+FAILED_PAYMENT_ACTION_STATUSES = {"failed", "send_failed", "reserved"}
+
+def action_represents_successful_payment(action: dict[str, Any]) -> bool:
+    status = action.get("status")
+    if isinstance(status, str) and status in FAILED_PAYMENT_ACTION_STATUSES:
+        return False
+    return bool(action.get("txid"))
+
 def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: str) -> bool:
     if not actions_log_path.exists():
         return False
@@ -181,11 +190,24 @@ def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: 
                     act = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(act, dict) and act.get("candidate_id") == candidate_id and act.get("wallet") == wallet:
+                if (
+                    isinstance(act, dict)
+                    and act.get("candidate_id") == candidate_id
+                    and act.get("wallet") == wallet
+                    and action_represents_successful_payment(act)
+                ):
                     return True
     except Exception:
         return False
     return False
+
+def append_payment_action(actions_log_path: Path, action: dict[str, Any]) -> None:
+    actions_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with actions_log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(action, sort_keys=True) + "\n")
+
+def payment_actions_lock_path(actions_log_path: Path) -> Path:
+    return actions_log_path.with_name(f"{actions_log_path.stem}.lock")
 
 def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
     # Try verbosity=2
@@ -590,6 +612,9 @@ def generate_payments_snapshot(
 
     items = []
     for act in existing_actions:
+        if not action_represents_successful_payment(act):
+            continue
+
         txid = act.get("txid")
         w = act.get("wallet")
         c_id = act.get("candidate_id")
@@ -775,7 +800,11 @@ def record_payment(
                         act = json.loads(line)
                         if not isinstance(act, dict):
                             continue
-                        if act.get("candidate_id") == candidate_id and act.get("wallet") == wallet:
+                        if (
+                            act.get("candidate_id") == candidate_id
+                            and act.get("wallet") == wallet
+                            and action_represents_successful_payment(act)
+                        ):
                             print(f"Error: Duplicate payment rejected. Wallet {wallet} has already been paid for candidate {candidate_id}.", file=sys.stderr)
                             return 1
                         existing_actions.append(act)
@@ -1915,41 +1944,109 @@ def payout_wallet_send_once(
     if not (isinstance(address_res, dict) and address_res.get("isvalid") is True):
         return finish("blocked_invalid_address")
 
-    env = load_env_vars()
-    cli_path = env.get("PEPEPOW_WALLET_CLI") or "/home/ubuntu/PEPEPOW-cli"
-    if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
-        warnings.append("Wallet CLI unavailable or not executable")
-        return finish("blocked_send_failed")
+    lock_path = payment_actions_lock_path(actions_log_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            if payment_already_recorded(actions_log_path, candidate_id, wallet):
+                return finish("blocked_already_paid")
 
-    send_attempted = True
-    try:
-        proc = subprocess.run(
-            [cli_path, "sendtoaddress", wallet, str(expected_amount)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        warnings.append("sendtoaddress failed")
-        return finish("blocked_send_failed")
+            locked_env = load_env_vars()
+            locked_max_sends_raw = locked_env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+            try:
+                locked_max_sends = int(locked_max_sends_raw) if locked_max_sends_raw is not None else None
+            except (TypeError, ValueError):
+                locked_max_sends = None
+            if locked_max_sends != 1:
+                return finish("blocked_budget_exceeded")
 
-    if proc.returncode != 0:
-        warnings.append("sendtoaddress failed")
-        return finish("blocked_send_failed")
+            cli_path = locked_env.get("PEPEPOW_WALLET_CLI") or "/home/ubuntu/PEPEPOW-cli"
+            if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
+                warnings.append("Wallet CLI unavailable or not executable")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": "wallet_cli_unavailable",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
 
-    txid = proc.stdout.strip().splitlines()[0].strip() if proc.stdout.strip() else ""
-    if not re.match(r"^[A-Za-z0-9]{26,128}$", txid):
-        warnings.append("sendtoaddress returned invalid txid")
-        return finish("blocked_send_failed")
+            send_attempted = True
+            try:
+                proc = subprocess.run(
+                    [cli_path, "sendtoaddress", wallet, str(expected_amount)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except Exception as exc:
+                warnings.append("sendtoaddress failed")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": str(exc) or "sendtoaddress_exception",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
 
-    send_sent = True
-    record_rc = record_payment(actions_log_path, payments_snapshot_path, candidate_id, wallet, expected_amount, txid)
-    if record_rc != 0:
-        warnings.append("Payment sent but record-payment failed")
-        return finish("sent_record_failed")
+            if proc.returncode != 0:
+                warnings.append("sendtoaddress failed")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": "sendtoaddress_failed",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
 
-    return finish("sent_recorded")
+            txid = proc.stdout.strip().splitlines()[0].strip() if proc.stdout.strip() else ""
+            if not re.match(r"^[A-Za-z0-9]{26,128}$", txid):
+                warnings.append("sendtoaddress returned invalid txid")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": "invalid_txid",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
+
+            send_sent = True
+            sent_action = {
+                "candidate_id": candidate_id,
+                "wallet": wallet,
+                "amount": expected_amount,
+                "txid": txid,
+                "status": "sent",
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            append_payment_action(actions_log_path, sent_action)
+            clear_consumed_carry(
+                payments_snapshot_path.parent / "payout-candidates.json",
+                payments_snapshot_path.parent / "payout-carry-snapshot.json",
+                candidate_id,
+                wallet,
+            )
+            record_rc = generate_payments_snapshot(actions_log_path, payments_snapshot_path)
+            if record_rc != 0:
+                warnings.append("Payment sent but payments snapshot update failed")
+                return finish("sent_record_failed")
+            return finish("sent_recorded")
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def main() -> int:

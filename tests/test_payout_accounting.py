@@ -2898,6 +2898,14 @@ class WalletSendOnceTests(unittest.TestCase):
         os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
         os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
 
+
+    def _install_noop_cli(self):
+        cli_path = self.tmp_path / "PEPEPOW-cli"
+        cli_path.write_text("#!/usr/bin/env python3\nprint('noop')\n", encoding="utf-8")
+        cli_path.chmod(0o755)
+        os.environ["PEPEPOW_WALLET_CLI"] = str(cli_path)
+        return cli_path
+
     def test_flag_off_blocks_send_and_writes_artifact(self):
         os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "false"
         os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
@@ -3043,6 +3051,115 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertAlmostEqual(actions[0]["amount"], self.amount)
         self.assertEqual(actions[0]["txid"], txid)
 
+
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_already_paid_does_not_call_sendtoaddress(self, mock_run):
+        self._enable_real_once()
+        self._write_candidate()
+        self.actions_log.write_text(json.dumps({
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "txid": "txidalreadypaid000000000000001",
+            "timestamp": "2026-06-07T00:00:00Z",
+        }) + "\n", encoding="utf-8")
+
+        rc = self._run_send_once()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._read_result()["status"], "blocked_already_paid")
+        mock_run.assert_not_called()
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_repeated_invocation_cannot_send_twice_for_same_candidate_wallet(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        self._write_candidate()
+        self._install_noop_cli()
+        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="txidrepeat00000000000000000001\n")
+
+        rc_first = self._run_send_once()
+        rc_second = self._run_send_once()
+
+        self.assertEqual(rc_first, 0)
+        self.assertEqual(rc_second, 0)
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertEqual(self._read_result()["status"], "blocked_already_paid")
+        with self.actions_log.open("r", encoding="utf-8") as f:
+            actions = [json.loads(line) for line in f if line.strip()]
+        sent_actions = [action for action in actions if action.get("status") == "sent"]
+        self.assertEqual(len(sent_actions), 1)
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_failed_send_records_failed_action_and_not_successful_paid(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        self._write_candidate()
+        self._install_noop_cli()
+        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="wallet rejected")
+
+        rc = self._run_send_once()
+        self.assertEqual(rc, 0)
+        data = self._read_result()
+        self.assertEqual(data["status"], "blocked_send_failed")
+        self.assertTrue(data["sendAttempted"])
+        self.assertFalse(data["sendSent"])
+        with self.actions_log.open("r", encoding="utf-8") as f:
+            actions = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["status"], "failed")
+        self.assertFalse(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+        self.assertFalse(self.payments_snapshot.exists())
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_successful_send_records_exactly_one_sent_action(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        self._write_candidate()
+        self._install_noop_cli()
+        txid = "txidsuccess0000000000000000001"
+        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
+
+        rc = self._run_send_once()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._read_result()["status"], "sent_recorded")
+        with self.actions_log.open("r", encoding="utf-8") as f:
+            actions = [json.loads(line) for line in f if line.strip()]
+        sent_actions = [action for action in actions if action.get("status") == "sent"]
+        self.assertEqual(len(sent_actions), 1)
+        self.assertEqual(sent_actions[0]["txid"], txid)
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_budget_exceeded_under_lock_blocks_send(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        self._write_candidate()
+        self._install_noop_cli()
+        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        old_load_env = payout_helper.load_env_vars
+        calls = {"count": 0}
+
+        def fake_load_env():
+            calls["count"] += 1
+            if calls["count"] >= 2:
+                return {
+                    "PEPEPOW_ENABLE_REAL_WALLET_PAYOUT": "true",
+                    "PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS": "2",
+                    "PEPEPOW_WALLET_CLI": os.environ["PEPEPOW_WALLET_CLI"],
+                }
+            return old_load_env()
+
+        try:
+            payout_helper.load_env_vars = fake_load_env
+            rc = self._run_send_once()
+        finally:
+            payout_helper.load_env_vars = old_load_env
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._read_result()["status"], "blocked_budget_exceeded")
+        mock_run.assert_not_called()
 
 
 class WalletSendPreflightTests(unittest.TestCase):
