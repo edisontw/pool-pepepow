@@ -138,7 +138,7 @@ class PayoutAccountingTests(unittest.TestCase):
         # 2. Confirmed block but missing round data
         c2 = cand_map["hash_confirmed_no_round"]
         self.assertEqual(c2["status"], "blocked")
-        self.assertEqual(c2["reason"], "missing_round_data")
+        self.assertEqual(c2["reason"], "blocked_missing_round")
 
         # 3. Confirmed block but missing shares key
         c3 = cand_map["hash_confirmed_no_shares"]
@@ -159,6 +159,157 @@ class PayoutAccountingTests(unittest.TestCase):
         c6 = cand_map["hash_recorded"]
         self.assertEqual(c6["status"], "blocked")
         self.assertEqual(c6["reason"], "unconfirmed_status_candidate_recorded")
+
+
+    def test_confirmed_candidate_not_orphan_from_round_status_fallback(self):
+        accepted_data = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "hash_confirmed_round_status_orphan",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4580896,
+                    "reward": 50000.0,
+                },
+                {
+                    "candidate_hash": "hash_confirmed_followup_no_match",
+                    "lifecycle_status": "confirmed",
+                    "followup_status": "no-match-found",
+                    "matched_height": 4580897,
+                    "reward": 50000.0,
+                },
+            ]
+        }
+        rounds_data = {
+            "rounds": [
+                {
+                    "candidate_hash": "hash_confirmed_round_status_orphan",
+                    "status": "orphan",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                },
+                {
+                    "candidate_hash": "hash_confirmed_followup_no_match",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                },
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data, f)
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data, f)
+
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            item_map = {item["candidate_hash"]: item for item in json.load(f).get("items", [])}
+
+        confirmed = item_map["hash_confirmed_round_status_orphan"]
+        self.assertEqual(confirmed["status"], "ready_for_manual_review")
+        self.assertIsNone(confirmed["reason"])
+        self.assertNotEqual(confirmed["blockedReason"], "orphan_block")
+
+        no_match = item_map["hash_confirmed_followup_no_match"]
+        self.assertEqual(no_match["status"], "blocked")
+        self.assertEqual(no_match["reason"], "orphan_block")
+
+    def test_confirmed_candidate_missing_reward_uses_missing_reward_reason(self):
+        accepted_data = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "hash_confirmed_missing_reward",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4580896,
+                }
+            ]
+        }
+        rounds_data = {
+            "rounds": [
+                {
+                    "candidate_hash": "hash_confirmed_missing_reward",
+                    "status": "orphan",
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data, f)
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data, f)
+
+        original_fetch = payout_helper.fetch_block_info_from_daemon
+        payout_helper.fetch_block_info_from_daemon = lambda block_hash: (134, None)
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            payout_helper.fetch_block_info_from_daemon = original_fetch
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            item = json.load(f)["items"][0]
+
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["reason"], "blocked_missing_reward")
+        self.assertNotEqual(item["blockedReason"], "orphan_block")
+
+    def test_confirmed_candidate_with_shares_and_reward_creates_payouts_from_share_weights(self):
+        accepted_data = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "hash_confirmed_reward_and_shares",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4580896,
+                    "reward": 1000.0,
+                }
+            ]
+        }
+        rounds_data = {
+            "rounds": [
+                {
+                    "candidate_hash": "hash_confirmed_reward_and_shares",
+                    "shares": {
+                        "walletA": {"share_count": 2, "share_score": 2.0},
+                        "walletB": {"share_count": 1, "share_score": 1.0},
+                    },
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data, f)
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data, f)
+
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            item = json.load(f)["items"][0]
+
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertIsNone(item["reason"])
+        self.assertEqual(item["weightMode"], "share_difficulty_sum")
+        self.assertEqual(item["roundShareTotal"], 3.0)
+        self.assertEqual(len(item["payouts"]), 2)
+        self.assertTrue(all(p["status"] == "pending_manual_payment" for p in item["payouts"]))
 
     def test_record_payment_and_duplicate_handling(self):
         # Record first payment
@@ -441,7 +592,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item_map["cand_synthetic_reward"]["reason"], "blocked_invalid_reward")
 
         self.assertEqual(item_map["cand_zero_weight"]["status"], "blocked")
-        self.assertEqual(item_map["cand_zero_weight"]["reason"], "zero_total_round_weight")
+        self.assertEqual(item_map["cand_zero_weight"]["reason"], "blocked_zero_weight")
 
         # Test pool-snapshot.json reward lookup via environment variable
         import os
@@ -674,15 +825,15 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertEqual(c1["rewardSource"], "daemon-rpc")
             self.assertIsNone(c1["reason"])
 
-            # 2. Block orphaned via daemon RPC confirmations
+            # 2. Confirmed lifecycle candidates are not marked orphan from daemon confirmations alone.
             c2 = item_map["hash_orphan_via_daemon_rpc"]
-            self.assertEqual(c2["status"], "blocked")
-            self.assertEqual(c2["reason"], "orphan_block")
+            self.assertEqual(c2["status"], "ready_for_manual_review")
+            self.assertIsNone(c2["reason"])
 
-            # 3. Block orphaned via rounds snapshot status
+            # 3. Confirmed lifecycle candidates are not marked orphan from rounds snapshot status alone.
             c3 = item_map["hash_orphan_via_rounds_snapshot"]
-            self.assertEqual(c3["status"], "blocked")
-            self.assertEqual(c3["reason"], "orphan_block")
+            self.assertEqual(c3["status"], "ready_for_manual_review")
+            self.assertIsNone(c3["reason"])
 
         finally:
             payout_helper.query_rpc = original_query_rpc
