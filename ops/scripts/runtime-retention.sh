@@ -27,16 +27,13 @@ fi
 max_log_bytes=$(( PEPEPOW_RETENTION_LOG_MAX_MB * 1024 * 1024 ))
 max_jsonl_bytes=$(( PEPEPOW_RETENTION_JSONL_MAX_MB * 1024 * 1024 ))
 
-is_critical_jsonl() {
+is_eligible_operational_jsonl() {
   local filename
   filename="$(basename "$1")"
-  
-  if [[ "$filename" == "payment-actions.jsonl" ]] || \
-     [[ "$filename" == *payment*.jsonl ]] || \
-     [[ "$filename" == *payout*.jsonl ]] || \
-     [[ "$filename" == *candidate*outcome*.jsonl ]] || \
-     [[ "$filename" == *candidate*followup*.jsonl ]] || \
-     [[ "$filename" == *accepted*candidate*.jsonl ]]; then
+  if [[ "$filename" == "submit-evidence.jsonl" ]] || \
+     [[ "$filename" == "notify-evidence.jsonl" ]] || \
+     [[ "$filename" == "notify-debug-capture.jsonl" ]] || \
+     [[ "$filename" == "share-hash-probe.jsonl" ]]; then
     return 0
   fi
   return 1
@@ -53,16 +50,25 @@ rotate_file() {
   touch "${file_path}"
 }
 
+get_archive_group() {
+  local filename="$1"
+  if [[ "$filename" =~ ^share-events.*\.gz$ ]]; then
+    echo "share-events"
+  elif [[ "$filename" =~ ^(.+\.(log|jsonl))\.[0-9]{8}-[0-9]{6}\.gz$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    echo ""
+  fi
+}
+
 log_rotate_candidates=0
 jsonl_archive_candidates=0
+share_segment_archive_candidates=0
 skipped_critical_jsonl=0
 skipped_snapshots=0
-old_archives_to_remove=0
-
-rotated_logs=0
-archived_jsonl=0
 removed_old_archives=0
 
+# 1. Process active files (logs and jsonls)
 if [[ -d "${RUNTIME_DIR}" ]]; then
   shopt -s nullglob
   for f in "${RUNTIME_DIR}"/*; do
@@ -78,21 +84,30 @@ if [[ -d "${RUNTIME_DIR}" ]]; then
         log_rotate_candidates=$(( log_rotate_candidates + 1 ))
         if [[ "$APPLY" == "true" ]]; then
           rotate_file "$f"
-          rotated_logs=$(( rotated_logs + 1 ))
         fi
       fi
     elif [[ "$filename" == *.jsonl ]]; then
-      if is_critical_jsonl "$filename"; then
-        skipped_critical_jsonl=$(( skipped_critical_jsonl + 1 ))
-      else
+      if [[ "$filename" == "share-events.jsonl" ]]; then
         size_bytes="$(stat -c '%s' "$f")"
         if (( size_bytes >= max_jsonl_bytes )); then
           jsonl_archive_candidates=$(( jsonl_archive_candidates + 1 ))
           if [[ "$APPLY" == "true" ]]; then
             rotate_file "$f"
-            archived_jsonl=$(( archived_jsonl + 1 ))
           fi
         fi
+      elif [[ "$filename" =~ ^share-events\..+\.jsonl$ ]]; then
+        # Treated separately as share segment candidates
+        :
+      elif is_eligible_operational_jsonl "$filename"; then
+        size_bytes="$(stat -c '%s' "$f")"
+        if (( size_bytes >= max_jsonl_bytes )); then
+          jsonl_archive_candidates=$(( jsonl_archive_candidates + 1 ))
+          if [[ "$APPLY" == "true" ]]; then
+            rotate_file "$f"
+          fi
+        fi
+      else
+        skipped_critical_jsonl=$(( skipped_critical_jsonl + 1 ))
       fi
     elif [[ "$filename" == *.json ]]; then
       skipped_snapshots=$(( skipped_snapshots + 1 ))
@@ -101,83 +116,106 @@ if [[ -d "${RUNTIME_DIR}" ]]; then
   shopt -u nullglob
 fi
 
+# 2. Treat share event rotated segments specially
+share_segments=()
 if [[ -d "${RUNTIME_DIR}" ]]; then
-  basenames=()
   shopt -s nullglob
-  for f in "${RUNTIME_DIR}"/*.log "${RUNTIME_DIR}"/*.jsonl; do
+  for f in "${RUNTIME_DIR}"/share-events.*.jsonl; do
     if [[ -f "$f" ]]; then
-      basenames+=("$(basename "$f")")
-    fi
-  done
-  for f in "${RUNTIME_DIR}"/*; do
-    if [[ -f "$f" ]]; then
-      fname="$(basename "$f")"
-      if [[ "$fname" =~ ^(.+\.(log|jsonl))\.[0-9]{8}-[0-9]{6}\.gz$ ]]; then
-        basenames+=("${BASH_REMATCH[1]}")
-      fi
+      share_segments+=("$f")
     fi
   done
   shopt -u nullglob
+fi
+
+if [ ${#share_segments[@]} -gt 0 ]; then
+  sorted_segments=()
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      sorted_segments+=("${line#* }")
+    fi
+  done < <(stat -c '%Y %n' "${share_segments[@]}" 2>/dev/null | sort -n)
   
-  if [ ${#basenames[@]} -gt 0 ]; then
-    unique_basenames=($(printf '%s\n' "${basenames[@]}" | sort -u))
-    
-    for base in "${unique_basenames[@]}"; do
-      archives=()
-      for f in "${RUNTIME_DIR}"/*; do
-        if [[ -f "$f" ]]; then
-          fname="$(basename "$f")"
-          if [[ "$fname" =~ ^${base}\.[0-9]{8}-[0-9]{6}\.gz$ ]]; then
-            archives+=("$f")
-          fi
-        fi
-      done
-      
-      if [ ${#archives[@]} -gt 0 ]; then
-        sorted_archives=()
-        while IFS= read -r line; do
-          if [[ -n "$line" ]]; then
-            sorted_archives+=("$line")
-          fi
-        done < <(printf '%s\n' "${archives[@]}" | sort)
-        
-        num_archives=${#sorted_archives[@]}
-        if (( num_archives > 7 )); then
-          excess=$(( num_archives - 7 ))
-          for (( i=0; i<excess; i++ )); do
-            archive_to_del="${sorted_archives[i]}"
-            old_archives_to_remove=$(( old_archives_to_remove + 1 ))
-            if [[ "$APPLY" == "true" ]]; then
-              rm -f "$archive_to_del"
-              removed_old_archives=$(( removed_old_archives + 1 ))
-            fi
-          done
-        fi
+  num_segments=${#sorted_segments[@]}
+  if (( num_segments > 3 )); then
+    excess_segments=$(( num_segments - 3 ))
+    for (( i=0; i<excess_segments; i++ )); do
+      seg_file="${sorted_segments[i]}"
+      share_segment_archive_candidates=$(( share_segment_archive_candidates + 1 ))
+      if [[ "$APPLY" == "true" ]]; then
+        gzip "${seg_file}"
       fi
     done
   fi
 fi
 
+# 3. Clean up compressed archives (keeping latest 7 per basename/prefix)
+archive_groups=()
+if [[ -d "${RUNTIME_DIR}" ]]; then
+  shopt -s nullglob
+  for f in "${RUNTIME_DIR}"/*.gz; do
+    group="$(get_archive_group "$(basename "$f")")"
+    if [[ -n "$group" ]]; then
+      archive_groups+=("$group")
+    fi
+  done
+  shopt -u nullglob
+fi
+
+if [ ${#archive_groups[@]} -gt 0 ]; then
+  unique_groups=($(printf '%s\n' "${archive_groups[@]}" | sort -u))
+  for group in "${unique_groups[@]}"; do
+    group_files=()
+    shopt -s nullglob
+    for f in "${RUNTIME_DIR}"/*.gz; do
+      if [[ "$(get_archive_group "$(basename "$f")")" == "$group" ]]; then
+        group_files+=("$f")
+      fi
+    done
+    shopt -u nullglob
+    
+    sorted_files=()
+    if [ ${#group_files[@]} -gt 0 ]; then
+      while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+          sorted_files+=("${line#* }")
+        fi
+      done < <(stat -c '%Y %n' "${group_files[@]}" 2>/dev/null | sort -n)
+    fi
+    
+    num_files=${#sorted_files[@]}
+    if (( num_files > 7 )); then
+      excess=$(( num_files - 7 ))
+      for (( i=0; i<excess; i++ )); do
+        archive_to_del="${sorted_files[i]}"
+        removed_old_archives=$(( removed_old_archives + 1 ))
+        if [[ "$APPLY" == "true" ]]; then
+          rm -f "$archive_to_del"
+        fi
+      done
+    fi
+  done
+fi
+
+action_required="false"
+if (( log_rotate_candidates > 0 || jsonl_archive_candidates > 0 || share_segment_archive_candidates > 0 || removed_old_archives > 0 )); then
+  action_required="true"
+fi
+
 if [[ "$APPLY" == "true" ]]; then
-  cat <<EOF
-runtime_retention: applied
-rotated_logs: ${rotated_logs}
-archived_jsonl: ${archived_jsonl}
-removed_old_archives: ${removed_old_archives}
-skipped_critical_jsonl: ${skipped_critical_jsonl}
-EOF
+  status_mode="applied"
 else
-  action_required="false"
-  if (( log_rotate_candidates > 0 || jsonl_archive_candidates > 0 || old_archives_to_remove > 0 )); then
-    action_required="true"
-  fi
-  cat <<EOF
-runtime_retention: dry-run
+  status_mode="dry-run"
+fi
+
+cat <<EOF
+runtime_retention: ${status_mode}
 runtime_dir: ${RUNTIME_DIR}
 log_rotate_candidates: ${log_rotate_candidates}
 jsonl_archive_candidates: ${jsonl_archive_candidates}
+share_segment_archive_candidates: ${share_segment_archive_candidates}
 skipped_critical_jsonl: ${skipped_critical_jsonl}
 skipped_snapshots: ${skipped_snapshots}
+removed_old_archives: ${removed_old_archives}
 action_required: ${action_required}
 EOF
-fi
