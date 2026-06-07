@@ -202,6 +202,17 @@ pre {
   font-weight: 700;
   border: none;
   cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.button:hover {
+  background: linear-gradient(135deg, #b8ffd3, var(--accent));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(129, 247, 176, 0.25);
+}
+
+.button:active {
+  transform: translateY(0);
 }
 
 .list-state,

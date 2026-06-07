@@ -24,26 +24,33 @@
 
       <main class="page-grid">
         <section class="panel">
-          <h3>Connection profile</h3>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 style="margin: 0;">Connection profile</h3>
+            <button class="button" id="copy-endpoint-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Endpoint</button>
+          </div>
           <div class="kv-list">
             <div><span>Coin</span><strong>PEPEPOW</strong></div>
-            <div><span>Algorithm</span><strong id="connect-algorithm">hoohashv110-pepew</strong></div>
+            <div><span>Algorithm</span><strong id="connect-algorithm">hoohash-pepew / hoohashv110-pepew</strong></div>
             <div><span>Endpoint</span><strong id="connect-endpoint">stratum+tcp://pool.pepepow.net:39333</strong></div>
             <div><span>Identity</span><strong>Wallet address</strong></div>
           </div>
         </section>
 
         <section class="panel">
-          <h3>Sample command</h3>
-          <pre class="code-block" id="sample-command">Loading...</pre>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 style="margin: 0;">Sample command</h3>
+            <button class="button" id="copy-command-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Command</button>
+          </div>
+          <pre class="code-block" id="sample-command" style="margin-top: 0;">Loading...</pre>
         </section>
 
         <section class="panel">
           <h3>Notes</h3>
           <ul class="text-list">
+            <li>Website: <a href="https://pool.pepepow.net" style="color: var(--accent-alt); text-decoration: underline;" target="_blank" rel="noopener noreferrer">https://pool.pepepow.net</a></li>
             <li>Use your PEPEPOW wallet address as the username.</li>
-            <li>Worker names can be appended with a dot suffix.</li>
-            <li>This lightweight site is snapshot-backed from the public API.</li>
+            <li>Worker names can be appended with a dot suffix (e.g. <code>YOUR_WALLET.worker01</code>).</li>
+            <li>This pool is a community-operated reference implementation. Share tracking is pool-side, and payments are processed manually.</li>
           </ul>
         </section>
 

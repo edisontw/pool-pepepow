@@ -5,6 +5,39 @@
     stratumHost: "stratum+tcp://pool.pepepow.net:39333"
   };
 
+  function escapeHtml(str) {
+    if (typeof str !== "string") return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function setupCopyButton(btnId, targetIdOrValue, isValue = false) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      let text = "";
+      if (isValue) {
+        text = targetIdOrValue;
+      } else {
+        const target = document.getElementById(targetIdOrValue);
+        text = target ? target.textContent : "";
+      }
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => {
+          btn.textContent = originalText;
+        }, 2000);
+      }).catch(err => {
+        console.error("Failed to copy: ", err);
+      });
+    });
+  }
+
   async function loadRuntimeConfig() {
     try {
       const response = await fetch("/runtime-config.json", { cache: "no-store" });
@@ -170,7 +203,8 @@
       fetchJson(`${config.apiBaseUrl}/payments`)
     ]);
 
-    setText("algorithm", pool.algorithm);
+    const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : pool.algorithm;
+    setText("algorithm", algoDisplay);
     setText("pool-status", pool.poolStatus);
     setText("pool-hashrate", formatHashrate(pool.poolHashrate));
     setText("active-miners", formatNumber(pool.activeMiners));
@@ -190,7 +224,7 @@
         { key: "height", label: "Height", render: formatNumber },
         { key: "status", label: "Status" },
         { key: "foundAt", label: "Found", render: formatDate }
-      ], "No network blocks tracked in this snapshot.")
+      ], "No network blocks tracked in this snapshot window yet.")
     );
 
     setHtml(
@@ -199,7 +233,7 @@
         { key: "wallet", label: "Wallet" },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Paid", render: formatDate }
-      ], "No manual payments recorded.")
+      ], "No manual payment records are currently available in the public snapshot.")
     );
   }
 
@@ -217,7 +251,7 @@
         { key: "status", label: "Status" },
         { key: "foundAt", label: "Found", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber }
-      ], "No network blocks tracked in this snapshot.")
+      ], "No network blocks tracked in this snapshot window yet.")
     );
     setHtml(
       "accepted-candidates-table",
@@ -251,7 +285,7 @@
             return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
           }
         }
-      ], "No accepted block candidates found yet (real block submission is default-off).")
+      ], "No accepted block candidates found in this snapshot window (chain observation only).")
     );
     setHtml(
       "rounds-table",
@@ -264,10 +298,14 @@
         },
         {
           key: "roundStatus",
-          label: "Round Status",
+          label: "Round Status / Review State",
           render: (val) => {
             if (!val) return "-";
-            return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+            const formatted = val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+            if (formatted.toLowerCase() === "payable") {
+              return "Matched (Pending Manual Review)";
+            }
+            return formatted;
           }
         },
         {
@@ -350,7 +388,7 @@
             </div>`;
           }
         }
-      ], "No rounds tracked in this snapshot.")
+      ], "No active rounds or contribution data tracked in this snapshot.")
     );
   }
 
@@ -373,7 +411,7 @@
         { key: "paidAt", label: "Paid", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber },
         { key: "txid", label: "TXID" }
-      ], "No manual payment records available.")
+      ], "No manual payment records are currently available in the public snapshot.")
     );
   }
 
@@ -385,7 +423,7 @@
     let htmlContent = "";
 
     if (!result.found) {
-      htmlContent += `<div class="muted">No active miner data found for <strong>${wallet}</strong>.<br><small style="display: block; margin-top: 0.5rem; opacity: 0.8;">Note: Miner statistics are generated dynamically from active share submissions and are only retained while there is active mining activity within the snapshot tracking window.</small></div>`;
+      htmlContent += `<div class="muted">No active miner data found for <strong>${escapeHtml(wallet)}</strong>.<br><small style="display: block; margin-top: 0.5rem; opacity: 0.8;">Note: Miner statistics are generated dynamically from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</small></div>`;
     } else {
       const summary = result.summary || {};
       const workers = Array.isArray(result.workers) ? result.workers : [];
@@ -397,12 +435,12 @@
             value: formatNumber(summary.activeWorkers)
           },
           {
-            label: "Hashrate (estimated from shares)",
+            label: "Pool-side estimated hashrate",
             value: formatHashrate(summary.hashrate)
           },
           {
-            label: "Accepted Shares",
-            value: formatNumber(summary.acceptedShares)
+            label: "Accepted shares",
+            value: `${formatNumber(summary.acceptedShares)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">Shares accepted by the pool. This does not imply a confirmed block reward.</small>`
           },
           {
             label: "Last Share",
@@ -418,8 +456,8 @@
       htmlContent += "<h3>Workers</h3>";
       htmlContent += renderTable(workers, [
         { key: "name", label: "Worker" },
-        { key: "acceptedShares", label: "Accepted Shares", render: formatNumber },
-        { key: "hashrate", label: "Hashrate (estimated from shares)", render: formatHashrate },
+        { key: "acceptedShares", label: "Accepted shares", render: formatNumber },
+        { key: "hashrate", label: "Pool-side estimated hashrate", render: formatHashrate },
         { key: "lastShareAt", label: "Last Share", render: formatDate }
       ]);
     }
@@ -472,9 +510,9 @@
     const pool = await fetchJson(`${config.apiBaseUrl}/pool/summary`);
     const endpoint = `stratum+tcp://${pool.stratum.host}:${pool.stratum.port}`;
     const sampleCommand =
-      `./miner --algo ${pool.algorithm} --server ${endpoint} --user YOUR_WALLET.worker01 --pass x`;
+      `./miner --algo hoohash-pepew --server ${endpoint} --user YOUR_WALLET.worker01 --pass x`;
 
-    setText("connect-algorithm", pool.algorithm);
+    setText("connect-algorithm", "hoohash-pepew / hoohashv110-pepew");
     setText("connect-endpoint", endpoint);
     setText("sample-command", sampleCommand);
   }
@@ -487,6 +525,7 @@
     try {
       if (page === "dashboard") {
         await renderDashboard(config);
+        setupCopyButton("copy-stratum-btn", "stratum-endpoint");
       } else if (page === "blocks") {
         await renderBlocks(config);
       } else if (page === "payments") {
@@ -495,6 +534,8 @@
         await renderMiner(config);
       } else if (page === "connect") {
         await renderConnect(config);
+        setupCopyButton("copy-endpoint-btn", "connect-endpoint");
+        setupCopyButton("copy-command-btn", "sample-command");
       }
     } catch (error) {
       document.querySelectorAll(".list-state").forEach((node) => {

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PEPEPOW Pool</title>
+    <title>PEPEPOW Community Pool</title>
     <link rel="stylesheet" href="/assets/styles.css">
   </head>
   <body data-page="dashboard">
@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">PEPEPOW Community Pool</p>
-          <h1>Single-coin pool status</h1>
+          <h1>Community pool status</h1>
         </div>
         <nav class="nav">
           <a href="/">Dashboard</a>
@@ -28,8 +28,9 @@
             <p class="eyebrow">Algorithm</p>
             <h2 id="algorithm">Loading...</h2>
             <p class="muted">
-              Public website and API are live-facing. Daemon RPC, Redis, and payout
-              tooling stay private.
+              A community-operated PEPEPOW pool implementation focused on stability, transparency, and reproducible deployment. 
+              Public mining endpoint and share tracking are active, with manual payment records available. 
+              Built as a reference community pool, not a large-scale commercial operation.
             </p>
           </div>
           <div class="status-stack">
@@ -42,7 +43,7 @@
           <h3>Pool Summary</h3>
           <div class="metric-grid">
             <article>
-              <span>Pool Hashrate (estimated from shares)</span>
+              <span>Pool-side estimated hashrate</span>
               <strong id="pool-hashrate">-</strong>
             </article>
             <article>
@@ -54,10 +55,13 @@
               <strong id="active-workers">-</strong>
             </article>
             <article>
-              <span>Last Block</span>
+              <span>Last Block Found</span>
               <strong id="last-block-time">-</strong>
             </article>
           </div>
+          <p class="muted small-gap" style="font-size: 0.85rem; margin-top: 1rem;">
+            * Hashrate is estimated from accepted shares observed by this pool. Active miners and workers represent current connections within the snapshot tracking window.
+          </p>
         </section>
 
         <section class="panel">
@@ -71,13 +75,16 @@
         </section>
 
         <section class="panel">
-          <h3>Connect</h3>
-          <div class="callout">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 style="margin: 0;">Connect</h3>
+            <button class="button" id="copy-stratum-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Endpoint</button>
+          </div>
+          <div class="callout" style="margin-top: 0;">
             <p class="muted">Miner-facing Stratum endpoint</p>
             <code id="stratum-endpoint">stratum+tcp://pool.pepepow.net:39333</code>
           </div>
           <p class="muted small-gap">
-            This lightweight frontend reads snapshot-backed data from the public API.
+            The public mining endpoint is open to the community. Accepted shares are tracked pool-side, and manual payment records are updated transparently.
           </p>
           <a class="button" href="/connect.html">Open connection guide</a>
         </section>

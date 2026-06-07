@@ -32,17 +32,17 @@
         </section>
 
         <section class="panel">
-          <h2>Accepted pool candidates / chain match</h2>
+          <h2>Accepted pool candidates / chain observation</h2>
           <p class="muted">
-            Candidates found by this pool and submitted to the daemon. Note: Payout and round accounting are currently paused; accepted candidates represent chain match status only and are not payout-ready.
+            Pool-found candidates are tracked for chain-match and lifecycle observation. Note: Payout review remains a separate manual operator step; candidates represent chain match observations only and are not payout-ready.
           </p>
           <div id="accepted-candidates-table" class="list-state">Loading accepted candidates...</div>
         </section>
 
         <section class="panel">
-          <h2>Rounds / accounting preview</h2>
+          <h2>Rounds / observation preview</h2>
           <p class="muted">
-            Internal/test round accounting preview based on shares and candidate match. Note: Payout execution is disabled.
+            Internal round observation preview based on pool-side shares and candidate match. Note: Payout execution is disabled and requires manual operator review.
           </p>
           <div id="rounds-table" class="list-state">Loading rounds...</div>
         </section>
