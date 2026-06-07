@@ -1940,6 +1940,228 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_warn["summary"]["carryItems"], 0)
         self.assertEqual(res_warn["summary"]["carryTotalAmount"], 0.0)
 
+    def test_payout_review_check_ready(self):
+        """ready label emitted when there is at least one ready candidate."""
+        import io as _io
+
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        # Carry items must reference a candidate that exists and is NOT blocked in order for
+        # carry_audit_status to stay "ok" (otherwise payout_review returns status: warning).
+        # Use a ready_for_manual_review candidate as the carry source.
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hash_ready_1",
+                    "candidateId": "hash_ready_1",
+                    "status": "ready_for_manual_review",
+                    "lifecycle_status": "confirmed",
+                    "lifecycleStatus": "confirmed",
+                    "height": 100,
+                    "payouts": []
+                },
+                {
+                    "candidate_hash": "hash_blocked_1",
+                    "candidateId": "hash_blocked_1",
+                    "status": "blocked",
+                    "lifecycle_status": "immature",
+                    "lifecycleStatus": "immature",
+                    "height": 101,
+                    "payouts": []
+                }
+            ]
+        }
+        # Carry items sourced from the ready candidate (confirmed, not blocked) → audit passes
+        carry_data = {"generatedAt": "2026-06-07T00:00:00Z", "items": [
+            {"wallet": "walletA", "amount": 1234.5, "sourceCandidateId": "hash_ready_1",
+             "status": "below_threshold_carried"},
+            {"wallet": "walletB", "amount": 0.0, "sourceCandidateId": "hash_ready_1",
+             "status": "below_threshold_carried"},
+        ]}
+        payments_data = {"items": []}
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        before_files = set(self.tmp_path.iterdir())
+
+        buf = _io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            rc = payout_helper.payout_review_check(candidates_file, carry_file, payments_file)
+        finally:
+            sys.stdout = old_stdout
+        output = buf.getvalue()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("payout_review_check: ready", output)
+        self.assertIn("status: ok", output)
+        self.assertIn("ready_candidates: 1", output)
+        self.assertIn("blocked_candidates: 1", output)
+        self.assertIn("carry_items: 2", output)
+        self.assertIn("carry_audit_status: ok", output)
+
+        # No new files written
+        after_files = set(self.tmp_path.iterdir())
+        self.assertEqual(before_files, after_files, "payout_review_check must not write runtime files")
+
+    def test_payout_review_check_no_ready_candidates(self):
+        """no-ready-candidates label when all candidates are blocked."""
+        import io as _io
+
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hash_blocked_2",
+                    "candidateId": "hash_blocked_2",
+                    "status": "blocked",
+                    "lifecycle_status": "immature",
+                    "lifecycleStatus": "immature",
+                    "height": 200,
+                    "payouts": []
+                }
+            ]
+        }
+        carry_data = {"generatedAt": "2026-06-07T00:00:00Z", "items": []}
+        payments_data = {"items": []}
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        buf = _io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            rc = payout_helper.payout_review_check(candidates_file, carry_file, payments_file)
+        finally:
+            sys.stdout = old_stdout
+        output = buf.getvalue()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("payout_review_check: no-ready-candidates", output)
+        self.assertIn("status: ok", output)
+        self.assertIn("ready_candidates: 0", output)
+        self.assertIn("blocked_candidates: 1", output)
+
+    def test_payout_review_check_warning_on_missing_files(self):
+        """warning status and exit code 1 when input files are missing."""
+        import io as _io
+
+        missing_candidates = self.tmp_path / "nonexistent-candidates.json"
+        missing_carry = self.tmp_path / "nonexistent-carry.json"
+        missing_payments = self.tmp_path / "nonexistent-payments.json"
+
+        buf = _io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            rc = payout_helper.payout_review_check(missing_candidates, missing_carry, missing_payments)
+        finally:
+            sys.stdout = old_stdout
+        output = buf.getvalue()
+
+        self.assertEqual(rc, 1)
+        self.assertIn("payout_review_check: warning", output)
+        self.assertIn("status: warning", output)
+        self.assertIn("carry_audit_status: warning", output)
+
+    def test_payout_review_check_warning_on_malformed_candidates(self):
+        """warning status and exit code 1 when candidates JSON is malformed."""
+        import io as _io
+
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            f.write("{invalid json}")
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump({"generatedAt": "2026-06-07T00:00:00Z", "items": []}, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump({"items": []}, f)
+
+        buf = _io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            rc = payout_helper.payout_review_check(candidates_file, carry_file, payments_file)
+        finally:
+            sys.stdout = old_stdout
+        output = buf.getvalue()
+
+        self.assertEqual(rc, 1)
+        self.assertIn("payout_review_check: warning", output)
+        self.assertIn("status: warning", output)
+
+    def test_payout_review_check_via_sh(self):
+        """payout-review-check command works end-to-end via live-stratum.sh."""
+        import subprocess
+        import os
+
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hashcheckcandidatesh0000000001",
+                    "candidateId": "hashcheckcandidatesh0000000001",
+                    "status": "ready_for_manual_review",
+                    "lifecycle_status": "confirmed",
+                    "lifecycleStatus": "confirmed",
+                    "height": 300,
+                    "payouts": []
+                }
+            ]
+        }
+        carry_data = {"generatedAt": "2026-06-07T00:00:00Z", "items": []}
+        payments_data = {"items": []}
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+        env = dict(os.environ)
+        env["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(self.tmp_path)
+
+        before_files = set(self.tmp_path.iterdir())
+
+        res = subprocess.run(
+            [str(sh_path), "payout-review-check"],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0, msg=f"stderr: {res.stderr}")
+        self.assertIn("payout_review_check: ready", res.stdout)
+        self.assertIn("status: ok", res.stdout)
+        self.assertIn("ready_candidates: 1", res.stdout)
+
+        # No new runtime files created beyond what was there before
+        after_files = set(self.tmp_path.iterdir())
+        self.assertEqual(before_files, after_files, "payout-review-check must not write runtime files")
+
+
 if __name__ == "__main__":
     unittest.main()
 

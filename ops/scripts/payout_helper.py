@@ -1214,6 +1214,75 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     print("="*80)
     return 0
 
+def payout_review_check(candidates_path: Path, carry_path: Path, payments_path: Path) -> int:
+    """Read-only payout review check for cron/monitoring.
+
+    Consumes the same JSON data path as ``payout_review(..., as_json=True)``.
+    Does not write any files, does not call wallet RPC, does not record payment.
+
+    Exit codes:
+        0 - ready or no-ready-candidates (status ok)
+        1 - warning (malformed/missing input)
+        2 - unexpected internal error
+    """
+    try:
+        # --- Gather payout_review JSON internally (no subprocess, no text parsing) ---
+        import io as _io
+        buf = _io.StringIO()
+        _old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            payout_review(candidates_path, carry_path, payments_path, as_json=True)
+        finally:
+            sys.stdout = _old_stdout
+        raw = buf.getvalue().strip()
+        if not raw:
+            print("payout_review_check: warning")
+            print("status: warning")
+            print("carry_audit_status: warning")
+            return 1
+        review = json.loads(raw)
+    except Exception:
+        print("payout_review_check: warning")
+        print("status: warning")
+        print("carry_audit_status: warning")
+        return 1
+
+    try:
+        summary = review.get("summary", {})
+        status = review.get("status", "warning")
+        ready_candidates = summary.get("readyCandidates", 0)
+        blocked_candidates = summary.get("blockedCandidates", 0)
+        carry_items = summary.get("carryItems", 0)
+        carry_total_amount = summary.get("carryTotalAmount", 0.0)
+        carry_audit_status = summary.get("carryAuditStatus", "unknown")
+
+        if status != "ok":
+            print("payout_review_check: warning")
+            print("status: warning")
+            print(f"carry_audit_status: {carry_audit_status}")
+            return 1
+
+        if ready_candidates > 0:
+            check_label = "ready"
+        else:
+            check_label = "no-ready-candidates"
+
+        print(f"payout_review_check: {check_label}")
+        print(f"status: ok")
+        print(f"ready_candidates: {ready_candidates}")
+        print(f"blocked_candidates: {blocked_candidates}")
+        print(f"carry_items: {carry_items}")
+        print(f"carry_total_amount: {carry_total_amount}")
+        print(f"carry_audit_status: {carry_audit_status}")
+        return 0
+    except Exception:
+        print("payout_review_check: warning")
+        print("status: warning")
+        print("carry_audit_status: warning")
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1254,6 +1323,11 @@ def main() -> int:
     parser_review.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
     parser_review.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
     parser_review.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    parser_check = subparsers.add_parser("payout-review-check", help="Compact read-only payout status for cron/monitoring")
+    parser_check.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_check.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
+    parser_check.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
 
     args = parser.parse_args()
 
@@ -1300,6 +1374,12 @@ def main() -> int:
             Path(args.carry_snapshot),
             Path(args.payments_snapshot),
             as_json=args.json
+        )
+    elif args.command == "payout-review-check":
+        return payout_review_check(
+            Path(args.candidates),
+            Path(args.carry_snapshot),
+            Path(args.payments_snapshot)
         )
 
     return 0
