@@ -59,9 +59,66 @@ class PayoutAccountingTests(unittest.TestCase):
                 if isinstance(c.get("coinbase_outputs"), list):
                     return {"vout": c["coinbase_outputs"]}
                 if c.get("reward") is not None:
-                    return {"vout": [{"value": c.get("reward")}]}
+                    try:
+                        miner_reward = float(c.get("reward"))
+                    except (ValueError, TypeError):
+                        return {"vout": []}
+                    return {
+                        "vout": [
+                            {"value": miner_reward},
+                            {"value": miner_reward * 35.0 / 65.0},
+                        ]
+                    }
                 return {"vout": []}
         return None
+
+    def _write_single_confirmed_candidate(self, candidate_hash, coinbase_outputs):
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": candidate_hash,
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 4580896,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": coinbase_outputs,
+                    }
+                ]
+            }, f)
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "rounds": [
+                    {
+                        "candidate_hash": candidate_hash,
+                        "total_share_score": 100.0,
+                        "total_share_count": 100,
+                        "shares": {"walletA": {"share_count": 100, "share_score": 100.0}},
+                    }
+                ]
+            }, f)
+
+    def _generate_single_candidate(self, candidate_hash, coinbase_outputs):
+        self._write_single_confirmed_candidate(candidate_hash, coinbase_outputs)
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        old_fee = os.environ.get("PEPEPOW_POOL_FEE_PERCENT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+            if old_fee is None:
+                os.environ.pop("PEPEPOW_POOL_FEE_PERCENT", None)
+            else:
+                os.environ["PEPEPOW_POOL_FEE_PERCENT"] = old_fee
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            return json.load(f)["items"][0]
 
     def test_payout_candidates_empty_missing_files(self):
         # Missing files should not crash and generate empty list
@@ -404,18 +461,104 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["totalBlockReward"], 7000.0)
         self.assertEqual(item["minerGrossReward"], 4387.5)
         self.assertEqual(item["grossReward"], 4387.5)
-        self.assertIsNone(item["masternodeReward"])
-        self.assertIsNone(item["devFeeReward"])
+        self.assertEqual(item["masternodeReward"], 2362.5)
+        self.assertEqual(item["devFeeReward"], 250.0)
         self.assertEqual(item["coinbaseTotalReward"], 7000.0)
         self.assertEqual(item["minerRewardOutputIndex"], 0)
         self.assertEqual(item["minerRewardAmount"], 4387.5)
-        self.assertEqual(item["rewardSource"], "coinbase_vout_0_miner_reward")
+        self.assertEqual(item["masternodeRewardAmount"], 2362.5)
+        self.assertEqual(item["specialRewardAmount"], 250.0)
+        self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward")
         self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [2362.5, 250.0])
         self.assertAlmostEqual(item["poolFeeAmount"], 43.875)
         self.assertAlmostEqual(item["netReward"], 4343.625)
         self.assertEqual(len(item["payouts"]), 1)
         self.assertAlmostEqual(item["payouts"][0]["amount"], 4343.625)
         self.assertNotAlmostEqual(item["payouts"][0]["amount"], 6930.0)
+
+    def test_coinbase_miner_reward_detected_when_vout0(self):
+        item = self._generate_single_candidate(
+            "hash_miner_vout0",
+            [
+                {"value": 4387.5},
+                {"value": 2362.5},
+                {"value": 250.0},
+            ],
+        )
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertEqual(item["minerRewardOutputIndex"], 0)
+        self.assertEqual(item["minerRewardAmount"], 4387.5)
+        self.assertEqual(item["grossReward"], 4387.5)
+        self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward")
+
+    def test_coinbase_miner_reward_detected_when_vout2(self):
+        item = self._generate_single_candidate(
+            "hash_miner_vout2",
+            [
+                {"value": 2362.5},
+                {"value": 250.0},
+                {"value": 4387.5},
+            ],
+        )
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertEqual(item["minerRewardOutputIndex"], 2)
+        self.assertEqual(item["minerRewardAmount"], 4387.5)
+        self.assertEqual(item["grossReward"], 4387.5)
+
+    def test_coinbase_masternode_reward_before_miner_is_excluded(self):
+        item = self._generate_single_candidate(
+            "hash_masternode_before_miner",
+            [
+                {"value": 2362.5},
+                {"value": 250.0},
+                {"value": 4387.5},
+            ],
+        )
+        self.assertEqual(item["masternodeRewardAmount"], 2362.5)
+        self.assertEqual(item["minerRewardOutputIndex"], 2)
+        self.assertIn(2362.5, [out["value"] for out in item["excludedCoinbaseOutputs"]])
+
+    def test_coinbase_special_250_output_is_excluded(self):
+        item = self._generate_single_candidate(
+            "hash_special_excluded",
+            [
+                {"value": 2362.5},
+                {"value": 250.0},
+                {"value": 4387.5},
+            ],
+        )
+        self.assertEqual(item["specialRewardAmount"], 250.0)
+        self.assertIn(250.0, [out["value"] for out in item["excludedCoinbaseOutputs"]])
+
+    def test_coinbase_superblock_reward_uses_actual_total_and_split(self):
+        item = self._generate_single_candidate(
+            "hash_superblock_split",
+            [
+                {"value": 4812.5},
+                {"value": 250.0},
+                {"value": 8937.5},
+            ],
+        )
+        self.assertEqual(item["coinbaseTotalReward"], 14000.0)
+        self.assertEqual(item["minerRewardOutputIndex"], 2)
+        self.assertEqual(item["minerRewardAmount"], 8937.5)
+        self.assertEqual(item["masternodeRewardAmount"], 4812.5)
+        self.assertEqual(item["specialRewardAmount"], 250.0)
+        self.assertAlmostEqual(item["netReward"], 8848.125)
+
+    def test_coinbase_candidate_blocked_when_no_output_matches_miner_split_reward(self):
+        item = self._generate_single_candidate(
+            "hash_no_miner_match",
+            [
+                {"value": 3000.0},
+                {"value": 250.0},
+                {"value": 3000.0},
+            ],
+        )
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["reason"], "blocked_missing_miner_reward_output")
+        self.assertIsNone(item["grossReward"])
+        self.assertIsNone(item["minerRewardAmount"])
 
     def test_record_payment_and_duplicate_handling(self):
         # Record first payment
@@ -730,9 +873,9 @@ class PayoutAccountingTests(unittest.TestCase):
                     "matched_height": 300,
                     "submit_timestamp": "2026-06-06T12:00:00Z",
                     "coinbase_outputs": [
-                        {"value": 4100.0},
-                        {"value": 1500.0},
-                        {"value": 400.0},
+                        {"value": 3900.0},
+                        {"value": 2100.0},
+                        {"value": 250.0},
                     ],
                 }
             ]
@@ -771,11 +914,11 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(len(items_snap), 1)
         item = items_snap[0]
         self.assertEqual(item["status"], "ready_for_manual_review")
-        self.assertEqual(item["totalBlockReward"], 6000.0)
-        self.assertAlmostEqual(item["minerGrossReward"], 4100.0)
+        self.assertEqual(item["totalBlockReward"], 6250.0)
+        self.assertAlmostEqual(item["minerGrossReward"], 3900.0)
         self.assertEqual(item["grossReward"], item["minerGrossReward"])
-        self.assertEqual(item["rewardSource"], "coinbase_vout_0_miner_reward")
-        self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [1500.0, 400.0])
+        self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward")
+        self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [2100.0, 250.0])
         self.assertIsNone(item["reason"])
 
         # Test missing miner output rejection
@@ -860,20 +1003,25 @@ class PayoutAccountingTests(unittest.TestCase):
                 if txid == "coinbase_tx_hash_123":
                     return {
                         "vout": [
-                            {"value": 3500.0},
-                            {"value": 3500.0}
+                            {"value": 2362.5},
+                            {"value": 250.0},
+                            {"value": 4387.5}
                         ]
                     }
                 elif txid == "coinbase_tx_hash_456":
                     return {
                         "vout": [
-                            {"value": 7000.0}
+                            {"value": 4387.5},
+                            {"value": 2362.5},
+                            {"value": 250.0}
                         ]
                     }
                 elif txid == "coinbase_tx_hash_789":
                     return {
                         "vout": [
-                            {"value": 7000.0}
+                            {"value": 4387.5},
+                            {"value": 2362.5},
+                            {"value": 250.0}
                         ]
                     }
             return None
@@ -969,13 +1117,15 @@ class PayoutAccountingTests(unittest.TestCase):
             c1 = item_map["hash_resolved_via_daemon_rpc"]
             self.assertEqual(c1["status"], "ready_for_manual_review")
             self.assertEqual(c1["totalBlockReward"], 7000.0)
-            self.assertEqual(c1["minerGrossReward"], 3500.0)
+            self.assertEqual(c1["minerGrossReward"], 4387.5)
             self.assertEqual(c1["grossReward"], c1["minerGrossReward"])
-            self.assertEqual(c1["rewardSource"], "coinbase_vout_0_miner_reward")
+            self.assertEqual(c1["rewardSource"], "coinbase_detected_miner_split_reward")
             self.assertEqual(c1["coinbaseTxid"], "coinbase_tx_hash_123")
-            self.assertEqual(c1["minerRewardOutputIndex"], 0)
-            self.assertEqual(c1["minerRewardAmount"], 3500.0)
-            self.assertEqual([out["value"] for out in c1["excludedCoinbaseOutputs"]], [3500.0])
+            self.assertEqual(c1["minerRewardOutputIndex"], 2)
+            self.assertEqual(c1["minerRewardAmount"], 4387.5)
+            self.assertEqual(c1["masternodeRewardAmount"], 2362.5)
+            self.assertEqual(c1["specialRewardAmount"], 250.0)
+            self.assertEqual([out["value"] for out in c1["excludedCoinbaseOutputs"]], [2362.5, 250.0])
             self.assertIsNone(c1["reason"])
 
             # 2. Confirmed lifecycle candidates are not marked orphan from daemon confirmations alone.
@@ -2611,7 +2761,16 @@ class CarryFocusedTests(unittest.TestCase):
                 if c.get("candidate_hash") != block_hash:
                     continue
                 if c.get("reward") is not None:
-                    return {"vout": [{"value": c.get("reward")}]}
+                    try:
+                        miner_reward = float(c.get("reward"))
+                    except (ValueError, TypeError):
+                        return {"vout": []}
+                    return {
+                        "vout": [
+                            {"value": miner_reward},
+                            {"value": miner_reward * 35.0 / 65.0},
+                        ]
+                    }
                 return {"vout": []}
         return None
 
