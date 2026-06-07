@@ -311,6 +311,68 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(len(item["payouts"]), 2)
         self.assertTrue(all(p["status"] == "pending_manual_payment" for p in item["payouts"]))
 
+    def test_payout_candidates_use_miner_reward_for_fee_and_payout_amount(self):
+        accepted_data = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "hash_current_split_7000_reward",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4580896,
+                    "reward": 7000.0,
+                }
+            ]
+        }
+        rounds_data = {
+            "rounds": [
+                {
+                    "candidate_hash": "hash_current_split_7000_reward",
+                    "total_share_score": 100.0,
+                    "total_share_count": 100,
+                    "shares": {
+                        "walletA": {"share_count": 100, "share_score": 100.0},
+                    },
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data, f)
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump(rounds_data, f)
+
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        old_fee = os.environ.get("PEPEPOW_POOL_FEE_PERCENT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+            if old_fee is None:
+                os.environ.pop("PEPEPOW_POOL_FEE_PERCENT", None)
+            else:
+                os.environ["PEPEPOW_POOL_FEE_PERCENT"] = old_fee
+
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            item = json.load(f)["items"][0]
+
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertEqual(item["totalBlockReward"], 7000.0)
+        self.assertEqual(item["minerGrossReward"], 4387.5)
+        self.assertEqual(item["grossReward"], 4387.5)
+        self.assertEqual(item["masternodeReward"], 2362.5)
+        self.assertEqual(item["devFeeReward"], 250.0)
+        self.assertAlmostEqual(item["poolFeeAmount"], 43.875)
+        self.assertAlmostEqual(item["netReward"], 4343.625)
+        self.assertEqual(len(item["payouts"]), 1)
+        self.assertAlmostEqual(item["payouts"][0]["amount"], 4343.625)
+        self.assertNotAlmostEqual(item["payouts"][0]["amount"], 6930.0)
+
     def test_record_payment_and_duplicate_handling(self):
         # Record first payment
         rc = payout_helper.record_payment(
@@ -659,7 +721,9 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(len(items_snap), 1)
         item = items_snap[0]
         self.assertEqual(item["status"], "ready_for_manual_review")
-        self.assertEqual(item["grossReward"], 60000.0)
+        self.assertEqual(item["totalBlockReward"], 60000.0)
+        self.assertAlmostEqual(item["minerGrossReward"], 37607.142857142855)
+        self.assertEqual(item["grossReward"], item["minerGrossReward"])
         self.assertEqual(item["rewardSource"], "pool-snapshot")
         self.assertIsNone(item["reason"])
 
@@ -821,7 +885,9 @@ class PayoutAccountingTests(unittest.TestCase):
             # 1. Block resolved via daemon RPC
             c1 = item_map["hash_resolved_via_daemon_rpc"]
             self.assertEqual(c1["status"], "ready_for_manual_review")
-            self.assertEqual(c1["grossReward"], 7000.0)
+            self.assertEqual(c1["totalBlockReward"], 7000.0)
+            self.assertEqual(c1["minerGrossReward"], 4387.5)
+            self.assertEqual(c1["grossReward"], c1["minerGrossReward"])
             self.assertEqual(c1["rewardSource"], "daemon-rpc")
             self.assertIsNone(c1["reason"])
 
@@ -1428,21 +1494,22 @@ class PayoutAccountingTests(unittest.TestCase):
             c_el1 = items["hash_eligible_1"]
             payouts_el1 = {p["wallet"]: p for p in c_el1["payouts"]}
             
-            # walletA: net share = 50 * 0.99 * 0.5 = 24.75. carry = 60.0. total = 84.75 < 100.0 (min_payout)
+            # walletA: net share = miner portion of 50 * 0.99 * 0.5 = 15.512946428571428.
+            # carry = 60.0. total = 75.51294642857143 < 100.0 (min_payout).
             # So status is below_threshold_carried
             p_a1 = payouts_el1["walletA"]
-            self.assertAlmostEqual(p_a1["baseAmount"], 24.75)
+            self.assertAlmostEqual(p_a1["baseAmount"], 15.512946428571428)
             self.assertAlmostEqual(p_a1["carryInAmount"], 60.0)
-            self.assertAlmostEqual(p_a1["amount"], 84.75)
+            self.assertAlmostEqual(p_a1["amount"], 75.51294642857143)
             self.assertEqual(p_a1["status"], "below_threshold_carried")
             self.assertEqual(p_a1["carrySourceCount"], 2)
             self.assertIn("height-99", p_a1["carrySourceCandidateIds"])
             self.assertIn("height-98", p_a1["carrySourceCandidateIds"])
             
-            # walletB: net share = 24.75. no carry. total = 24.75 < 100.0.
+            # walletB: net share = 15.512946428571428. no carry.
             # So status is below_threshold_carried
             p_b1 = payouts_el1["walletB"]
-            self.assertAlmostEqual(p_b1["baseAmount"], 24.75)
+            self.assertAlmostEqual(p_b1["baseAmount"], 15.512946428571428)
             self.assertAlmostEqual(p_b1["carryInAmount"], 0.0)
             self.assertEqual(p_b1["status"], "below_threshold_carried")
             
@@ -1451,7 +1518,7 @@ class PayoutAccountingTests(unittest.TestCase):
             payouts_el2 = {p["wallet"]: p for p in c_el2["payouts"]}
             
             p_a2 = payouts_el2["walletA"]
-            self.assertAlmostEqual(p_a2["baseAmount"], 24.75)
+            self.assertAlmostEqual(p_a2["baseAmount"], 15.512946428571428)
             self.assertAlmostEqual(p_a2["carryInAmount"], 0.0)
             self.assertEqual(p_a2["status"], "below_threshold_carried")
             
@@ -2510,7 +2577,7 @@ class CarryFocusedTests(unittest.TestCase):
                 "lifecycle_status": "confirmed",
                 "matched_height": 101,
                 "submit_timestamp": "2026-06-07T00:01:00Z",
-                "reward": 30.3030  # ~30.0 net after 1% fee
+                "reward": 48.34671501338168  # ~30.0 miner net after 1% fee
             }])
             self._write_rounds([{
                 "candidate_hash": "candnew0000000000000000000000001",
