@@ -19,9 +19,49 @@ class PayoutAccountingTests(unittest.TestCase):
         self.output_path = self.tmp_path / "payout-candidates.json"
         self.actions_log = self.tmp_path / "payment-actions.jsonl"
         self.snapshot_path = self.tmp_path / "payments-snapshot.json"
+        self.original_query_rpc = payout_helper.query_rpc
+        payout_helper.query_rpc = self._mock_coinbase_rpc
 
     def tearDown(self):
+        payout_helper.query_rpc = self.original_query_rpc
         self.tmp_dir.cleanup()
+
+    def _accepted_candidates_by_height(self):
+        if not self.accepted_path.exists():
+            return {}
+        with self.accepted_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        out = {}
+        for c in data.get("accepted_candidates", []):
+            if isinstance(c, dict) and c.get("matched_height") is not None:
+                out[int(c["matched_height"])] = c
+        return out
+
+    def _mock_coinbase_rpc(self, method, params):
+        by_height = self._accepted_candidates_by_height()
+        if method == "getblockhash":
+            c = by_height.get(int(params[0]))
+            return c.get("candidate_hash") if c else None
+        if method == "getblock":
+            block_hash = params[0]
+            for c in by_height.values():
+                if c.get("candidate_hash") == block_hash:
+                    return {"confirmations": 12, "tx": [f"coinbase-{block_hash}"]}
+            return None
+        if method == "getrawtransaction":
+            txid = params[0]
+            if not isinstance(txid, str) or not txid.startswith("coinbase-"):
+                return None
+            block_hash = txid[len("coinbase-"):]
+            for c in by_height.values():
+                if c.get("candidate_hash") != block_hash:
+                    continue
+                if isinstance(c.get("coinbase_outputs"), list):
+                    return {"vout": c["coinbase_outputs"]}
+                if c.get("reward") is not None:
+                    return {"vout": [{"value": c.get("reward")}]}
+                return {"vout": []}
+        return None
 
     def test_payout_candidates_empty_missing_files(self):
         # Missing files should not crash and generate empty list
@@ -244,21 +284,16 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.rounds_path.open("w", encoding="utf-8") as f:
             json.dump(rounds_data, f)
 
-        original_fetch = payout_helper.fetch_block_info_from_daemon
-        payout_helper.fetch_block_info_from_daemon = lambda block_hash: (134, None)
-        try:
-            rc = payout_helper.generate_payout_candidates(
-                self.accepted_path, self.rounds_path, self.output_path
-            )
-        finally:
-            payout_helper.fetch_block_info_from_daemon = original_fetch
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
         self.assertEqual(rc, 0)
 
         with self.output_path.open("r", encoding="utf-8") as f:
             item = json.load(f)["items"][0]
 
         self.assertEqual(item["status"], "blocked")
-        self.assertEqual(item["reason"], "blocked_missing_reward")
+        self.assertEqual(item["reason"], "blocked_missing_miner_reward_output")
         self.assertNotEqual(item["blockedReason"], "orphan_block")
 
     def test_confirmed_candidate_with_shares_and_reward_creates_payouts_from_share_weights(self):
@@ -318,7 +353,11 @@ class PayoutAccountingTests(unittest.TestCase):
                     "candidate_hash": "hash_current_split_7000_reward",
                     "lifecycle_status": "confirmed",
                     "matched_height": 4580896,
-                    "reward": 7000.0,
+                    "coinbase_outputs": [
+                        {"value": 4387.5, "scriptPubKey": {"type": "nonstandard", "asm": "1"}},
+                        {"value": 2362.5},
+                        {"value": 250.0},
+                    ],
                 }
             ]
         }
@@ -365,8 +404,13 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["totalBlockReward"], 7000.0)
         self.assertEqual(item["minerGrossReward"], 4387.5)
         self.assertEqual(item["grossReward"], 4387.5)
-        self.assertEqual(item["masternodeReward"], 2362.5)
-        self.assertEqual(item["devFeeReward"], 250.0)
+        self.assertIsNone(item["masternodeReward"])
+        self.assertIsNone(item["devFeeReward"])
+        self.assertEqual(item["coinbaseTotalReward"], 7000.0)
+        self.assertEqual(item["minerRewardOutputIndex"], 0)
+        self.assertEqual(item["minerRewardAmount"], 4387.5)
+        self.assertEqual(item["rewardSource"], "coinbase_vout_0_miner_reward")
+        self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [2362.5, 250.0])
         self.assertAlmostEqual(item["poolFeeAmount"], 43.875)
         self.assertAlmostEqual(item["netReward"], 4343.625)
         self.assertEqual(len(item["payouts"]), 1)
@@ -508,7 +552,8 @@ class PayoutAccountingTests(unittest.TestCase):
         )
         self.assertEqual(res_review.returncode, 0)
         self.assertIn("hashconfirmedeligibleblock0001", res_review.stdout)
-        self.assertIn("READY_FOR_MANUAL_REVIEW", res_review.stdout)
+        self.assertIn("BLOCKED", res_review.stdout)
+        self.assertIn("blocked_missing_miner_reward_output", res_review.stdout)
 
         # Test backward compatibility (old candidates format)
         payout_candidates_path = self.tmp_path / "payout-candidates.json"
@@ -645,18 +690,19 @@ class PayoutAccountingTests(unittest.TestCase):
         item_map = {item["candidate_hash"]: item for item in items}
 
         self.assertEqual(item_map["cand_missing_reward"]["status"], "blocked")
-        self.assertEqual(item_map["cand_missing_reward"]["reason"], "blocked_missing_reward")
+        self.assertEqual(item_map["cand_missing_reward"]["reason"], "blocked_missing_miner_reward_output")
 
         self.assertEqual(item_map["cand_zero_reward"]["status"], "blocked")
-        self.assertEqual(item_map["cand_zero_reward"]["reason"], "blocked_zero_reward")
+        self.assertEqual(item_map["cand_zero_reward"]["reason"], "blocked_missing_miner_reward_output")
 
         self.assertEqual(item_map["cand_synthetic_reward"]["status"], "blocked")
-        self.assertEqual(item_map["cand_synthetic_reward"]["reason"], "blocked_invalid_reward")
+        self.assertEqual(item_map["cand_synthetic_reward"]["reason"], "blocked_missing_miner_reward_output")
 
         self.assertEqual(item_map["cand_zero_weight"]["status"], "blocked")
         self.assertEqual(item_map["cand_zero_weight"]["reason"], "blocked_zero_weight")
 
-        # Test pool-snapshot.json reward lookup via environment variable
+        # Pool-snapshot rewards are not authoritative for PEPEPOW payout accounting;
+        # the confirmed block's coinbase vout[0] is used instead.
         import os
         pool_snapshot_path = self.tmp_path / "pool-snapshot.json"
         pool_snapshot_data = {
@@ -682,8 +728,12 @@ class PayoutAccountingTests(unittest.TestCase):
                     "candidate_hash": "cand_resolved_via_snapshot",
                     "lifecycle_status": "confirmed",
                     "matched_height": 300,
-                    "submit_timestamp": "2026-06-06T12:00:00Z"
-                    # no reward here, should be resolved from pool-snapshot.json
+                    "submit_timestamp": "2026-06-06T12:00:00Z",
+                    "coinbase_outputs": [
+                        {"value": 4100.0},
+                        {"value": 1500.0},
+                        {"value": 400.0},
+                    ],
                 }
             ]
         }
@@ -721,13 +771,14 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(len(items_snap), 1)
         item = items_snap[0]
         self.assertEqual(item["status"], "ready_for_manual_review")
-        self.assertEqual(item["totalBlockReward"], 60000.0)
-        self.assertAlmostEqual(item["minerGrossReward"], 37607.142857142855)
+        self.assertEqual(item["totalBlockReward"], 6000.0)
+        self.assertAlmostEqual(item["minerGrossReward"], 4100.0)
         self.assertEqual(item["grossReward"], item["minerGrossReward"])
-        self.assertEqual(item["rewardSource"], "pool-snapshot")
+        self.assertEqual(item["rewardSource"], "coinbase_vout_0_miner_reward")
+        self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [1500.0, 400.0])
         self.assertIsNone(item["reason"])
 
-        # Test null reward rejection
+        # Test missing miner output rejection
         pool_snapshot_data_null = {
             "blocks": [
                 {
@@ -742,6 +793,19 @@ class PayoutAccountingTests(unittest.TestCase):
         with pool_snapshot_path.open("w", encoding="utf-8") as f:
             json.dump(pool_snapshot_data_null, f)
 
+        accepted_data_missing_coinbase = {
+            "accepted_candidates": [
+                {
+                    "candidate_hash": "cand_resolved_via_snapshot",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 300,
+                    "submit_timestamp": "2026-06-06T12:00:00Z",
+                }
+            ]
+        }
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump(accepted_data_missing_coinbase, f)
+
         rc = payout_helper.generate_payout_candidates(
             self.accepted_path, self.rounds_path, self.output_path
         )
@@ -751,7 +815,7 @@ class PayoutAccountingTests(unittest.TestCase):
             res_data_null = json.load(f)
         item_null = res_data_null.get("items", [])[0]
         self.assertEqual(item_null["status"], "blocked")
-        self.assertEqual(item_null["reason"], "blocked_missing_reward")
+        self.assertEqual(item_null["reason"], "blocked_missing_miner_reward_output")
         self.assertIsNone(item_null["grossReward"])
 
         # Clean up env
@@ -764,6 +828,14 @@ class PayoutAccountingTests(unittest.TestCase):
         rpc_calls = []
         def mock_query_rpc(method, params):
             rpc_calls.append((method, params))
+            if method == "getblockhash":
+                height = params[0]
+                if height == 500:
+                    return "hash_resolved_via_daemon_rpc"
+                if height == 501:
+                    return "hash_orphan_via_daemon_rpc"
+                if height == 502:
+                    return "hash_orphan_via_rounds_snapshot"
             # Mock getblock
             if method == "getblock":
                 block_hash = params[0]
@@ -777,6 +849,11 @@ class PayoutAccountingTests(unittest.TestCase):
                         "confirmations": -1,
                         "tx": ["coinbase_tx_hash_456"]
                     }
+                elif block_hash == "hash_orphan_via_rounds_snapshot":
+                    return {
+                        "confirmations": 12,
+                        "tx": ["coinbase_tx_hash_789"]
+                    }
             # Mock getrawtransaction
             elif method == "getrawtransaction":
                 txid = params[0]
@@ -788,6 +865,12 @@ class PayoutAccountingTests(unittest.TestCase):
                         ]
                     }
                 elif txid == "coinbase_tx_hash_456":
+                    return {
+                        "vout": [
+                            {"value": 7000.0}
+                        ]
+                    }
+                elif txid == "coinbase_tx_hash_789":
                     return {
                         "vout": [
                             {"value": 7000.0}
@@ -886,9 +969,13 @@ class PayoutAccountingTests(unittest.TestCase):
             c1 = item_map["hash_resolved_via_daemon_rpc"]
             self.assertEqual(c1["status"], "ready_for_manual_review")
             self.assertEqual(c1["totalBlockReward"], 7000.0)
-            self.assertEqual(c1["minerGrossReward"], 4387.5)
+            self.assertEqual(c1["minerGrossReward"], 3500.0)
             self.assertEqual(c1["grossReward"], c1["minerGrossReward"])
-            self.assertEqual(c1["rewardSource"], "daemon-rpc")
+            self.assertEqual(c1["rewardSource"], "coinbase_vout_0_miner_reward")
+            self.assertEqual(c1["coinbaseTxid"], "coinbase_tx_hash_123")
+            self.assertEqual(c1["minerRewardOutputIndex"], 0)
+            self.assertEqual(c1["minerRewardAmount"], 3500.0)
+            self.assertEqual([out["value"] for out in c1["excludedCoinbaseOutputs"]], [3500.0])
             self.assertIsNone(c1["reason"])
 
             # 2. Confirmed lifecycle candidates are not marked orphan from daemon confirmations alone.
@@ -1494,22 +1581,22 @@ class PayoutAccountingTests(unittest.TestCase):
             c_el1 = items["hash_eligible_1"]
             payouts_el1 = {p["wallet"]: p for p in c_el1["payouts"]}
             
-            # walletA: net share = miner portion of 50 * 0.99 * 0.5 = 15.512946428571428.
-            # carry = 60.0. total = 75.51294642857143 < 100.0 (min_payout).
+            # walletA: net share = coinbase vout[0] 50 * 0.99 * 0.5 = 24.75.
+            # carry = 60.0. total = 84.75 < 100.0 (min_payout).
             # So status is below_threshold_carried
             p_a1 = payouts_el1["walletA"]
-            self.assertAlmostEqual(p_a1["baseAmount"], 15.512946428571428)
+            self.assertAlmostEqual(p_a1["baseAmount"], 24.75)
             self.assertAlmostEqual(p_a1["carryInAmount"], 60.0)
-            self.assertAlmostEqual(p_a1["amount"], 75.51294642857143)
+            self.assertAlmostEqual(p_a1["amount"], 84.75)
             self.assertEqual(p_a1["status"], "below_threshold_carried")
             self.assertEqual(p_a1["carrySourceCount"], 2)
             self.assertIn("height-99", p_a1["carrySourceCandidateIds"])
             self.assertIn("height-98", p_a1["carrySourceCandidateIds"])
             
-            # walletB: net share = 15.512946428571428. no carry.
+            # walletB: net share = 24.75. no carry.
             # So status is below_threshold_carried
             p_b1 = payouts_el1["walletB"]
-            self.assertAlmostEqual(p_b1["baseAmount"], 15.512946428571428)
+            self.assertAlmostEqual(p_b1["baseAmount"], 24.75)
             self.assertAlmostEqual(p_b1["carryInAmount"], 0.0)
             self.assertEqual(p_b1["status"], "below_threshold_carried")
             
@@ -1518,7 +1605,7 @@ class PayoutAccountingTests(unittest.TestCase):
             payouts_el2 = {p["wallet"]: p for p in c_el2["payouts"]}
             
             p_a2 = payouts_el2["walletA"]
-            self.assertAlmostEqual(p_a2["baseAmount"], 15.512946428571428)
+            self.assertAlmostEqual(p_a2["baseAmount"], 24.75)
             self.assertAlmostEqual(p_a2["carryInAmount"], 0.0)
             self.assertEqual(p_a2["status"], "below_threshold_carried")
             
@@ -2486,9 +2573,47 @@ class CarryFocusedTests(unittest.TestCase):
         self.carry_path = self.tmp_path / "payout-carry-snapshot.json"
         self.actions_log = self.tmp_path / "payment-actions.jsonl"
         self.snapshot_path = self.tmp_path / "payments-snapshot.json"
+        self.original_query_rpc = payout_helper.query_rpc
+        payout_helper.query_rpc = self._mock_coinbase_rpc
 
     def tearDown(self):
+        payout_helper.query_rpc = self.original_query_rpc
         self.tmp_dir.cleanup()
+
+    def _accepted_candidates_by_height(self):
+        if not self.accepted_path.exists():
+            return {}
+        with self.accepted_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        out = {}
+        for c in data.get("accepted_candidates", []):
+            if isinstance(c, dict) and c.get("matched_height") is not None:
+                out[int(c["matched_height"])] = c
+        return out
+
+    def _mock_coinbase_rpc(self, method, params):
+        by_height = self._accepted_candidates_by_height()
+        if method == "getblockhash":
+            c = by_height.get(int(params[0]))
+            return c.get("candidate_hash") if c else None
+        if method == "getblock":
+            block_hash = params[0]
+            for c in by_height.values():
+                if c.get("candidate_hash") == block_hash:
+                    return {"confirmations": 12, "tx": [f"coinbase-{block_hash}"]}
+            return None
+        if method == "getrawtransaction":
+            txid = params[0]
+            if not isinstance(txid, str) or not txid.startswith("coinbase-"):
+                return None
+            block_hash = txid[len("coinbase-"):]
+            for c in by_height.values():
+                if c.get("candidate_hash") != block_hash:
+                    continue
+                if c.get("reward") is not None:
+                    return {"vout": [{"value": c.get("reward")}]}
+                return {"vout": []}
+        return None
 
     def _write_accepted(self, cands):
         with self.accepted_path.open("w", encoding="utf-8") as f:

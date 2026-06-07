@@ -244,37 +244,101 @@ def payment_actions_lock_path(actions_log_path: Path) -> Path:
     return actions_log_path.with_name(f"{actions_log_path.stem}.lock")
 
 
-PEPEPOW_MASTERNODE_REWARD_RATIO = 2362.50 / 7000.0
-PEPEPOW_DEV_FEE_REWARD_RATIO = 250.0 / 7000.0
-PEPEPOW_MINER_REWARD_RATIO = 4387.50 / 7000.0
+def _coinbase_output_summary(index: int, output: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {"index": index}
+    if "value" in output:
+        summary["value"] = output.get("value")
+    script_pub_key = output.get("scriptPubKey")
+    if isinstance(script_pub_key, dict):
+        summary["scriptPubKey"] = {
+            k: script_pub_key.get(k)
+            for k in ("type", "asm", "addresses", "hex")
+            if k in script_pub_key
+        }
+    return summary
 
 
-def calculate_reward_split(total_block_reward: float) -> dict[str, float]:
-    """Return the current PEPEPOW block reward split.
-
-    Daemon coinbase inspection exposes the full block reward, but pool
-    accounting must only distribute the miner portion.  The current PEPEPOW
-    split for a 7000 reward block is 2362.50 masternode, 250.00 dev fee,
-    and 4387.50 miner reward.
-    """
-    total_reward = float(total_block_reward)
-    masternode_reward = total_reward * PEPEPOW_MASTERNODE_REWARD_RATIO
-    dev_fee_reward = total_reward * PEPEPOW_DEV_FEE_REWARD_RATIO
-    miner_reward = total_reward * PEPEPOW_MINER_REWARD_RATIO
-    return {
-        "total_block_reward": total_reward,
-        "masternode_reward": masternode_reward,
-        "dev_fee_reward": dev_fee_reward,
-        "miner_gross_reward": miner_reward,
+def fetch_coinbase_reward_from_daemon(height: Any) -> dict[str, Any]:
+    """Fetch PEPEPOW coinbase reward accounting data for a confirmed height."""
+    result: dict[str, Any] = {
+        "blockHash": None,
+        "confirmations": None,
+        "coinbaseTxid": None,
+        "coinbaseTotalReward": None,
+        "minerRewardOutputIndex": 0,
+        "minerRewardAmount": None,
+        "excludedCoinbaseOutputs": [],
+        "rewardSource": "coinbase_vout_0_miner_reward",
     }
 
-def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
-    # Try verbosity=2
-    block_data = query_rpc("getblock", [block_hash, 2])
+    try:
+        height_int = int(height)
+    except (ValueError, TypeError):
+        return result
+
+    block_hash = query_rpc("getblockhash", [height_int])
+    if not isinstance(block_hash, str) or not block_hash:
+        return result
+
+    result["blockHash"] = block_hash
+    block_data = query_rpc("getblock", [block_hash, True])
     if not isinstance(block_data, dict):
-        # Fallback to verbosity=True
-        block_data = query_rpc("getblock", [block_hash, True])
-        
+        return result
+
+    confirmations = block_data.get("confirmations")
+    if confirmations is not None:
+        try:
+            result["confirmations"] = int(confirmations)
+        except (ValueError, TypeError):
+            pass
+
+    tx_list = block_data.get("tx")
+    if not isinstance(tx_list, list) or not tx_list:
+        return result
+
+    coinbase_txid = tx_list[0]
+    if isinstance(coinbase_txid, dict):
+        coinbase_txid = coinbase_txid.get("txid") or coinbase_txid.get("hash")
+    if not isinstance(coinbase_txid, str) or not coinbase_txid:
+        return result
+
+    result["coinbaseTxid"] = coinbase_txid
+    coinbase_tx = query_rpc("getrawtransaction", [coinbase_txid, 1])
+    if not isinstance(coinbase_tx, dict):
+        return result
+
+    vout_list = coinbase_tx.get("vout")
+    if not isinstance(vout_list, list):
+        return result
+
+    total_reward = 0.0
+    for out in vout_list:
+        if not isinstance(out, dict):
+            continue
+        try:
+            total_reward += float(out.get("value"))
+        except (ValueError, TypeError):
+            pass
+    result["coinbaseTotalReward"] = total_reward
+
+    excluded = []
+    for index, out in enumerate(vout_list[1:], start=1):
+        if isinstance(out, dict):
+            excluded.append(_coinbase_output_summary(index, out))
+    result["excludedCoinbaseOutputs"] = excluded
+
+    miner_output = vout_list[0] if vout_list else None
+    if isinstance(miner_output, dict):
+        try:
+            result["minerRewardAmount"] = float(miner_output.get("value"))
+        except (ValueError, TypeError):
+            pass
+
+    return result
+
+
+def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
+    block_data = query_rpc("getblock", [block_hash, True])
     if isinstance(block_data, dict):
         confirmations = block_data.get("confirmations")
         if confirmations is not None:
@@ -282,24 +346,7 @@ def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | N
                 confirmations = int(confirmations)
             except (ValueError, TypeError):
                 confirmations = None
-        
-        tx_list = block_data.get("tx")
-        total_reward = None
-        if isinstance(tx_list, list) and tx_list:
-            coinbase_tx = tx_list[0]
-            if isinstance(coinbase_tx, str):
-                coinbase_tx = query_rpc("getrawtransaction", [coinbase_tx, 1])
-                
-            if isinstance(coinbase_tx, dict):
-                vout_list = coinbase_tx.get("vout")
-                if isinstance(vout_list, list):
-                    total_reward = 0.0
-                    for out in vout_list:
-                        if isinstance(out, dict):
-                            val = out.get("value")
-                            if val is not None:
-                                total_reward += float(val)
-        return confirmations, total_reward
+        return confirmations, None
     return None, None
 
 def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path, carry_path: Path | None = None) -> int:
@@ -376,18 +423,6 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         except Exception as exc:
             print(f"Warning: Failed to load rounds snapshot: {exc}", file=sys.stderr)
 
-    pool_snap = load_pool_snapshot()
-    snap_blocks = pool_snap.get("blocks", [])
-    snap_rewards = {}
-    if isinstance(snap_blocks, list):
-        for sb in snap_blocks:
-            if not isinstance(sb, dict):
-                continue
-            h_hash = sb.get("hash")
-            h_reward = sb.get("reward")
-            if h_hash:
-                snap_rewards[h_hash] = h_reward
-
     payout_candidates = []
     for c in candidates:
         if not isinstance(c, dict):
@@ -395,21 +430,25 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         c_hash = c.get("candidate_hash")
         l_status = c.get("lifecycle_status")
         height = c.get("matched_height")
+        block_hash = c_hash
         
-        # Reward source lookup
-        reward = c.get("reward")
-        reward_source = "candidate"
-        if reward is None:
-            reward = snap_rewards.get(c_hash)
-            reward_source = "pool-snapshot" if reward is not None else None
-
         daemon_confirmations = None
+        coinbase_txid = None
+        coinbase_total_reward = None
+        miner_reward_output_index = None
+        miner_reward_amount = None
+        excluded_coinbase_outputs = []
+        reward_source = None
         if l_status == "confirmed":
-            d_conf, d_reward = fetch_block_info_from_daemon(c_hash)
-            daemon_confirmations = d_conf
-            if reward is None and d_reward is not None:
-                reward = d_reward
-                reward_source = "daemon-rpc" if reward is not None else None
+            coinbase_reward = fetch_coinbase_reward_from_daemon(height)
+            daemon_confirmations = coinbase_reward.get("confirmations")
+            block_hash = coinbase_reward.get("blockHash") or block_hash
+            coinbase_txid = coinbase_reward.get("coinbaseTxid")
+            coinbase_total_reward = coinbase_reward.get("coinbaseTotalReward")
+            miner_reward_output_index = coinbase_reward.get("minerRewardOutputIndex")
+            miner_reward_amount = coinbase_reward.get("minerRewardAmount")
+            excluded_coinbase_outputs = coinbase_reward.get("excludedCoinbaseOutputs") or []
+            reward_source = coinbase_reward.get("rewardSource")
 
         status = "blocked"
         reason = None
@@ -456,32 +495,19 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 reason = f"unconfirmed_status_{l_status}"
         else:
             # Enforce validations
-            # 1. Reward validation
-            if reward is None:
+            # 1. Coinbase miner reward validation
+            try:
+                miner_reward_val = float(miner_reward_amount)
+            except (ValueError, TypeError):
+                miner_reward_val = 0.0
+
+            if miner_reward_val <= 0:
                 status = "blocked"
-                reason = "blocked_missing_reward"
-            elif isinstance(reward, str) and reward.strip().lower() == "synthetic":
-                status = "blocked"
-                reason = "blocked_invalid_reward"
+                reason = "blocked_missing_miner_reward_output"
             else:
-                try:
-                    reward_val = float(reward)
-                    if reward_val == 0:
-                        status = "blocked"
-                        reason = "blocked_zero_reward"
-                    elif reward_val < 0:
-                        status = "blocked"
-                        reason = "blocked_invalid_reward"
-                    else:
-                        reward_split = calculate_reward_split(reward_val)
-                        total_block_reward = reward_split["total_block_reward"]
-                        miner_gross_reward = reward_split["miner_gross_reward"]
-                        masternode_reward = reward_split["masternode_reward"]
-                        dev_fee_reward = reward_split["dev_fee_reward"]
-                        gross_reward = miner_gross_reward
-                except (ValueError, TypeError):
-                    status = "blocked"
-                    reason = "blocked_invalid_reward"
+                total_block_reward = coinbase_total_reward
+                miner_gross_reward = miner_reward_val
+                gross_reward = miner_gross_reward
 
             if not reason:
                 # 2. Candidate hash validation
@@ -591,7 +617,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         payout_candidates.append({
             "candidate_hash": c_hash,
             "candidateId": c_hash,
-            "blockHash": c_hash,
+            "blockHash": block_hash,
             "height": height,
             "lifecycle_status": l_status,
             "lifecycleStatus": l_status,
@@ -621,6 +647,11 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "payouts": payouts,
             "shares": shares_info,
             "submit_timestamp": c.get("submit_timestamp"),
+            "coinbaseTxid": coinbase_txid,
+            "coinbaseTotalReward": coinbase_total_reward,
+            "minerRewardOutputIndex": miner_reward_output_index,
+            "minerRewardAmount": miner_reward_amount,
+            "excludedCoinbaseOutputs": excluded_coinbase_outputs,
             "reward_source": reward_source,
             "rewardSource": reward_source
         })
@@ -2291,4 +2322,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
