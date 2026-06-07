@@ -1504,6 +1504,199 @@ class PayoutAccountingTests(unittest.TestCase):
             content = f.read()
         self.assertEqual(content, "{invalid_json}")
 
+    def test_audit_carry_consistency(self):
+        import io
+        import sys
+
+        # Setup mock files
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        # A. Perfect/OK state
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "height-100",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "payouts": [
+                        {
+                            "wallet": "walletA",
+                            "amount": 100.0,
+                            "baseAmount": 40.0,
+                            "carryInAmount": 60.0,
+                            "carrySourceCandidateIds": ["height-99"]
+                        }
+                    ]
+                }
+            ]
+        }
+        carry_data = {
+            "generatedAt": "2026-06-07T00:00:00Z",
+            "items": [
+                {
+                    "wallet": "walletB",
+                    "amount": 5.0,
+                    "sourceCandidateId": "height-100", # below threshold, carried
+                    "status": "below_threshold_carried"
+                }
+            ]
+        }
+        payments_data = {
+            "items": [
+                {
+                    "wallet": "walletA",
+                    "amount": 100.0,
+                    "candidateId": "height-100",
+                    "status": "paid_manual"
+                }
+            ]
+        }
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        # Capture stdout
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.audit_carry_consistency(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 0)
+        res = json.loads(output)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["summary"]["malformedInput"], False)
+        self.assertEqual(res["summary"]["carryItems"], 1)
+        self.assertEqual(res["summary"]["candidateItems"], 1)
+        self.assertEqual(res["summary"]["paymentItems"], 1)
+
+        # B. Duplicate carry
+        carry_data["items"].append({
+            "wallet": "walletB",
+            "amount": 5.0,
+            "sourceCandidateId": "height-100",
+            "status": "below_threshold_carried"
+        })
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.audit_carry_consistency(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 1) # should return 1 because there are issues
+        res = json.loads(output)
+        self.assertEqual(res["status"], "warning")
+        self.assertEqual(res["summary"]["duplicateCarryItems"], 1)
+        self.assertTrue(any("Duplicate carry item" in issue for issue in res["issues"]))
+
+        # C. Paid carry still present
+        # Clear duplicates, make walletB carried source candidate "height-100" already paid
+        carry_data["items"] = [
+            {
+                "wallet": "walletB",
+                "amount": 5.0,
+                "sourceCandidateId": "height-100",
+                "status": "below_threshold_carried"
+            }
+        ]
+        payments_data["items"].append({
+            "wallet": "walletB",
+            "amount": 5.0,
+            "candidateId": "height-100",
+            "status": "paid_manual"
+        })
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.audit_carry_consistency(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 1)
+        res = json.loads(output)
+        self.assertEqual(res["status"], "warning")
+        self.assertEqual(res["summary"]["paidCarryStillPresent"], 1)
+        self.assertTrue(any("already recorded as paid" in issue for issue in res["issues"]))
+
+        # D. Blocked carry
+        candidates_data["items"][0]["status"] = "blocked"
+        candidates_data["items"][0]["lifecycleStatus"] = "orphan"
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        # remove from payments to isolate blocked carry warning
+        payments_data["items"] = []
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.audit_carry_consistency(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 1)
+        res = json.loads(output)
+        self.assertEqual(res["status"], "warning")
+        self.assertEqual(res["summary"]["orphanOrBlockedCarryItems"], 1)
+        self.assertTrue(any("blocked/orphan/immature" in issue for issue in res["issues"]))
+
+        # E. Payout with carry but missing carrySourceCandidateIds
+        candidates_data["items"][0]["status"] = "ready_for_manual_review"
+        candidates_data["items"][0]["lifecycleStatus"] = "confirmed"
+        candidates_data["items"][0]["payouts"][0]["carrySourceCandidateIds"] = [] # missing/empty
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        # Clear carry to isolate
+        carry_data["items"] = []
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.audit_carry_consistency(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 1)
+        res = json.loads(output)
+        self.assertEqual(res["status"], "warning")
+        self.assertTrue(any("missing or empty carrySourceCandidateIds" in issue for issue in res["issues"]))
+
+        # F. Malformed input
+        with carry_file.open("w", encoding="utf-8") as f:
+            f.write("invalid json")
+
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.audit_carry_consistency(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 1)
+        res = json.loads(output)
+        self.assertEqual(res["status"], "warning")
+        self.assertEqual(res["summary"]["malformedInput"], True)
+
 if __name__ == "__main__":
 
     unittest.main()

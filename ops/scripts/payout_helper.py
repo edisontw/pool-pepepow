@@ -821,6 +821,175 @@ def generate_carry_snapshot(candidates_path: Path, output_path: Path) -> int:
 
     return 0
 
+def audit_carry_consistency(candidates_path: Path, carry_path: Path, payments_path: Path) -> int:
+    issues = []
+    malformed_input = False
+    carry_items = []
+    candidate_items = []
+    payment_items = []
+    duplicate_carry_count = 0
+    paid_carry_still_present_count = 0
+    orphan_or_blocked_carry_count = 0
+
+    # 1. Parse carry snapshot
+    if not carry_path.exists():
+        issues.append(f"Carry snapshot file not found: {carry_path}")
+        malformed_input = True
+    else:
+        try:
+            with carry_path.open("r", encoding="utf-8") as f:
+                carry_data = json.load(f)
+            if not isinstance(carry_data, dict) or not isinstance(carry_data.get("items"), list):
+                issues.append("Carry snapshot is not a valid dict or lacks items list")
+                malformed_input = True
+            else:
+                carry_items = carry_data["items"]
+        except Exception as exc:
+            issues.append(f"Failed to parse carry snapshot as JSON: {exc}")
+            malformed_input = True
+
+    # 2. Parse candidates snapshot
+    if not candidates_path.exists():
+        issues.append(f"Candidates file not found: {candidates_path}")
+        malformed_input = True
+    else:
+        try:
+            with candidates_path.open("r", encoding="utf-8") as f:
+                cand_data = json.load(f)
+            if not isinstance(cand_data, dict):
+                issues.append("Candidates data is not a valid dict")
+                malformed_input = True
+            else:
+                cands = cand_data.get("items")
+                if cands is None:
+                    cands = cand_data.get("candidates")
+                if not isinstance(cands, list):
+                    issues.append("Candidates data lacks a valid items or candidates list")
+                    malformed_input = True
+                else:
+                    candidate_items = cands
+        except Exception as exc:
+            issues.append(f"Failed to parse candidates data as JSON: {exc}")
+            malformed_input = True
+
+    # 3. Parse payments snapshot
+    if not payments_path.exists():
+        issues.append(f"Payments snapshot file not found: {payments_path}")
+        malformed_input = True
+    else:
+        try:
+            with payments_path.open("r", encoding="utf-8") as f:
+                payments_data = json.load(f)
+            if not isinstance(payments_data, dict) or not isinstance(payments_data.get("items"), list):
+                issues.append("Payments snapshot is not a valid dict or lacks items list")
+                malformed_input = True
+            else:
+                payment_items = payments_data["items"]
+        except Exception as exc:
+            issues.append(f"Failed to parse payments snapshot as JSON: {exc}")
+            malformed_input = True
+
+    # Run audit logic if inputs parsed successfully
+    if not malformed_input:
+        # A. Duplicate carry check
+        seen_carry = set()
+        for idx, item in enumerate(carry_items):
+            if not isinstance(item, dict):
+                issues.append(f"Carry item at index {idx} is not a dict")
+                continue
+            wallet = item.get("wallet")
+            src_id = item.get("sourceCandidateId")
+            if not wallet or not src_id:
+                issues.append(f"Carry item at index {idx} is missing wallet or sourceCandidateId")
+                continue
+            pair = (wallet, src_id)
+            if pair in seen_carry:
+                duplicate_carry_count += 1
+                issues.append(f"Duplicate carry item found for wallet {wallet} and candidate {src_id}")
+            seen_carry.add(pair)
+
+        # B. Paid carry still present check
+        paid_pairs = set()
+        for idx, item in enumerate(payment_items):
+            if not isinstance(item, dict):
+                continue
+            wallet = item.get("wallet")
+            c_id = item.get("candidateId") or item.get("candidateHash")
+            if wallet and c_id:
+                paid_pairs.add((wallet, c_id))
+
+        for idx, item in enumerate(carry_items):
+            if not isinstance(item, dict):
+                continue
+            wallet = item.get("wallet")
+            src_id = item.get("sourceCandidateId")
+            if wallet and src_id:
+                if (wallet, src_id) in paid_pairs:
+                    paid_carry_still_present_count += 1
+                    issues.append(f"Carry item for wallet {wallet} and source candidate {src_id} is still present in carry snapshot but is already recorded as paid")
+
+        # C. Carry item from blocked/orphan/immature/unconfirmed candidate check
+        cand_status_map = {}
+        cand_lifecycle_map = {}
+        for idx, item in enumerate(candidate_items):
+            if not isinstance(item, dict):
+                continue
+            c_id = item.get("candidateId") or item.get("candidate_hash")
+            status = item.get("status")
+            l_status = item.get("lifecycleStatus") or item.get("lifecycle_status")
+            if c_id:
+                cand_status_map[c_id] = status
+                cand_lifecycle_map[c_id] = l_status
+
+        for idx, item in enumerate(carry_items):
+            if not isinstance(item, dict):
+                continue
+            wallet = item.get("wallet")
+            src_id = item.get("sourceCandidateId")
+            if wallet and src_id:
+                if src_id in cand_status_map:
+                    status = cand_status_map[src_id]
+                    l_status = cand_lifecycle_map.get(src_id)
+                    is_blocked = (status == "blocked")
+                    is_not_confirmed = (l_status not in ("confirmed", None))
+                    if is_blocked or is_not_confirmed:
+                        orphan_or_blocked_carry_count += 1
+                        issues.append(f"Carry item for wallet {wallet} originates from a blocked/orphan/immature candidate {src_id} (status: {status}, lifecycleStatus: {l_status})")
+
+        # D. Candidate payout with carryInAmount > 0 but missing carrySourceCandidateIds check
+        for idx, item in enumerate(candidate_items):
+            if not isinstance(item, dict):
+                continue
+            c_id = item.get("candidateId") or item.get("candidate_hash")
+            payouts = item.get("payouts")
+            if isinstance(payouts, list):
+                for p_idx, p in enumerate(payouts):
+                    if not isinstance(p, dict):
+                        continue
+                    wallet = p.get("wallet")
+                    carry_in = p.get("carryInAmount", 0.0)
+                    carry_source_ids = p.get("carrySourceCandidateIds")
+                    if carry_in and carry_in > 0:
+                        if not isinstance(carry_source_ids, list) or not carry_source_ids:
+                            issues.append(f"Candidate {c_id} payout for wallet {wallet} has carryInAmount > 0 but missing or empty carrySourceCandidateIds")
+
+    result = {
+        "status": "ok" if not issues and not malformed_input else "warning",
+        "issues": issues,
+        "summary": {
+            "carryItems": len(carry_items),
+            "candidateItems": len(candidate_items),
+            "paymentItems": len(payment_items),
+            "duplicateCarryItems": duplicate_carry_count,
+            "paidCarryStillPresent": paid_carry_still_present_count,
+            "orphanOrBlockedCarryItems": orphan_or_blocked_carry_count,
+            "malformedInput": malformed_input
+        }
+    }
+
+    print(json.dumps(result, indent=2))
+    return 1 if issues or malformed_input else 0
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -850,6 +1019,11 @@ def main() -> int:
     parser_carry = subparsers.add_parser("build-carry-snapshot", help="Build carry snapshot from payout candidates")
     parser_carry.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_carry.add_argument("--snapshot", type=str, required=True, help="Path to output payout-carry-snapshot.json")
+
+    parser_audit = subparsers.add_parser("audit-carry-consistency", help="Audit payout carry consistency")
+    parser_audit.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_audit.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
+    parser_audit.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
 
     args = parser.parse_args()
 
@@ -883,6 +1057,12 @@ def main() -> int:
         return generate_carry_snapshot(
             Path(args.candidates),
             Path(args.snapshot)
+        )
+    elif args.command == "audit-carry-consistency":
+        return audit_carry_consistency(
+            Path(args.candidates),
+            Path(args.carry_snapshot),
+            Path(args.payments_snapshot)
         )
 
     return 0
