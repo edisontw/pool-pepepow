@@ -17,6 +17,7 @@ class ShareEvent:
     worker: str
     occurred_at: datetime
     accepted: bool
+    difficulty: float | None = None
 
 
 @dataclass(frozen=True)
@@ -119,11 +120,13 @@ def parse_share_event(raw_event: str | dict[str, Any]) -> ShareEvent:
     wallet, worker = _resolve_identity(payload)
     occurred_at = _parse_timestamp(payload)
     accepted = _resolve_outcome(payload)
+    difficulty = _resolve_difficulty(payload)
     return ShareEvent(
         wallet=wallet,
         worker=worker,
         occurred_at=occurred_at,
         accepted=accepted,
+        difficulty=difficulty,
     )
 
 
@@ -228,3 +231,17 @@ def _resolve_sequence(payload: dict[str, Any]) -> int:
         if stripped.isdigit():
             return int(stripped)
     return 0
+
+
+def _resolve_difficulty(payload: dict[str, Any]) -> float | None:
+    for key in ("difficulty", "shareDifficulty", "effectiveDifficulty"):
+        val = payload.get(key)
+        if isinstance(val, (int, float)):
+            return float(val)
+    diag = payload.get("shareHashDiagnostic")
+    if isinstance(diag, dict):
+        for key in ("shareDifficultyUsed", "difficulty", "effectiveDifficulty"):
+            val = diag.get(key)
+            if isinstance(val, (int, float)):
+                return float(val)
+    return None

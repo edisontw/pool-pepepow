@@ -723,6 +723,7 @@ class StratumIngressService:
                 worker=worker,
                 occurred_at=observed_at,
                 accepted=accepted_submit,
+                difficulty=state.current_difficulty or self._synthetic_difficulty(),
             )
             share_event_candidate_possible = assessment.candidate_possible
             if (
@@ -3760,6 +3761,8 @@ def _double_sha256(payload: bytes) -> bytes:
 
 
 def _hashrate_estimation_difficulty(config: PoolCoreConfig) -> float:
+    # Return effective difficulty so that ActivityEngine.assumed_share_difficulty
+    # is in effective difficulty units.
     if not config.stratum_vardiff_enabled:
         return config.stratum_vardiff_initial_difficulty
     return config.estimated_hashrate_assumed_share_difficulty

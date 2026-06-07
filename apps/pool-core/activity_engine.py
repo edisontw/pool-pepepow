@@ -16,7 +16,12 @@ WINDOW_SECONDS = {label: seconds for label, seconds in WINDOW_DEFINITIONS}
 MAX_WINDOW_SECONDS = max(WINDOW_SECONDS.values())
 HEADLINE_WINDOW_LABEL = "5m"
 DEFAULT_ASSUMED_SHARE_DIFFICULTY = 1.0
-HASHES_PER_SHARE = float(2**32) / 1000.0
+# Hashes represented by one share at difficulty 1.0 under the PEPEPOW/PEPEW stratum convention.
+# Formula: hashrate (H/s) = (accepted_shares / window_seconds) * wire_difficulty * 2^32
+# where wire_difficulty = effective_share_difficulty * PEPEW_DIFFICULTY_SCALE (65536).
+# The previous /1000 was incorrect (produced milli-H/s output). Correct unit is H/s.
+HASHES_PER_SHARE = float(2**32)
+PEPEW_DEFAULT_DIFFICULTY_SCALE = 65536.0
 
 
 def utc_now() -> datetime:
@@ -98,6 +103,7 @@ class WorkerState:
     rejected_shares: int = 0
     accepted_windows: dict[str, WindowCounter] = field(default_factory=_new_window_counters)
     rejected_windows: dict[str, WindowCounter] = field(default_factory=_new_window_counters)
+    accepted_work_windows: dict[str, WindowCounter] = field(default_factory=_new_window_counters)
 
     @property
     def share_count(self) -> int:
@@ -112,6 +118,7 @@ class WalletState:
     workers: dict[str, WorkerState] = field(default_factory=dict)
     accepted_windows: dict[str, WindowCounter] = field(default_factory=_new_window_counters)
     rejected_windows: dict[str, WindowCounter] = field(default_factory=_new_window_counters)
+    accepted_work_windows: dict[str, WindowCounter] = field(default_factory=_new_window_counters)
 
     @property
     def share_count(self) -> int:
@@ -128,6 +135,7 @@ class ActivityEngine:
         self._wallets: dict[str, WalletState] = {}
         self._accepted_windows = _new_window_counters()
         self._rejected_windows = _new_window_counters()
+        self._accepted_work_windows = _new_window_counters()
         self._last_share_at: datetime | None = None
         self._sequence = 0
 
@@ -165,6 +173,19 @@ class ActivityEngine:
             worker_state.accepted_windows = self._bump_counters(
                 worker_state.accepted_windows, second
             )
+
+            # Sum of effective share difficulties for hashrate estimation:
+            difficulty = event.difficulty if (isinstance(event.difficulty, (int, float)) and event.difficulty > 0.0) else self.assumed_share_difficulty
+            self._accepted_work_windows = self._bump_counters(
+                self._accepted_work_windows, second, difficulty
+            )
+            wallet_state.accepted_work_windows = self._bump_counters(
+                wallet_state.accepted_work_windows, second, difficulty
+            )
+            worker_state.accepted_work_windows = self._bump_counters(
+                worker_state.accepted_work_windows, second, difficulty
+            )
+
             if update_lifetime:
                 wallet_state.accepted_shares += 1
                 worker_state.accepted_shares += 1
@@ -248,7 +269,7 @@ class ActivityEngine:
         now_second = int(effective_now.timestamp())
 
         pool_rolling = self._build_rolling_payload(
-            self._accepted_windows, self._rejected_windows, now_second
+            self._accepted_windows, self._rejected_windows, self._accepted_work_windows, now_second
         )
         active_miners = 0
         active_workers = 0
@@ -265,6 +286,7 @@ class ActivityEngine:
                 rolling = self._build_rolling_payload(
                     worker_state.accepted_windows,
                     worker_state.rejected_windows,
+                    worker_state.accepted_work_windows,
                     now_second,
                 )
                 is_active = rolling["15m"]["shareCount"] > 0
@@ -287,6 +309,7 @@ class ActivityEngine:
             wallet_rolling = self._build_rolling_payload(
                 wallet_state.accepted_windows,
                 wallet_state.rejected_windows,
+                wallet_state.accepted_work_windows,
                 now_second,
             )
             if wallet_rolling["15m"]["shareCount"] > 0:
@@ -447,35 +470,87 @@ class ActivityEngine:
         self,
         accepted_windows: dict[str, WindowCounter],
         rejected_windows: dict[str, WindowCounter],
+        accepted_work_windows: dict[str, WindowCounter],
         now_second: int,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         for label, window_seconds in WINDOW_DEFINITIONS:
             accepted = accepted_windows[label].total(now_second)
             rejected = rejected_windows[label].total(now_second)
+            accepted_work = accepted_work_windows[label].total(now_second)
             payload[label] = {
                 "windowSeconds": window_seconds,
-                "shareCount": accepted + rejected,
-                "acceptedShares": accepted,
-                "rejectedShares": rejected,
-                "hashrate": self._hashrate_for_window(accepted, window_seconds),
+                "shareCount": int(accepted + rejected),
+                "acceptedShares": int(accepted),
+                "rejectedShares": int(rejected),
+                "hashrate": self._hashrate_for_window(accepted_work, window_seconds),
             }
         return payload
 
     def _bump_counters(
-        self, counters: dict[str, WindowCounter], second: int
+        self, counters: dict[str, WindowCounter], second: int, weight: float = 1.0
     ) -> dict[str, WindowCounter]:
         for label in WINDOW_SECONDS:
-            counters[label].increment(second, 1)
+            counters[label].increment(second, weight)
         return counters
 
     def _hashrate_for_window(
-        self, accepted_shares: int, window_seconds: int
+        self, accepted_work: float, window_seconds: int
     ) -> float | None:
-        if accepted_shares <= 0 or window_seconds <= 0:
+        if accepted_work <= 0.0 or window_seconds <= 0:
             return None
-        shares_per_second = accepted_shares / float(window_seconds)
-        return shares_per_second * self.assumed_share_difficulty * HASHES_PER_SHARE
+        shares_per_second = accepted_work / float(window_seconds)
+        return shares_per_second * HASHES_PER_SHARE
+
+
+# ---------------------------------------------------------------------------
+# Public estimator helpers — centralised math for hashrate estimation.
+# ---------------------------------------------------------------------------
+
+def effective_to_wire_difficulty(
+    effective_diff: float, scale: float = PEPEW_DEFAULT_DIFFICULTY_SCALE
+) -> float:
+    """Convert effective share difficulty to miner wire difficulty.
+
+    PEPEPOW/PEPEW stratum encodes difficulty as:
+        wire_difficulty = effective_share_difficulty * difficulty_scale
+    where difficulty_scale is 65536 by default.
+
+    Args:
+        effective_diff: Pool-internal effective share difficulty (e.g. 0.00025).
+        scale: Coin-specific wire difficulty multiplier (default 65536 for PEPEW).
+
+    Returns:
+        Miner-facing wire difficulty (e.g. 16.384 for effective=0.00025, scale=65536).
+    """
+    return effective_diff * scale
+
+
+def estimate_hashrate_from_accepted_shares(
+    accepted_shares: int,
+    window_seconds: int,
+    effective_difficulty: float,
+) -> float | None:
+    """Estimate hashrate (H/s) from a count of accepted shares in a time window.
+
+    Formula:
+        hashrate = (accepted_shares / window_seconds) * effective_difficulty * 2^32
+
+    Only accepted shares contribute to the estimate; rejected shares MUST NOT
+    be included in ``accepted_shares`` to avoid inflating the estimate.
+
+    Args:
+        accepted_shares: Number of accepted shares in the window (>= 0).
+        window_seconds: Duration of the window in seconds (> 0).
+        effective_difficulty: Pool effective share difficulty.
+
+    Returns:
+        Estimated hashrate in H/s, or None if insufficient data.
+    """
+    if accepted_shares <= 0 or window_seconds <= 0:
+        return None
+    shares_per_second = accepted_shares / float(window_seconds)
+    return shares_per_second * effective_difficulty * HASHES_PER_SHARE
 
 
 def _max_datetime(left: datetime | None, right: datetime) -> datetime:

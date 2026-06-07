@@ -3911,7 +3911,11 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     await writer.wait_closed()
                 await service.stop()
 
-    async def test_activity_snapshot_uses_fixed_effective_difficulty_for_hashrate(self):
+    async def test_activity_engine_uses_effective_difficulty_when_vardiff_disabled(self):
+        # Regression test: engine.assumed_share_difficulty must be effective difficulty
+        # so that the formula:
+        #   hashrate = (shares/s) * effective_difficulty * 2^32
+        # produces H/s.
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             config = replace(
@@ -3920,12 +3924,16 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 estimated_hashrate_assumed_share_difficulty=1e-11,
                 stratum_vardiff_enabled=False,
                 stratum_vardiff_initial_difficulty=0.0015,
+                stratum_wire_difficulty_scale=65536.0,
             )
             service = StratumIngressService(config)
             self.assertEqual(service._synthetic_difficulty(), 1e-08)
-            self.assertEqual(service._engine.assumed_share_difficulty, 0.0015)
+            # Should equal effective difficulty (0.0015) directly, not wire (98.304)
+            self.assertAlmostEqual(service._engine.assumed_share_difficulty, 0.0015)
 
-    async def test_activity_snapshot_uses_estimation_difficulty_for_vardiff(self):
+    async def test_activity_engine_uses_effective_difficulty_when_vardiff_enabled(self):
+        # Regression test: engine.assumed_share_difficulty must be effective difficulty
+        # even when vardiff is enabled.
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             config = replace(
@@ -3933,10 +3941,242 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 hashrate_assumed_share_difficulty=1e-08,
                 estimated_hashrate_assumed_share_difficulty=1e-11,
                 stratum_vardiff_enabled=True,
+                stratum_wire_difficulty_scale=65536.0,
             )
             service = StratumIngressService(config)
             self.assertEqual(service._synthetic_difficulty(), 1e-08)
-            self.assertEqual(service._engine.assumed_share_difficulty, 1e-11)
+            # Should equal effective difficulty (1e-11) directly
+            self.assertAlmostEqual(service._engine.assumed_share_difficulty, 1e-11)
+
+    # ------------------------------------------------------------------
+    # Focused hashrate estimator unit tests (non-async, pure math).
+    # ------------------------------------------------------------------
+
+    def test_hashrate_estimator_canonical_pepepow_net_sample(self):
+        """16 accepted shares / 117.37s at effective difficulty 0.0015 = ~878 KH/s."""
+        activity_engine = sys.modules["activity_engine"]
+        result = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=16,
+            window_seconds=117.37,
+            effective_difficulty=0.0015,
+        )
+        assert result is not None
+        # 16 / 117.37 * 0.0015 * 2^32 = 878241.59 H/s
+        self.assertAlmostEqual(result, 878241.59, delta=1.0)
+        self.assertGreater(result, 877000)
+        self.assertLess(result, 879000)
+
+    def test_hashrate_estimator_baseline_example(self):
+        """1 accepted share / 60s at effective difficulty 0.0015 = ~107,374 H/s."""
+        activity_engine = sys.modules["activity_engine"]
+        result = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=1,
+            window_seconds=60,
+            effective_difficulty=0.0015,
+        )
+        assert result is not None
+        # 1 / 60 * 0.0015 * 2^32 = 107374.18 H/s
+        self.assertAlmostEqual(result, 107374.18, delta=1.0)
+
+    def test_hashrate_estimator_current_old_low_baseline(self):
+        """1 accepted share / 60s at effective difficulty 0.00025 = ~17,895 H/s."""
+        activity_engine = sys.modules["activity_engine"]
+        result = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=1,
+            window_seconds=60,
+            effective_difficulty=0.00025,
+        )
+        assert result is not None
+        # 1 / 60 * 0.00025 * 2^32 = 17895.69 H/s
+        self.assertAlmostEqual(result, 17895.69, delta=1.0)
+
+    def test_hashrate_estimator_does_not_use_wire_difficulty(self):
+        """1 accepted share / 60s at wire difficulty 98.304 would be ~7.04 GH/s.
+
+        This must NOT be the output of our estimator.
+        """
+        activity_engine = sys.modules["activity_engine"]
+        result = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=1,
+            window_seconds=60,
+            effective_difficulty=0.0015,  # NOT 98.304
+        )
+        assert result is not None
+        # Should be ~107 KH/s, not ~7.04 GH/s
+        self.assertLess(result, 1e6)
+        self.assertAlmostEqual(result, 107374.18, delta=1.0)
+
+    def test_hashrate_estimator_rejected_shares_not_included(self):
+        """Rejected shares must NOT increase the estimated hashrate."""
+        activity_engine = sys.modules["activity_engine"]
+        eff_diff = 0.0015
+
+        hashrate_1_accepted = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=1,
+            window_seconds=60,
+            effective_difficulty=eff_diff,
+        )
+        hashrate_2_accepted = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=2,
+            window_seconds=60,
+            effective_difficulty=eff_diff,
+        )
+        # Twice the accepted shares -> twice the hashrate
+        self.assertAlmostEqual(hashrate_2_accepted, hashrate_1_accepted * 2, delta=1.0)
+
+        # Zero accepted shares -> None
+        hashrate_zero = activity_engine.estimate_hashrate_from_accepted_shares(
+            accepted_shares=0,
+            window_seconds=60,
+            effective_difficulty=eff_diff,
+        )
+        self.assertIsNone(hashrate_zero)
+
+    def test_hashrate_estimator_returns_none_for_zero_or_negative_inputs(self):
+        """Guard: returns None when accepted_shares <= 0 or window_seconds <= 0."""
+        activity_engine = sys.modules["activity_engine"]
+        eff_diff = 0.0015
+        self.assertIsNone(
+            activity_engine.estimate_hashrate_from_accepted_shares(0, 60, eff_diff)
+        )
+        self.assertIsNone(
+            activity_engine.estimate_hashrate_from_accepted_shares(1, 0, eff_diff)
+        )
+        self.assertIsNone(
+            activity_engine.estimate_hashrate_from_accepted_shares(-1, 60, eff_diff)
+        )
+
+    def test_hashrate_estimator_activity_engine_window_uses_effective_difficulty(self):
+        """ActivityEngine._hashrate_for_window must use effective difficulty."""
+        activity_engine = sys.modules["activity_engine"]
+        eff_diff = 0.0015
+        engine = activity_engine.ActivityEngine(assumed_share_difficulty=eff_diff)
+        result = engine._hashrate_for_window(eff_diff, 60)
+        expected = (1 / 60) * eff_diff * float(2**32)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, expected, delta=1.0)
+        self.assertAlmostEqual(result, 107374.18, delta=1.0)
+
+    def test_hashrate_estimator_engine_per_share_difficulty_math_0015(self):
+        """42 accepted shares in 300s at per-share effective diff 0.0015 -> ~902 KH/s."""
+        activity_engine = sys.modules["activity_engine"]
+        engine = activity_engine.ActivityEngine(assumed_share_difficulty=0.00025)
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        
+        # Ingest 42 shares
+        for i in range(42):
+            event = activity_engine.ShareEvent(
+                wallet="PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD",
+                worker="default",
+                occurred_at=now,
+                accepted=True,
+                difficulty=0.0015,
+            )
+            engine.ingest_event(event, update_lifetime=False)
+            
+        snapshot = engine.build_snapshot(now=now, activity_mode="testing", activity_data_source="testing", synthetic_job_mode="disabled", share_validation_mode="none")
+        hashrate_5m = snapshot["pool"]["rolling"]["5m"]["hashrate"]
+        expected = (42 / 300) * 0.0015 * (2**32)
+        self.assertAlmostEqual(hashrate_5m, expected, delta=1.0)
+        self.assertAlmostEqual(hashrate_5m, 901943.13, delta=1.0)
+
+    def test_hashrate_estimator_engine_per_share_difficulty_math_00025(self):
+        """42 accepted shares in 300s at per-share effective diff 0.00025 -> ~150 KH/s."""
+        activity_engine = sys.modules["activity_engine"]
+        engine = activity_engine.ActivityEngine(assumed_share_difficulty=0.0015)
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        
+        # Ingest 42 shares
+        for i in range(42):
+            event = activity_engine.ShareEvent(
+                wallet="PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD",
+                worker="default",
+                occurred_at=now,
+                accepted=True,
+                difficulty=0.00025,
+            )
+            engine.ingest_event(event, update_lifetime=False)
+            
+        snapshot = engine.build_snapshot(now=now, activity_mode="testing", activity_data_source="testing", synthetic_job_mode="disabled", share_validation_mode="none")
+        hashrate_5m = snapshot["pool"]["rolling"]["5m"]["hashrate"]
+        expected = (42 / 300) * 0.00025 * (2**32)
+        self.assertAlmostEqual(hashrate_5m, expected, delta=1.0)
+        self.assertAlmostEqual(hashrate_5m, 150323.86, delta=1.0)
+
+    def test_hashrate_estimator_engine_mixed_difficulties(self):
+        """Mixed difficulties should sum per-share work correctly."""
+        activity_engine = sys.modules["activity_engine"]
+        engine = activity_engine.ActivityEngine(assumed_share_difficulty=0.00025)
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        
+        # 10 shares of diff 0.0015, 20 shares of diff 0.00025
+        for i in range(10):
+            event = activity_engine.ShareEvent(
+                wallet="w1", worker="d1", occurred_at=now, accepted=True, difficulty=0.0015
+            )
+            engine.ingest_event(event, update_lifetime=False)
+        for i in range(20):
+            event = activity_engine.ShareEvent(
+                wallet="w1", worker="d1", occurred_at=now, accepted=True, difficulty=0.00025
+            )
+            engine.ingest_event(event, update_lifetime=False)
+            
+        snapshot = engine.build_snapshot(now=now, activity_mode="testing", activity_data_source="testing", synthetic_job_mode="disabled", share_validation_mode="none")
+        hashrate_5m = snapshot["pool"]["rolling"]["5m"]["hashrate"]
+        expected_work = (10 * 0.0015) + (20 * 0.00025)
+        expected_hashrate = (expected_work / 300) * (2**32)
+        self.assertAlmostEqual(hashrate_5m, expected_hashrate, delta=1.0)
+
+    def test_hashrate_estimator_engine_missing_difficulty_fallback(self):
+        """Missing difficulty should fallback to assumedShareDifficulty."""
+        activity_engine = sys.modules["activity_engine"]
+        engine = activity_engine.ActivityEngine(assumed_share_difficulty=0.00025)
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        
+        # Ingest 10 shares with difficulty=None
+        for i in range(10):
+            event = activity_engine.ShareEvent(
+                wallet="w1", worker="d1", occurred_at=now, accepted=True, difficulty=None
+            )
+            engine.ingest_event(event, update_lifetime=False)
+            
+        snapshot = engine.build_snapshot(now=now, activity_mode="testing", activity_data_source="testing", synthetic_job_mode="disabled", share_validation_mode="none")
+        hashrate_5m = snapshot["pool"]["rolling"]["5m"]["hashrate"]
+        expected = (10 / 300) * 0.00025 * (2**32)
+        self.assertAlmostEqual(hashrate_5m, expected, delta=1.0)
+
+    def test_hashrate_estimator_engine_rejected_shares_exclusion(self):
+        """Rejected shares should not contribute to hashrate or work."""
+        activity_engine = sys.modules["activity_engine"]
+        engine = activity_engine.ActivityEngine(assumed_share_difficulty=0.0015)
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        
+        # Ingest 1 accepted share and 1 rejected share
+        event_ok = activity_engine.ShareEvent(
+            wallet="w1", worker="d1", occurred_at=now, accepted=True, difficulty=0.0015
+        )
+        event_rej = activity_engine.ShareEvent(
+            wallet="w1", worker="d1", occurred_at=now, accepted=False, difficulty=0.0015
+        )
+        engine.ingest_event(event_ok, update_lifetime=False)
+        engine.ingest_event(event_rej, update_lifetime=False)
+        
+        snapshot = engine.build_snapshot(now=now, activity_mode="testing", activity_data_source="testing", synthetic_job_mode="disabled", share_validation_mode="none")
+        hashrate_5m = snapshot["pool"]["rolling"]["5m"]["hashrate"]
+        expected = (1 / 300) * 0.0015 * (2**32)
+        self.assertAlmostEqual(hashrate_5m, expected, delta=1.0)
+
+    # ------------------------------------------------------------------
 
     async def test_notify_debug_capture_default_limit_zero_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
