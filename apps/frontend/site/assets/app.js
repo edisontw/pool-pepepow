@@ -90,6 +90,9 @@
       next /= 1000;
     }
 
+    if (unit === "H/s") {
+      return `~${next.toFixed(0)} H/s`;
+    }
     return `${next.toFixed(next >= 100 ? 0 : next >= 10 ? 1 : 2)} ${unit}`;
   }
 
@@ -435,8 +438,8 @@
             value: formatNumber(summary.activeWorkers)
           },
           {
-            label: "Pool-side estimated hashrate",
-            value: formatHashrate(summary.hashrate)
+            label: "Pool-side share-rate estimate",
+            value: `${formatHashrate(summary.hashrate)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">This is a pool-side estimate from accepted shares, not the miner’s exact local GPU hashrate.</small>`
           },
           {
             label: "Accepted shares",
@@ -457,7 +460,7 @@
       htmlContent += renderTable(workers, [
         { key: "name", label: "Worker" },
         { key: "acceptedShares", label: "Accepted shares", render: formatNumber },
-        { key: "hashrate", label: "Pool-side estimated hashrate", render: formatHashrate },
+        { key: "hashrate", label: "Share-rate estimate", render: formatHashrate },
         { key: "lastShareAt", label: "Last Share", render: formatDate }
       ]);
     }
