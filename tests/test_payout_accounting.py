@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+import os
 from pathlib import Path
 import sys
 
@@ -2537,8 +2538,8 @@ class WalletRpcDryRunTests(unittest.TestCase):
         with self.candidates_path.open("w", encoding="utf-8") as f:
             json.dump({"items": items, "updated_at": "2026-06-07T00:00:00Z"}, f)
 
-    @unittest.mock.patch('payout_helper.query_rpc')
-    def test_dry_run_creates_artifact(self, mock_rpc):
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    def test_dry_run_creates_artifact(self, mock_wallet):
         """Dry-run validates candidates and writes output snapshot atomically with correct fields."""
         def side_effect(method, params):
             if method == "getbalance":
@@ -2546,7 +2547,7 @@ class WalletRpcDryRunTests(unittest.TestCase):
             if method == "validateaddress":
                 return {"isvalid": True}
             return None
-        mock_rpc.side_effect = side_effect
+        mock_wallet.side_effect = side_effect
 
         self._write_candidates([
             {
@@ -2580,6 +2581,10 @@ class WalletRpcDryRunTests(unittest.TestCase):
         self.assertEqual(data["realSendEnabled"], False)
         self.assertAlmostEqual(data["totalReadyAmount"], 120.5)
         self.assertAlmostEqual(data["walletAvailableBalance"], 50000.0)
+        self.assertEqual(data["readyCount"], 1)
+        self.assertEqual(data["blockedCount"], 0)
+        self.assertTrue(data["walletBalanceReadOk"])
+        self.assertFalse(data["insufficientBalance"])
         self.assertEqual(data["item count"], 1)
         self.assertEqual(data["blocked items"], 0)
         self.assertEqual(len(data["warnings"]), 0)
@@ -2594,10 +2599,10 @@ class WalletRpcDryRunTests(unittest.TestCase):
         self.assertEqual(item["validationMode"], "rpc")
         self.assertEqual(item["rpcWouldSend"], False)
 
-    @unittest.mock.patch('payout_helper.query_rpc')
-    def test_dry_run_does_not_call_send_rpc(self, mock_rpc):
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    def test_dry_run_does_not_call_send_rpc(self, mock_wallet):
         """Dry-run verifies balance and address but never calls any transaction-sending RPC methods."""
-        mock_rpc.return_value = None
+        mock_wallet.return_value = None
 
         self._write_candidates([
             {
@@ -2618,12 +2623,18 @@ class WalletRpcDryRunTests(unittest.TestCase):
         rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
         self.assertEqual(rc, 0)
 
-        called_methods = [call[0][0] for call in mock_rpc.call_args_list]
+        called_methods = [call[0][0] for call in mock_wallet.call_args_list]
         for method in called_methods:
             self.assertNotIn(method, ["sendtoaddress", "sendmany", "walletpassphrase", "walletunlock"])
 
-    @unittest.mock.patch('payout_helper.query_rpc')
-    def test_insufficient_balance_blocks_output(self, mock_rpc):
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertFalse(data["walletBalanceReadOk"])
+        self.assertTrue(data["insufficientBalance"])
+        self.assertIn("Wallet RPC unreachable or balance unreadable", data["warnings"])
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    def test_insufficient_balance_blocks_output(self, mock_wallet):
         """When total payouts exceed available wallet balance, items are marked blocked_insufficient_balance."""
         def side_effect(method, params):
             if method == "getbalance":
@@ -2631,7 +2642,7 @@ class WalletRpcDryRunTests(unittest.TestCase):
             if method == "validateaddress":
                 return {"isvalid": True}
             return None
-        mock_rpc.side_effect = side_effect
+        mock_wallet.side_effect = side_effect
 
         self._write_candidates([
             {
@@ -2656,13 +2667,16 @@ class WalletRpcDryRunTests(unittest.TestCase):
             data = json.load(f)
 
         self.assertEqual(data["blocked items"], 1)
+        self.assertEqual(data["blockedCount"], 1)
+        self.assertEqual(data["readyCount"], 0)
+        self.assertTrue(data["insufficientBalance"])
         self.assertEqual(data["items"][0]["status"], "blocked_insufficient_balance")
         self.assertIn("Insufficient wallet balance for ready payouts", data["warnings"])
 
-    @unittest.mock.patch('payout_helper.query_rpc')
-    def test_missing_payout_candidates_returns_empty_dry_run_safely(self, mock_rpc):
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    def test_missing_payout_candidates_returns_empty_dry_run_safely(self, mock_wallet):
         """Missing candidate file is handled gracefully and returns empty dry-run structure."""
-        mock_rpc.return_value = 1000.0
+        mock_wallet.return_value = 1000.0
 
         if self.candidates_path.exists():
             self.candidates_path.unlink()
@@ -2675,10 +2689,72 @@ class WalletRpcDryRunTests(unittest.TestCase):
 
         self.assertEqual(data["item count"], 0)
         self.assertEqual(data["blocked items"], 0)
+        self.assertEqual(data["readyCount"], 0)
+        self.assertEqual(data["blockedCount"], 0)
         self.assertEqual(data["items"], [])
 
+
+    @unittest.mock.patch.dict(os.environ, {}, clear=False)
     @unittest.mock.patch('payout_helper.query_rpc')
-    def test_malformed_payout_candidate_is_blocked(self, mock_rpc):
+    def test_cli_fallback_can_read_mocked_balance(self, mock_rpc):
+        """When RPC config is absent, dry-run can read balance through a configured wallet CLI."""
+        mock_rpc.return_value = None
+        cli_path = self.tmp_path / "PEPEPOW-cli"
+        cli_path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "if sys.argv[1] == 'getbalance': print('1234.5')\n"
+            "elif sys.argv[1] == 'validateaddress': print(json.dumps({'isvalid': True}))\n"
+            "else: print(json.dumps({'balance': 1234.5}))\n",
+            encoding="utf-8",
+        )
+        cli_path.chmod(0o755)
+        old_cli = os.environ.get("PEPEPOW_WALLET_CLI")
+        old_rpc_keys = {k: os.environ.get(k) for k in ["PEPEPOWD_RPC_URL", "PEPEPOWD_RPC_USER", "PEPEPOWD_RPC_PASSWORD"]}
+        os.environ["PEPEPOW_WALLET_CLI"] = str(cli_path)
+        for key in old_rpc_keys:
+            os.environ.pop(key, None)
+
+        try:
+            self._write_candidates([
+                {
+                    "candidateId": "candeligible000000000000000001",
+                    "blockHash": "candeligible000000000000000001",
+                    "height": 500,
+                    "status": "ready_for_manual_review",
+                    "payouts": [
+                        {
+                            "wallet": "PEPEPOW1WalletAddressTarget001",
+                            "amount": 100.0,
+                            "status": "pending_manual_payment"
+                        }
+                    ]
+                }
+            ])
+
+            rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+            self.assertEqual(rc, 0)
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self.assertAlmostEqual(data["walletAvailableBalance"], 1234.5)
+            self.assertTrue(data["walletBalanceReadOk"])
+            self.assertEqual(data["readyCount"], 1)
+            mock_rpc.assert_not_called()
+        finally:
+            if old_cli is None:
+                os.environ.pop("PEPEPOW_WALLET_CLI", None)
+            else:
+                os.environ["PEPEPOW_WALLET_CLI"] = old_cli
+            for key, value in old_rpc_keys.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    def test_malformed_payout_candidate_is_blocked(self, mock_wallet):
         """Malformed payout candidate with missing/invalid fields gets blocked."""
         def side_effect(method, params):
             if method == "getbalance":
@@ -2686,7 +2762,7 @@ class WalletRpcDryRunTests(unittest.TestCase):
             if method == "validateaddress":
                 return {"isvalid": True}
             return None
-        mock_rpc.side_effect = side_effect
+        mock_wallet.side_effect = side_effect
 
         self._write_candidates([
             {
@@ -2711,8 +2787,8 @@ class WalletRpcDryRunTests(unittest.TestCase):
         self.assertEqual(data["blocked items"], 1)
         self.assertEqual(data["items"][0]["status"], "blocked_malformed_candidate")
 
-    @unittest.mock.patch('payout_helper.query_rpc')
-    def test_real_wallet_payout_flag_does_not_cause_send(self, mock_rpc):
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    def test_real_wallet_payout_flag_does_not_cause_send(self, mock_wallet):
         """Command must refuse to perform any sends even if PEPEPOW_ENABLE_REAL_WALLET_PAYOUT is enabled."""
         import os
         os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
@@ -2738,7 +2814,7 @@ class WalletRpcDryRunTests(unittest.TestCase):
             rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
             self.assertEqual(rc, 0)
 
-            called_methods = [call[0][0] for call in mock_rpc.call_args_list]
+            called_methods = [call[0][0] for call in mock_wallet.call_args_list]
             for method in called_methods:
                 self.assertNotIn(method, ["sendtoaddress", "sendmany", "walletpassphrase", "walletunlock"])
                 
