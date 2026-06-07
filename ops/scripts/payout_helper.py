@@ -1726,6 +1726,12 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
                 
             wallet = p.get("wallet")
             amount = p.get("amount")
+            carry_source_ids = p.get("carrySourceCandidateIds")
+            if carry_source_ids is None and "sourceCandidateIds" in p:
+                carry_source_ids = p.get("sourceCandidateIds")
+            carry_source_count = p.get("carrySourceCount")
+            if carry_source_count is None and isinstance(carry_source_ids, list):
+                carry_source_count = len(carry_source_ids)
             
             payout_item = {
                 "candidateId": c_id or "",
@@ -1733,8 +1739,14 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
                 "amount": amount,
                 "status": "ready_for_wallet_send_preview",
                 "validationMode": "local",
-                "rpcWouldSend": False
+                "rpcWouldSend": False,
+                "baseAmount": p.get("baseAmount"),
+                "carryInAmount": p.get("carryInAmount"),
+                "carrySourceCount": carry_source_count,
+                "carrySourceCandidateIds": carry_source_ids,
             }
+            if "sourceCandidateIds" in p:
+                payout_item["sourceCandidateIds"] = p.get("sourceCandidateIds")
             
             # 1. Structural/Metadata validation
             if cand_malformed:

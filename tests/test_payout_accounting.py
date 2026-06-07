@@ -2919,6 +2919,7 @@ class CarryFocusedTests(unittest.TestCase):
             self.assertEqual(payouts[2]["status"], "pending_manual_payment")
             self.assertAlmostEqual(payouts[2]["carryInAmount"], 8687.25)
             self.assertAlmostEqual(payouts[2]["amount"], 13030.875)
+            self.assertEqual(payouts[2]["carrySourceCount"], 3)
             self.assertEqual(
                 payouts[2]["carrySourceCandidateIds"],
                 candidate_ids,
@@ -2979,6 +2980,18 @@ class CarryFocusedTests(unittest.TestCase):
             self.assertEqual(dry_run["readyCount"], 1)
             self.assertEqual(dry_run["items"][0]["status"], "ready_for_wallet_send_preview")
             self.assertAlmostEqual(dry_run["items"][0]["amount"], 13030.875)
+            self.assertEqual(
+                dry_run["items"][0]["carrySourceCandidateIds"],
+                [
+                    "candcarryone000000000000000001",
+                    "candcarrytwo000000000000000001",
+                    "candcarrythr000000000000000001",
+                ],
+            )
+            self.assertEqual(dry_run["items"][0]["carrySourceCount"], 3)
+            self.assertAlmostEqual(dry_run["items"][0]["carryInAmount"], 8687.25)
+            self.assertAlmostEqual(dry_run["items"][0]["baseAmount"], 4343.625)
+            self.assertEqual(dry_run["items"][0]["candidateId"], "candcarrythr000000000000000001")
         finally:
             payout_helper.wallet_readonly_call = original_wallet_readonly_call
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
