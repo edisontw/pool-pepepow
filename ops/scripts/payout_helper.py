@@ -244,6 +244,30 @@ def payment_actions_lock_path(actions_log_path: Path) -> Path:
     return actions_log_path.with_name(f"{actions_log_path.stem}.lock")
 
 
+PEPEPOW_MASTERNODE_REWARD_RATIO = 2362.50 / 7000.0
+PEPEPOW_DEV_FEE_REWARD_RATIO = 250.0 / 7000.0
+PEPEPOW_MINER_REWARD_RATIO = 4387.50 / 7000.0
+
+
+def calculate_reward_split(total_block_reward: float) -> dict[str, float]:
+    """Return the current PEPEPOW block reward split.
+
+    Daemon coinbase inspection exposes the full block reward, but pool
+    accounting must only distribute the miner portion.  The current PEPEPOW
+    split for a 7000 reward block is 2362.50 masternode, 250.00 dev fee,
+    and 4387.50 miner reward.
+    """
+    total_reward = float(total_block_reward)
+    masternode_reward = total_reward * PEPEPOW_MASTERNODE_REWARD_RATIO
+    dev_fee_reward = total_reward * PEPEPOW_DEV_FEE_REWARD_RATIO
+    miner_reward = total_reward * PEPEPOW_MINER_REWARD_RATIO
+    return {
+        "total_block_reward": total_reward,
+        "masternode_reward": masternode_reward,
+        "dev_fee_reward": dev_fee_reward,
+        "miner_gross_reward": miner_reward,
+    }
+
 def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
     # Try verbosity=2
     block_data = query_rpc("getblock", [block_hash, 2])
@@ -389,6 +413,10 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
 
         status = "blocked"
         reason = None
+        total_block_reward = None
+        miner_gross_reward = None
+        masternode_reward = None
+        dev_fee_reward = None
         gross_reward = None
         net_reward = None
         pool_fee_percent = None
@@ -445,7 +473,12 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                         status = "blocked"
                         reason = "blocked_invalid_reward"
                     else:
-                        gross_reward = reward_val
+                        reward_split = calculate_reward_split(reward_val)
+                        total_block_reward = reward_split["total_block_reward"]
+                        miner_gross_reward = reward_split["miner_gross_reward"]
+                        masternode_reward = reward_split["masternode_reward"]
+                        dev_fee_reward = reward_split["dev_fee_reward"]
+                        gross_reward = miner_gross_reward
                 except (ValueError, TypeError):
                     status = "blocked"
                     reason = "blocked_invalid_reward"
@@ -509,8 +542,8 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                             
                             pool_fee_pct = float(os.getenv("PEPEPOW_POOL_FEE_PERCENT", "1.0"))
                             pool_fee_percent = pool_fee_pct
-                            pool_fee_amount = gross_reward * pool_fee_pct / 100.0
-                            net_reward = gross_reward - pool_fee_amount
+                            pool_fee_amount = miner_gross_reward * pool_fee_pct / 100.0
+                            net_reward = miner_gross_reward - pool_fee_amount
 
                             for wallet, share_info in shares.items():
                                 if weight_mode == "share_difficulty_sum":
@@ -565,6 +598,14 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "status": status,
             "reason": reason,
             "blockedReason": reason,
+            "total_block_reward": total_block_reward,
+            "totalBlockReward": total_block_reward,
+            "masternode_reward": masternode_reward,
+            "masternodeReward": masternode_reward,
+            "dev_fee_reward": dev_fee_reward,
+            "devFeeReward": dev_fee_reward,
+            "miner_gross_reward": miner_gross_reward,
+            "minerGrossReward": miner_gross_reward,
             "gross_reward": gross_reward,
             "grossReward": gross_reward,
             "net_reward": net_reward,
