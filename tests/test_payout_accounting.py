@@ -1697,8 +1697,123 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res["status"], "warning")
         self.assertEqual(res["summary"]["malformedInput"], True)
 
-if __name__ == "__main__":
+    def test_payout_review_carry_summary(self):
+        import io
+        import sys
 
+        # Setup mock files
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        # A. Clean state with carry and candidate carry applied
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hash_cand_1",
+                    "status": "ready_for_manual_review",
+                    "lifecycle_status": "confirmed",
+                    "height": 100,
+                    "payouts": [
+                        {
+                            "wallet": "walletA",
+                            "amount": 100.0,
+                            "baseAmount": 40.0,
+                            "carryInAmount": 60.0,
+                            "carrySourceCandidateIds": ["height-99"]
+                        }
+                    ]
+                }
+            ]
+        }
+        carry_data = {
+            "generatedAt": "2026-06-07T00:00:00Z",
+            "items": [
+                {
+                    "wallet": "walletB",
+                    "amount": 5.0,
+                    "sourceCandidateId": "height-99",
+                    "status": "below_threshold_carried"
+                },
+                {
+                    "wallet": "walletC",
+                    "amount": 10.5,
+                    "sourceCandidateId": "height-99",
+                    "status": "below_threshold_carried"
+                }
+            ]
+        }
+        payments_data = {
+            "items": []
+        }
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        # 1. Test full review output
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.payout_review(candidates_file, carry_file, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Payout Candidates", output)
+        self.assertIn("Candidate: hash_cand_1 (Height: 100, Lifecycle: confirmed)", output)
+        self.assertIn("Payout Status: READY_FOR_MANUAL_REVIEW", output)
+        self.assertIn("Carry Status Summary", output)
+        self.assertIn("carry_items: 2", output)
+        self.assertIn("carry_total_amount: 15.5", output)
+        self.assertIn("wallets_with_carry: ['walletB', 'walletC']", output)
+        self.assertIn("candidate_payouts_with_carry: 1", output)
+        self.assertIn("candidate_carry_applied_amount: 60.0", output)
+        self.assertIn("carry_audit_status: ok", output)
+
+        # 2. Test missing files (should not crash, return zeros/unknowns)
+        missing_carry = self.tmp_path / "nonexistent-carry.json"
+        missing_candidates = self.tmp_path / "nonexistent-candidates.json"
+        
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.payout_review(missing_candidates, missing_carry, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 0)
+        self.assertIn("No candidates found.", output)
+        self.assertIn("carry_items: 0", output)
+        self.assertIn("carry_total_amount: 0.0", output)
+        self.assertIn("wallets_with_carry: []", output)
+        self.assertIn("candidate_payouts_with_carry: 0", output)
+        self.assertIn("candidate_carry_applied_amount: 0.0", output)
+        self.assertIn("carry_audit_status: warning", output)
+
+        # 3. Test malformed carry snapshot (should not crash, return zeros/unknowns)
+        malformed_carry = self.tmp_path / "malformed-carry.json"
+        with malformed_carry.open("w", encoding="utf-8") as f:
+            f.write("{invalid_json}")
+            
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.payout_review(candidates_file, malformed_carry, payments_file)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(rc, 0)
+        self.assertIn("carry_items: 0", output)
+        self.assertIn("carry_total_amount: 0.0", output)
+        self.assertIn("wallets_with_carry: []", output)
+        self.assertIn("carry_audit_status: warning", output)
+
+if __name__ == "__main__":
     unittest.main()
 
 

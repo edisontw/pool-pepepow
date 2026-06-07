@@ -821,7 +821,7 @@ def generate_carry_snapshot(candidates_path: Path, output_path: Path) -> int:
 
     return 0
 
-def audit_carry_consistency(candidates_path: Path, carry_path: Path, payments_path: Path) -> int:
+def run_carry_audit_logic(candidates_path: Path, carry_path: Path, payments_path: Path) -> dict[str, Any]:
     issues = []
     malformed_input = False
     carry_items = []
@@ -986,9 +986,120 @@ def audit_carry_consistency(candidates_path: Path, carry_path: Path, payments_pa
             "malformedInput": malformed_input
         }
     }
+    return result
 
+def audit_carry_consistency(candidates_path: Path, carry_path: Path, payments_path: Path) -> int:
+    result = run_carry_audit_logic(candidates_path, carry_path, payments_path)
     print(json.dumps(result, indent=2))
-    return 1 if issues or malformed_input else 0
+    return 1 if result["status"] == "warning" else 0
+
+def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path) -> int:
+    candidates = []
+    updated_at = "unknown"
+    
+    if candidates_path.exists():
+        try:
+            with candidates_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                updated_at = data.get("updated_at") or data.get("generatedAt") or "unknown"
+                candidates = data.get("items") if "items" in data else data.get("candidates", [])
+                if not isinstance(candidates, list):
+                    candidates = []
+        except Exception:
+            pass
+
+    # Print candidates review headers and details
+    print(f"Payout Candidates (Last updated: {updated_at})")
+    print("="*80)
+    if not candidates:
+        print("No candidates found.")
+    else:
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            h = c.get("candidate_hash") or c.get("candidateId")
+            status = c.get("status")
+            reason = c.get("reason") or c.get("blockedReason")
+            height = c.get("height")
+            lifecycle = c.get("lifecycle_status") or c.get("lifecycleStatus")
+            print(f"Candidate: {h} (Height: {height}, Lifecycle: {lifecycle})")
+            status_str = str(status).upper() if status else "UNKNOWN"
+            reason_str = f" (Reason: {reason})" if reason else ""
+            print(f"  Payout Status: {status_str}{reason_str}")
+            if status in ("eligible", "ready_for_manual_review"):
+                shares = c.get("shares", {})
+                if isinstance(shares, dict):
+                    print("  Shares breakdown:")
+                    for wallet, info in shares.items():
+                        if isinstance(info, dict):
+                            pct = info.get("share_percent", 0.0)
+                            score = info.get("share_score", 0.0)
+                            cnt = info.get("share_count", 0)
+                            print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
+            print("-"*80)
+
+    # Compute Carry Status Summary
+    carry_items_count = 0
+    carry_total_amount = 0.0
+    wallets_with_carry = []
+    
+    if carry_path.exists():
+        try:
+            with carry_path.open("r", encoding="utf-8") as f:
+                carry_data = json.load(f)
+            if isinstance(carry_data, dict) and isinstance(carry_data.get("items"), list):
+                items = carry_data["items"]
+                carry_items_count = len(items)
+                unique_wallets = set()
+                for item in items:
+                    if isinstance(item, dict):
+                        amt = item.get("amount", 0.0)
+                        try:
+                            carry_total_amount += float(amt)
+                        except (ValueError, TypeError):
+                            pass
+                        wallet = item.get("wallet")
+                        if wallet:
+                            unique_wallets.add(wallet)
+                wallets_with_carry = sorted(list(unique_wallets))
+        except Exception:
+            pass
+
+    candidate_carry_applied_amount = 0.0
+    candidate_payouts_with_carry_count = 0
+    
+    for c in candidates:
+        if isinstance(c, dict):
+            payouts = c.get("payouts")
+            if isinstance(payouts, list):
+                for p in payouts:
+                    if isinstance(p, dict):
+                        carry_in = p.get("carryInAmount", 0.0)
+                        if carry_in and carry_in > 0:
+                            try:
+                                candidate_carry_applied_amount += float(carry_in)
+                                candidate_payouts_with_carry_count += 1
+                            except (ValueError, TypeError):
+                                pass
+
+    carry_audit_status = "unknown"
+    try:
+        audit_res = run_carry_audit_logic(candidates_path, carry_path, payments_path)
+        carry_audit_status = audit_res.get("status", "unknown")
+    except Exception:
+        pass
+
+    print("Carry Status Summary")
+    print("="*80)
+    print(f"carry_items: {carry_items_count}")
+    print(f"carry_total_amount: {carry_total_amount}")
+    print(f"wallets_with_carry: {wallets_with_carry}")
+    print(f"candidate_payouts_with_carry: {candidate_payouts_with_carry_count}")
+    print(f"candidate_carry_applied_amount: {candidate_carry_applied_amount}")
+    print(f"carry_audit_status: {carry_audit_status}")
+    print("="*80)
+    return 0
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
@@ -1025,6 +1136,11 @@ def main() -> int:
     parser_audit.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
     parser_audit.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
 
+    parser_review = subparsers.add_parser("payout-review", help="Show payout candidate review with carry summary")
+    parser_review.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_review.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
+    parser_review.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+
     args = parser.parse_args()
 
     if args.command == "payout-candidates":
@@ -1060,6 +1176,12 @@ def main() -> int:
         )
     elif args.command == "audit-carry-consistency":
         return audit_carry_consistency(
+            Path(args.candidates),
+            Path(args.carry_snapshot),
+            Path(args.payments_snapshot)
+        )
+    elif args.command == "payout-review":
+        return payout_review(
             Path(args.candidates),
             Path(args.carry_snapshot),
             Path(args.payments_snapshot)

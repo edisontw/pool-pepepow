@@ -1064,40 +1064,12 @@ payout_candidates_service() {
 payout_review_service() {
   ensure_runtime_dir
   local payout_file="${RUNTIME_DIR}/payout-candidates.json"
-  if [[ ! -f "${payout_file}" ]]; then
-    echo "No payout candidates file found at ${payout_file}. Run 'payout-candidates' first." >&2
-    return 1
-  fi
-  python3 -c '
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    data = json.load(f)
-updated_at = data.get("updated_at")
-print(f"Payout Candidates (Last updated: {updated_at})")
-print("="*80)
-candidates = data.get("items") if "items" in data else data.get("candidates", [])
-if not candidates:
-    print("No candidates found.")
-for c in candidates:
-    h = c.get("candidate_hash")
-    status = c.get("status")
-    reason = c.get("reason")
-    height = c.get("height")
-    lifecycle = c.get("lifecycle_status")
-    print(f"Candidate: {h} (Height: {height}, Lifecycle: {lifecycle})")
-    status_str = status.upper()
-    reason_str = f" (Reason: {reason})" if reason else ""
-    print(f"  Payout Status: {status_str}{reason_str}")
-    if status in ("eligible", "ready_for_manual_review"):
-        shares = c.get("shares", {})
-        print("  Shares breakdown:")
-        for wallet, info in shares.items():
-            pct = info.get("share_percent", 0.0)
-            score = info.get("share_score", 0.0)
-            cnt = info.get("share_count", 0)
-            print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
-    print("-"*80)
-' "${payout_file}"
+  local carry_file="${RUNTIME_DIR}/payout-carry-snapshot.json"
+  local payments_file="${RUNTIME_DIR}/payments-snapshot.json"
+  python3 "${SCRIPT_DIR}/payout_helper.py" payout-review \
+    --candidates "${payout_file}" \
+    --carry-snapshot "${carry_file}" \
+    --payments-snapshot "${payments_file}"
 }
 
 record_payment_service() {
