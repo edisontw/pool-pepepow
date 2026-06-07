@@ -1066,10 +1066,24 @@ payout_review_service() {
   local payout_file="${RUNTIME_DIR}/payout-candidates.json"
   local carry_file="${RUNTIME_DIR}/payout-carry-snapshot.json"
   local payments_file="${RUNTIME_DIR}/payments-snapshot.json"
-  python3 "${SCRIPT_DIR}/payout_helper.py" payout-review \
-    --candidates "${payout_file}" \
-    --carry-snapshot "${carry_file}" \
-    --payments-snapshot "${payments_file}"
+  local extra_args=""
+  for arg in "$@"; do
+    if [[ "${arg}" == "--json" ]]; then
+      extra_args="--json"
+    fi
+  done
+  if [[ "${extra_args}" == "--json" ]]; then
+    python3 "${SCRIPT_DIR}/payout_helper.py" payout-review \
+      --candidates "${payout_file}" \
+      --carry-snapshot "${carry_file}" \
+      --payments-snapshot "${payments_file}" \
+      --json
+  else
+    python3 "${SCRIPT_DIR}/payout_helper.py" payout-review \
+      --candidates "${payout_file}" \
+      --carry-snapshot "${carry_file}" \
+      --payments-snapshot "${payments_file}"
+  fi
 }
 
 record_payment_service() {
@@ -3680,7 +3694,7 @@ case "${SUBCOMMAND}" in
     payout_carry_audit_service
     ;;
   payout-review)
-    payout_review_service
+    payout_review_service "$@"
     ;;
   record-payment)
     record_payment_service "$@"

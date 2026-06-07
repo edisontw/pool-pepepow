@@ -993,9 +993,10 @@ def audit_carry_consistency(candidates_path: Path, carry_path: Path, payments_pa
     print(json.dumps(result, indent=2))
     return 1 if result["status"] == "warning" else 0
 
-def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path) -> int:
+def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, as_json: bool = False) -> int:
     candidates = []
     updated_at = "unknown"
+    malformed_candidates = False
     
     if candidates_path.exists():
         try:
@@ -1006,38 +1007,13 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path) 
                 candidates = data.get("items") if "items" in data else data.get("candidates", [])
                 if not isinstance(candidates, list):
                     candidates = []
+                    malformed_candidates = True
+            else:
+                malformed_candidates = True
         except Exception:
-            pass
-
-    # Print candidates review headers and details
-    print(f"Payout Candidates (Last updated: {updated_at})")
-    print("="*80)
-    if not candidates:
-        print("No candidates found.")
+            malformed_candidates = True
     else:
-        for c in candidates:
-            if not isinstance(c, dict):
-                continue
-            h = c.get("candidate_hash") or c.get("candidateId")
-            status = c.get("status")
-            reason = c.get("reason") or c.get("blockedReason")
-            height = c.get("height")
-            lifecycle = c.get("lifecycle_status") or c.get("lifecycleStatus")
-            print(f"Candidate: {h} (Height: {height}, Lifecycle: {lifecycle})")
-            status_str = str(status).upper() if status else "UNKNOWN"
-            reason_str = f" (Reason: {reason})" if reason else ""
-            print(f"  Payout Status: {status_str}{reason_str}")
-            if status in ("eligible", "ready_for_manual_review"):
-                shares = c.get("shares", {})
-                if isinstance(shares, dict):
-                    print("  Shares breakdown:")
-                    for wallet, info in shares.items():
-                        if isinstance(info, dict):
-                            pct = info.get("share_percent", 0.0)
-                            score = info.get("share_score", 0.0)
-                            cnt = info.get("share_count", 0)
-                            print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
-            print("-"*80)
+        malformed_candidates = True
 
     # Compute Carry Status Summary
     carry_items_count = 0
@@ -1090,6 +1066,143 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path) 
     except Exception:
         pass
 
+    payment_rows_count = 0
+    if payments_path.exists():
+        try:
+            with payments_path.open("r", encoding="utf-8") as f:
+                p_data = json.load(f)
+            if isinstance(p_data, dict) and isinstance(p_data.get("items"), list):
+                payment_rows_count = len(p_data["items"])
+        except Exception:
+            pass
+
+    payout_review_status = "ok"
+    if malformed_candidates or not carry_path.exists() or not payments_path.exists() or carry_audit_status != "ok":
+        payout_review_status = "warning"
+
+    if as_json:
+        # Load pool snapshot for network height and confirmations
+        pool_snap = load_pool_snapshot()
+        snap_blocks = pool_snap.get("blocks", [])
+        current_height = pool_snap.get("network", {}).get("height") if isinstance(pool_snap, dict) else None
+        
+        confirmations_map = {}
+        if isinstance(snap_blocks, list):
+            for sb in snap_blocks:
+                if isinstance(sb, dict):
+                    h_hash = sb.get("hash")
+                    h_conf = sb.get("confirmations")
+                    if h_hash and h_conf is not None:
+                        try:
+                            confirmations_map[h_hash] = int(h_conf)
+                        except (ValueError, TypeError):
+                            pass
+                            
+        json_items = []
+        ready_candidates_count = 0
+        blocked_candidates_count = 0
+        
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            c_hash = c.get("candidate_hash") or c.get("candidateId")
+            c_height = c.get("height")
+            status = c.get("status")
+            
+            if status in ("eligible", "ready_for_manual_review"):
+                ready_candidates_count += 1
+            elif status == "blocked":
+                blocked_candidates_count += 1
+                
+            conf = confirmations_map.get(c_hash)
+            if conf is None and current_height is not None and c_height is not None:
+                try:
+                    conf = max(0, int(current_height) - int(c_height) + 1)
+                except (ValueError, TypeError):
+                    pass
+            
+            payouts = c.get("payouts")
+            carry_applied = 0.0
+            payout_count = 0
+            if isinstance(payouts, list):
+                payout_count = len(payouts)
+                for p in payouts:
+                    if isinstance(p, dict):
+                        try:
+                            carry_applied += float(p.get("carryInAmount", 0.0))
+                        except (ValueError, TypeError):
+                            pass
+
+            net_reward = c.get("netReward") or c.get("net_reward")
+            if net_reward is not None:
+                try:
+                    net_reward = float(net_reward)
+                except (ValueError, TypeError):
+                    pass
+            
+            json_items.append({
+                "candidateId": c_hash,
+                "blockHeight": c_height,
+                "blockHash": c.get("blockHash") or c_hash,
+                "status": status,
+                "lifecycleStatus": c.get("lifecycleStatus") or c.get("lifecycle_status"),
+                "confirmations": conf,
+                "netReward": net_reward,
+                "payoutCount": payout_count,
+                "blockedReason": c.get("blockedReason") or c.get("reason"),
+                "carryAppliedAmount": carry_applied
+            })
+
+        out = {
+            "status": payout_review_status,
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "summary": {
+                "candidateItems": len(candidates),
+                "readyCandidates": ready_candidates_count,
+                "blockedCandidates": blocked_candidates_count,
+                "paymentRows": payment_rows_count,
+                "carryItems": carry_items_count,
+                "carryTotalAmount": carry_total_amount,
+                "walletsWithCarry": wallets_with_carry,
+                "candidatePayoutsWithCarry": candidate_payouts_with_carry_count,
+                "candidateCarryAppliedAmount": candidate_carry_applied_amount,
+                "carryAuditStatus": carry_audit_status
+            },
+            "items": json_items
+        }
+        print(json.dumps(out, indent=2))
+        return 0
+
+    # Print candidates review headers and details (preserving text behavior)
+    print(f"Payout Candidates (Last updated: {updated_at})")
+    print("="*80)
+    if not candidates:
+        print("No candidates found.")
+    else:
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            h = c.get("candidate_hash") or c.get("candidateId")
+            status = c.get("status")
+            reason = c.get("reason") or c.get("blockedReason")
+            height = c.get("height")
+            lifecycle = c.get("lifecycle_status") or c.get("lifecycleStatus")
+            print(f"Candidate: {h} (Height: {height}, Lifecycle: {lifecycle})")
+            status_str = str(status).upper() if status else "UNKNOWN"
+            reason_str = f" (Reason: {reason})" if reason else ""
+            print(f"  Payout Status: {status_str}{reason_str}")
+            if status in ("eligible", "ready_for_manual_review"):
+                shares = c.get("shares", {})
+                if isinstance(shares, dict):
+                    print("  Shares breakdown:")
+                    for wallet, info in shares.items():
+                        if isinstance(info, dict):
+                            pct = info.get("share_percent", 0.0)
+                            score = info.get("share_score", 0.0)
+                            cnt = info.get("share_count", 0)
+                            print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
+            print("-"*80)
+
     print("Carry Status Summary")
     print("="*80)
     print(f"carry_items: {carry_items_count}")
@@ -1140,6 +1253,7 @@ def main() -> int:
     parser_review.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_review.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
     parser_review.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+    parser_review.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     args = parser.parse_args()
 
@@ -1184,7 +1298,8 @@ def main() -> int:
         return payout_review(
             Path(args.candidates),
             Path(args.carry_snapshot),
-            Path(args.payments_snapshot)
+            Path(args.payments_snapshot),
+            as_json=args.json
         )
 
     return 0
