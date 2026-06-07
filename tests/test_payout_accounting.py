@@ -2161,8 +2161,106 @@ class PayoutAccountingTests(unittest.TestCase):
         after_files = set(self.tmp_path.iterdir())
         self.assertEqual(before_files, after_files, "payout-review-check must not write runtime files")
 
+    def test_payout_monitor_lite_sh(self):
+        """payout-monitor-lite.sh cron wrapper works end-to-end and outputs correct status."""
+        import subprocess
+        import os
+
+        # Test 1: warning (empty/missing runtime directory files)
+        monitor_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "payout-monitor-lite.sh"
+        env_warn = dict(os.environ)
+        # Pointing to a clean subfolder ensures no files are present
+        warn_dir = self.tmp_path / "warn_subdir"
+        warn_dir.mkdir()
+        env_warn["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(warn_dir)
+
+        res_warn = subprocess.run(
+            [str(monitor_path)],
+            env=env_warn,
+            capture_output=True,
+            text=True
+        )
+        # It should exit with 0 or 1 depending on implementation, but outputs POOL_PAYOUT_WARNING status=warning
+        self.assertIn("POOL_PAYOUT_WARNING status=warning", res_warn.stdout)
+
+        # Test 2: no ready candidates
+        candidates_file = self.tmp_path / "payout-candidates.json"
+        carry_file = self.tmp_path / "payout-carry-snapshot.json"
+        payments_file = self.tmp_path / "payments-snapshot.json"
+
+        # All blocked
+        candidates_data = {
+            "items": [
+                {
+                    "candidate_hash": "hash_blocked_1",
+                    "candidateId": "hash_blocked_1",
+                    "status": "blocked",
+                    "lifecycle_status": "immature",
+                    "lifecycleStatus": "immature",
+                    "height": 100,
+                    "payouts": []
+                }
+            ]
+        }
+        carry_data = {"generatedAt": "2026-06-07T00:00:00Z", "items": []}
+        payments_data = {"items": []}
+
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data, f)
+
+        env_ok = dict(os.environ)
+        env_ok["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(self.tmp_path)
+
+        before_files = set(self.tmp_path.iterdir())
+
+        # Piped/Captured stdout (non-TTY) -> should be silent
+        res_ok = subprocess.run(
+            [str(monitor_path)],
+            env=env_ok,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res_ok.returncode, 0)
+        self.assertEqual(res_ok.stdout, "")
+
+        # Test 3: ready candidate
+        candidates_data_ready = {
+            "items": [
+                {
+                    "candidate_hash": "hash_ready_1",
+                    "candidateId": "hash_ready_1",
+                    "status": "ready_for_manual_review",
+                    "lifecycle_status": "confirmed",
+                    "lifecycleStatus": "confirmed",
+                    "height": 200,
+                    "payouts": []
+                }
+            ]
+        }
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data_ready, f)
+
+        res_ready = subprocess.run(
+            [str(monitor_path)],
+            env=env_ok,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res_ready.returncode, 0)
+        self.assertIn("POOL_PAYOUT_READY ready_candidates=1", res_ready.stdout)
+
+        # No new runtime files created beyond what was there before (excluding the warn_subdir and created test files)
+        after_files = set(self.tmp_path.iterdir())
+        new_files = after_files - before_files
+        self.assertEqual(new_files, set(), f"Should not write runtime files during execution. New files: {new_files}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
