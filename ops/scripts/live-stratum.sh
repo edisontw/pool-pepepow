@@ -77,6 +77,7 @@ RPC_URL=""
 RPC_USER=""
 RPC_PASSWORD=""
 RPC_TIMEOUT_SECONDS=""
+WALLET_CLI=""
 VARDIFF_ENABLED=""
 LOW_DIFF_SHARE_FULL_LOG_EVERY_N=""
 STRATUM_WIRE_DIFFICULTY_SCALE=""
@@ -112,6 +113,7 @@ set_effective_defaults() {
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
   REAL_WALLET_PAYOUT_ENABLED="${PEPEPOW_ENABLE_REAL_WALLET_PAYOUT:-false}"
   REAL_WALLET_PAYOUT_MAX_SENDS="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-1}"
+  WALLET_CLI="${PEPEPOW_WALLET_CLI:-/home/ubuntu/PEPEPOW-cli}"
   CLEAN_JOBS_LEGACY="${PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY:-false}"
   VERSION_SOURCE_ORDER="${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED:-false}"
   RPC_HOST="${detected_rpc_host}"
@@ -188,6 +190,7 @@ load_launch_env_if_present() {
   local loaded_real_submitblock_max_sends
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
+  local loaded_wallet_cli
   local loaded_version_source_order
   local loaded_low_diff_share_full_log_every_n
   local loaded_stratum_wire_difficulty_scale
@@ -222,6 +225,7 @@ load_launch_env_if_present() {
   loaded_rpc_user="$(launch_env_value PEPEPOWD_RPC_USER)"
   loaded_rpc_password="$(launch_env_value PEPEPOWD_RPC_PASSWORD)"
   loaded_rpc_timeout="$(launch_env_value PEPEPOWD_RPC_TIMEOUT_SECONDS)"
+  loaded_wallet_cli="$(launch_env_value PEPEPOW_WALLET_CLI)"
   loaded_version_source_order="$(launch_env_value PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED)"
   loaded_low_diff_share_full_log_every_n="$(launch_env_value PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N)"
   loaded_stratum_wire_difficulty_scale="$(launch_env_value PEPEPOW_POOL_CORE_STRATUM_WIRE_DIFFICULTY_SCALE)"
@@ -294,6 +298,9 @@ load_launch_env_if_present() {
   fi
   if [[ -z "${PEPEPOWD_RPC_TIMEOUT_SECONDS+x}" && -n "${loaded_rpc_timeout}" ]]; then
     RPC_TIMEOUT_SECONDS="${loaded_rpc_timeout}"
+  fi
+  if [[ -z "${PEPEPOW_WALLET_CLI+x}" && -n "${loaded_wallet_cli}" ]]; then
+    WALLET_CLI="${loaded_wallet_cli}"
   fi
   if [[ -z "${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED+x}" && -n "${loaded_version_source_order}" ]]; then
     VERSION_SOURCE_ORDER="${loaded_version_source_order}"
@@ -371,6 +378,7 @@ rpc_url: ${RPC_URL}
 rpc_user: ${RPC_USER:-unset}
 rpc_password: $(masked_rpc_password)
 rpc_timeout_seconds: ${RPC_TIMEOUT_SECONDS}
+wallet_cli: ${WALLET_CLI}
 stratum_notify_clean_jobs_legacy: ${CLEAN_JOBS_LEGACY}
 pepepow_header_version_source_order_enabled: ${VERSION_SOURCE_ORDER}
 stratum_vardiff_enabled: ${VARDIFF_ENABLED}
@@ -542,6 +550,7 @@ PEPEPOWD_RPC_URL=${RPC_URL}
 PEPEPOWD_RPC_USER=${RPC_USER}
 PEPEPOWD_RPC_PASSWORD=${RPC_PASSWORD}
 PEPEPOWD_RPC_TIMEOUT_SECONDS=${RPC_TIMEOUT_SECONDS}
+PEPEPOW_WALLET_CLI=${WALLET_CLI}
 PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY=${CLEAN_JOBS_LEGACY}
 PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED=${VERSION_SOURCE_ORDER}
 PEPEPOW_POOL_CORE_LOW_DIFF_SHARE_FULL_LOG_EVERY_N=${LOW_DIFF_SHARE_FULL_LOG_EVERY_N}
@@ -1158,6 +1167,94 @@ payout_wallet_dry_run_service() {
   python3 "${SCRIPT_DIR}/payout_helper.py" payout-wallet-dry-run \
     --candidates "${candidates_file}" \
     --output "${output_file}"
+}
+
+payout_wallet_send_once_service() {
+  ensure_runtime_dir
+  local candidate_id=""
+  local wallet=""
+  local amount=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --candidate-id)
+        candidate_id="${2:-}"
+        shift 2
+        ;;
+      --wallet)
+        wallet="${2:-}"
+        shift 2
+        ;;
+      --amount)
+        amount="${2:-}"
+        shift 2
+        ;;
+      *)
+        echo "unknown payout-wallet-send-once argument: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  if [[ -z "${candidate_id}" || -z "${wallet}" || -z "${amount}" ]]; then
+    echo "usage: live-stratum.sh payout-wallet-send-once --candidate-id <candidateId> --wallet <wallet> --amount <amount>" >&2
+    return 1
+  fi
+
+  python3 "${SCRIPT_DIR}/payout_helper.py" payout-wallet-send-once \
+    --candidates "${RUNTIME_DIR}/payout-candidates.json" \
+    --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \
+    --payments-snapshot "${RUNTIME_DIR}/payments-snapshot.json" \
+    --output "${RUNTIME_DIR}/payout-wallet-send-once-result.json" \
+    --candidate-id "${candidate_id}" \
+    --wallet "${wallet}" \
+    --amount "${amount}"
+}
+
+payout_wallet_send_preflight_service() {
+  ensure_runtime_dir
+  set_effective_defaults
+  load_launch_env_if_present
+  export PEPEPOW_ENABLE_REAL_WALLET_PAYOUT="${REAL_WALLET_PAYOUT_ENABLED}"
+  export PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${REAL_WALLET_PAYOUT_MAX_SENDS}"
+  export PEPEPOW_WALLET_CLI="${WALLET_CLI}"
+  local candidate_id=""
+  local wallet=""
+  local amount=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --candidate-id)
+        candidate_id="${2:-}"
+        shift 2
+        ;;
+      --wallet)
+        wallet="${2:-}"
+        shift 2
+        ;;
+      --amount)
+        amount="${2:-}"
+        shift 2
+        ;;
+      *)
+        echo "unknown payout-wallet-send-preflight argument: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  if [[ -z "${candidate_id}" || -z "${wallet}" || -z "${amount}" ]]; then
+    echo "usage: live-stratum.sh payout-wallet-send-preflight --candidate-id <candidateId> --wallet <wallet> --amount <amount>" >&2
+    return 1
+  fi
+
+  python3 "${SCRIPT_DIR}/payout_helper.py" payout-wallet-send-preflight \
+    --candidates "${RUNTIME_DIR}/payout-candidates.json" \
+    --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \
+    --output "${RUNTIME_DIR}/payout-wallet-send-preflight-result.json" \
+    --candidate-id "${candidate_id}" \
+    --wallet "${wallet}" \
+    --amount "${amount}"
 }
 
 
@@ -3720,6 +3817,14 @@ case "${SUBCOMMAND}" in
   payout-wallet-dry-run)
     payout_wallet_dry_run_service
     ;;
+  payout-wallet-send-once)
+    shift
+    payout_wallet_send_once_service "$@"
+    ;;
+  payout-wallet-send-preflight)
+    shift
+    payout_wallet_send_preflight_service "$@"
+    ;;
   payout-review)
     payout_review_service "$@"
     ;;
@@ -3794,7 +3899,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payout-wallet-dry-run|payout-review|payout-review-check|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payout-wallet-dry-run|payout-wallet-send-once --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-wallet-send-preflight --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-review|payout-review-check|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
     exit 1
     ;;
 esac

@@ -559,6 +559,9 @@ def generate_payments_snapshot(
 
     items = []
     for act in existing_actions:
+        if not action_represents_successful_payment(act):
+            continue
+
         txid = act.get("txid")
         w = act.get("wallet")
         c_id = act.get("candidate_id")
@@ -744,7 +747,11 @@ def record_payment(
                         act = json.loads(line)
                         if not isinstance(act, dict):
                             continue
-                        if act.get("candidate_id") == candidate_id and act.get("wallet") == wallet:
+                        if (
+                            act.get("candidate_id") == candidate_id
+                            and act.get("wallet") == wallet
+                            and action_represents_successful_payment(act)
+                        ):
                             print(f"Error: Duplicate payment rejected. Wallet {wallet} has already been paid for candidate {candidate_id}.", file=sys.stderr)
                             return 1
                         existing_actions.append(act)
@@ -1591,6 +1598,404 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
     return 0
 
 
+def payout_wallet_send_preflight(
+    candidates_path: Path,
+    actions_log_path: Path,
+    output_path: Path,
+    candidate_id: str,
+    wallet: str,
+    amount: float,
+) -> int:
+    """Preflight one-shot wallet payout send guards without sending funds."""
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    env = load_env_vars()
+    enabled_raw = env.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", "false")
+    max_sends_raw = env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+    real_enabled = enabled_raw.strip().lower() == "true"
+    warnings: list[str] = []
+    send_would_be_allowed = False
+    status = "unknown"
+
+    try:
+        max_sends: int | None = int(max_sends_raw) if max_sends_raw is not None else None
+    except (TypeError, ValueError):
+        max_sends = None
+
+    def result_payload() -> dict[str, Any]:
+        return {
+            "generatedAt": generated_at,
+            "mode": "send_preflight",
+            "realWalletPayoutEnabled": real_enabled,
+            "maxSends": max_sends,
+            "sendWouldBeAllowed": send_would_be_allowed,
+            "sendAttempted": False,
+            "sendSent": False,
+            "candidateId": candidate_id,
+            "wallet": wallet,
+            "amount": amount,
+            "status": status,
+            "warnings": warnings,
+        }
+
+    def finish(finish_status: str) -> int:
+        nonlocal status, send_would_be_allowed
+        status = finish_status
+        send_would_be_allowed = status == "preflight_ok" and real_enabled and max_sends == 1
+        try:
+            atomic_write_json(output_path, result_payload())
+        except Exception as exc:
+            print(f"Error: Failed to write send-preflight result atomically: {exc}", file=sys.stderr)
+            return 1
+        print("Payout Wallet Send-Preflight Summary")
+        print("="*80)
+        print(f"preflight_status: {status}")
+        print(f"real_wallet_payout_enabled: {str(real_enabled).lower()}")
+        print(f"max_sends: {max_sends if max_sends is not None else 'invalid'}")
+        print(f"send_would_be_allowed: {str(send_would_be_allowed).lower()}")
+        print("send_attempted: false")
+        print("send_sent: false")
+        print(f"candidate_id: {candidate_id}")
+        print(f"wallet: {wallet}")
+        print(f"amount: {amount}")
+        print(f"artifact_path: {output_path}")
+        print("="*80)
+        return 0
+
+    if max_sends != 1:
+        return finish("blocked_invalid_send_budget")
+
+    try:
+        expected_amount = float(amount)
+    except (TypeError, ValueError):
+        return finish("blocked_amount_mismatch")
+    if expected_amount <= 0:
+        return finish("blocked_amount_mismatch")
+
+    candidates: list[Any] = []
+    if candidates_path.exists():
+        try:
+            with candidates_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                loaded = data.get("items") or data.get("candidates") or []
+                if isinstance(loaded, list):
+                    candidates = loaded
+        except Exception as exc:
+            warnings.append(f"Failed to read payout candidates: {exc}")
+    else:
+        warnings.append("Payout candidates snapshot missing")
+
+    matching_candidate = None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        c_id = candidate.get("candidateId") or candidate.get("candidate_hash")
+        if c_id == candidate_id:
+            matching_candidate = candidate
+            break
+
+    if matching_candidate is None:
+        return finish("blocked_candidate_not_found")
+
+    payouts = matching_candidate.get("payouts")
+    if not isinstance(payouts, list):
+        return finish("blocked_wallet_not_in_candidate")
+
+    matching_payout = None
+    for payout in payouts:
+        if isinstance(payout, dict) and payout.get("wallet") == wallet:
+            matching_payout = payout
+            break
+
+    if matching_payout is None:
+        return finish("blocked_wallet_not_in_candidate")
+
+    if matching_payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send_preview"}:
+        return finish("blocked_payout_not_ready")
+
+    try:
+        payout_amount = float(matching_payout.get("amount"))
+    except (TypeError, ValueError):
+        return finish("blocked_amount_mismatch")
+
+    if abs(payout_amount - expected_amount) > 1e-8:
+        return finish("blocked_amount_mismatch")
+
+    if payment_already_recorded(actions_log_path, candidate_id, wallet):
+        return finish("blocked_already_paid")
+
+    balance_res = wallet_readonly_call("getbalance", [])
+    try:
+        wallet_balance = float(balance_res) if balance_res is not None else None
+    except (TypeError, ValueError):
+        wallet_balance = None
+    if wallet_balance is None:
+        return finish("blocked_wallet_balance_unreadable")
+    if expected_amount > wallet_balance:
+        return finish("blocked_insufficient_balance")
+
+    address_res = wallet_readonly_call("validateaddress", [wallet])
+    if not (isinstance(address_res, dict) and address_res.get("isvalid") is True):
+        return finish("blocked_invalid_address")
+
+    return finish("preflight_ok")
+
+
+def payout_wallet_send_once(
+    candidates_path: Path,
+    actions_log_path: Path,
+    payments_snapshot_path: Path,
+    output_path: Path,
+    candidate_id: str,
+    wallet: str,
+    amount: float,
+) -> int:
+    """Guarded one-shot wallet payout sender.
+    Sends only when explicitly enabled and all candidate, duplicate, wallet, and budget guards pass.
+    """
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    env = load_env_vars()
+    enabled_raw = env.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", "false")
+    max_sends_raw = env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+    real_enabled = enabled_raw.strip().lower() == "true"
+    warnings: list[str] = []
+    send_attempted = False
+    send_sent = False
+    txid: str | None = None
+    status = "unknown"
+
+    try:
+        max_sends: int | None = int(max_sends_raw) if max_sends_raw is not None else None
+    except (TypeError, ValueError):
+        max_sends = None
+
+    def result_payload() -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "generatedAt": generated_at,
+            "mode": "send_once",
+            "realWalletPayoutEnabled": real_enabled,
+            "maxSends": max_sends,
+            "sendAttempted": send_attempted,
+            "sendSent": send_sent,
+            "candidateId": candidate_id,
+            "wallet": wallet,
+            "amount": amount,
+            "status": status,
+            "warnings": warnings,
+        }
+        if txid:
+            payload["txid"] = txid
+        return payload
+
+    def finish(finish_status: str) -> int:
+        nonlocal status
+        status = finish_status
+        try:
+            atomic_write_json(output_path, result_payload())
+        except Exception as exc:
+            print(f"Error: Failed to write send-once result atomically: {exc}", file=sys.stderr)
+            return 1
+        print("Payout Wallet Send-Once Summary")
+        print("="*80)
+        print(f"send_once_status: {status}")
+        print(f"real_wallet_payout_enabled: {str(real_enabled).lower()}")
+        print(f"max_sends: {max_sends if max_sends is not None else 'invalid'}")
+        print(f"send_attempted: {str(send_attempted).lower()}")
+        print(f"send_sent: {str(send_sent).lower()}")
+        print(f"candidate_id: {candidate_id}")
+        print(f"wallet: {wallet}")
+        print(f"amount: {amount}")
+        if txid:
+            print(f"txid: {txid}")
+        print(f"artifact_path: {output_path}")
+        print("="*80)
+        return 0
+
+    if not real_enabled:
+        return finish("blocked_real_wallet_payout_disabled")
+
+    if max_sends != 1:
+        return finish("blocked_invalid_send_budget")
+
+    try:
+        expected_amount = float(amount)
+    except (TypeError, ValueError):
+        return finish("blocked_amount_mismatch")
+    if expected_amount <= 0:
+        return finish("blocked_amount_mismatch")
+
+    candidates: list[Any] = []
+    if candidates_path.exists():
+        try:
+            with candidates_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                loaded = data.get("items") or data.get("candidates") or []
+                if isinstance(loaded, list):
+                    candidates = loaded
+        except Exception as exc:
+            warnings.append(f"Failed to read payout candidates: {exc}")
+    else:
+        warnings.append("Payout candidates snapshot missing")
+
+    matching_candidate = None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        c_id = candidate.get("candidateId") or candidate.get("candidate_hash")
+        if c_id == candidate_id:
+            matching_candidate = candidate
+            break
+
+    if matching_candidate is None:
+        return finish("blocked_candidate_not_found")
+
+    payouts = matching_candidate.get("payouts")
+    if not isinstance(payouts, list):
+        return finish("blocked_wallet_not_in_candidate")
+
+    matching_payout = None
+    for payout in payouts:
+        if isinstance(payout, dict) and payout.get("wallet") == wallet:
+            matching_payout = payout
+            break
+
+    if matching_payout is None:
+        return finish("blocked_wallet_not_in_candidate")
+
+    if matching_payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send_preview"}:
+        return finish("blocked_payout_not_ready")
+
+    try:
+        payout_amount = float(matching_payout.get("amount"))
+    except (TypeError, ValueError):
+        return finish("blocked_amount_mismatch")
+
+    if abs(payout_amount - expected_amount) > 1e-8:
+        return finish("blocked_amount_mismatch")
+
+    if payment_already_recorded(actions_log_path, candidate_id, wallet):
+        return finish("blocked_already_paid")
+
+    balance_res = wallet_readonly_call("getbalance", [])
+    try:
+        wallet_balance = float(balance_res) if balance_res is not None else None
+    except (TypeError, ValueError):
+        wallet_balance = None
+    if wallet_balance is None:
+        return finish("blocked_wallet_balance_unreadable")
+    if expected_amount > wallet_balance:
+        return finish("blocked_insufficient_balance")
+
+    address_res = wallet_readonly_call("validateaddress", [wallet])
+    if not (isinstance(address_res, dict) and address_res.get("isvalid") is True):
+        return finish("blocked_invalid_address")
+
+    lock_path = payment_actions_lock_path(actions_log_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            if payment_already_recorded(actions_log_path, candidate_id, wallet):
+                return finish("blocked_already_paid")
+
+            locked_env = load_env_vars()
+            locked_max_sends_raw = locked_env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+            try:
+                locked_max_sends = int(locked_max_sends_raw) if locked_max_sends_raw is not None else None
+            except (TypeError, ValueError):
+                locked_max_sends = None
+            if locked_max_sends != 1:
+                return finish("blocked_budget_exceeded")
+
+            cli_path = locked_env.get("PEPEPOW_WALLET_CLI") or "/home/ubuntu/PEPEPOW-cli"
+            if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
+                warnings.append("Wallet CLI unavailable or not executable")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": "wallet_cli_unavailable",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
+
+            send_attempted = True
+            try:
+                proc = subprocess.run(
+                    [cli_path, "sendtoaddress", wallet, str(expected_amount)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except Exception as exc:
+                warnings.append("sendtoaddress failed")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": str(exc) or "sendtoaddress_exception",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
+
+            if proc.returncode != 0:
+                warnings.append("sendtoaddress failed")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": "sendtoaddress_failed",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
+
+            txid = proc.stdout.strip().splitlines()[0].strip() if proc.stdout.strip() else ""
+            if not re.match(r"^[A-Za-z0-9]{26,128}$", txid):
+                warnings.append("sendtoaddress returned invalid txid")
+                failed_action = {
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "failed",
+                    "error": "invalid_txid",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, failed_action)
+                return finish("blocked_send_failed")
+
+            send_sent = True
+            sent_action = {
+                "candidate_id": candidate_id,
+                "wallet": wallet,
+                "amount": expected_amount,
+                "txid": txid,
+                "status": "sent",
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            append_payment_action(actions_log_path, sent_action)
+            clear_consumed_carry(
+                payments_snapshot_path.parent / "payout-candidates.json",
+                payments_snapshot_path.parent / "payout-carry-snapshot.json",
+                candidate_id,
+                wallet,
+            )
+            record_rc = generate_payments_snapshot(actions_log_path, payments_snapshot_path)
+            if record_rc != 0:
+                warnings.append("Payment sent but payments snapshot update failed")
+                return finish("sent_record_failed")
+            return finish("sent_recorded")
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1640,6 +2045,23 @@ def main() -> int:
     parser_dry = subparsers.add_parser("payout-wallet-dry-run", help="Dry-run wallet payout validation and balance checking")
     parser_dry.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_dry.add_argument("--output", type=str, required=True, help="Path to output payout-wallet-dry-run.json")
+
+    parser_send_once = subparsers.add_parser("payout-wallet-send-once", help="Guarded one-shot wallet payout send")
+    parser_send_once.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_send_once.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_send_once.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+    parser_send_once.add_argument("--output", type=str, required=True, help="Path to output payout-wallet-send-once-result.json")
+    parser_send_once.add_argument("--candidate-id", type=str, required=True, help="Candidate id to send")
+    parser_send_once.add_argument("--wallet", type=str, required=True, help="Wallet address to pay")
+    parser_send_once.add_argument("--amount", type=float, required=True, help="Exact amount to pay")
+
+    parser_preflight = subparsers.add_parser("payout-wallet-send-preflight", help="Preflight guarded wallet payout send without sending")
+    parser_preflight.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_preflight.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_preflight.add_argument("--output", type=str, required=True, help="Path to output payout-wallet-send-preflight-result.json")
+    parser_preflight.add_argument("--candidate-id", type=str, required=True, help="Candidate id to preflight")
+    parser_preflight.add_argument("--wallet", type=str, required=True, help="Wallet address to preflight")
+    parser_preflight.add_argument("--amount", type=float, required=True, help="Exact amount to preflight")
 
     args = parser.parse_args()
 
@@ -1697,6 +2119,25 @@ def main() -> int:
         return payout_wallet_dry_run(
             Path(args.candidates),
             Path(args.output)
+        )
+    elif args.command == "payout-wallet-send-once":
+        return payout_wallet_send_once(
+            Path(args.candidates),
+            Path(args.actions_log),
+            Path(args.payments_snapshot),
+            Path(args.output),
+            args.candidate_id,
+            args.wallet,
+            args.amount,
+        )
+    elif args.command == "payout-wallet-send-preflight":
+        return payout_wallet_send_preflight(
+            Path(args.candidates),
+            Path(args.actions_log),
+            Path(args.output),
+            args.candidate_id,
+            args.wallet,
+            args.amount,
         )
 
     return 0
