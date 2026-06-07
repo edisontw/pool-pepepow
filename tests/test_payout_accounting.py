@@ -1768,11 +1768,11 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertIn("Candidate: hash_cand_1 (Height: 100, Lifecycle: confirmed)", output)
         self.assertIn("Payout Status: READY_FOR_MANUAL_REVIEW", output)
         self.assertIn("Carry Status Summary", output)
-        self.assertIn("carry_items: 2", output)
-        self.assertIn("carry_total_amount: 15.5", output)
-        self.assertIn("wallets_with_carry: ['walletB', 'walletC']", output)
-        self.assertIn("candidate_payouts_with_carry: 1", output)
-        self.assertIn("candidate_carry_applied_amount: 60.0", output)
+        # New compact format: ready_payment_total, below_threshold_carry_total, wallet_carry_count, blocked_candidates
+        self.assertIn("ready_payment_total:", output)
+        self.assertIn("below_threshold_carry_total: 15.5", output)
+        self.assertIn("wallet_carry_count: 2", output)
+        self.assertIn("blocked_candidates: 0", output)
         self.assertIn("carry_audit_status: ok", output)
 
         # 2. Test missing files (should not crash, return zeros/unknowns)
@@ -1788,11 +1788,8 @@ class PayoutAccountingTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIn("No candidates found.", output)
-        self.assertIn("carry_items: 0", output)
-        self.assertIn("carry_total_amount: 0.0", output)
-        self.assertIn("wallets_with_carry: []", output)
-        self.assertIn("candidate_payouts_with_carry: 0", output)
-        self.assertIn("candidate_carry_applied_amount: 0.0", output)
+        self.assertIn("below_threshold_carry_total: 0.0", output)
+        self.assertIn("wallet_carry_count: 0", output)
         self.assertIn("carry_audit_status: warning", output)
 
         # 3. Test malformed carry snapshot (should not crash, return zeros/unknowns)
@@ -1808,9 +1805,8 @@ class PayoutAccountingTests(unittest.TestCase):
             sys.stdout = old_stdout
 
         self.assertEqual(rc, 0)
-        self.assertIn("carry_items: 0", output)
-        self.assertIn("carry_total_amount: 0.0", output)
-        self.assertIn("wallets_with_carry: []", output)
+        self.assertIn("below_threshold_carry_total: 0.0", output)
+        self.assertIn("wallet_carry_count: 0", output)
         self.assertIn("carry_audit_status: warning", output)
 
     def test_payout_review_json(self):
@@ -2259,8 +2255,502 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(new_files, set(), f"Should not write runtime files during execution. New files: {new_files}")
 
 
+class CarryFocusedTests(unittest.TestCase):
+    """Focused tests for balance carry support (spec §Tests)."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp_dir.name)
+        self.accepted_path = self.tmp_path / "accepted-candidates.json"
+        self.rounds_path = self.tmp_path / "rounds-snapshot.json"
+        self.output_path = self.tmp_path / "payout-candidates.json"
+        self.carry_path = self.tmp_path / "payout-carry-snapshot.json"
+        self.actions_log = self.tmp_path / "payment-actions.jsonl"
+        self.snapshot_path = self.tmp_path / "payments-snapshot.json"
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _write_accepted(self, cands):
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump({"accepted_candidates": cands}, f)
+
+    def _write_rounds(self, rounds):
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump({"rounds": rounds}, f)
+
+    def _write_carry(self, items):
+        with self.carry_path.open("w", encoding="utf-8") as f:
+            json.dump({"generatedAt": "2026-06-07T00:00:00Z", "items": items}, f)
+
+    def _run_candidates(self, carry=None):
+        return payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path,
+            carry or self.carry_path if self.carry_path.exists() else None
+        )
+
+    def _load_output(self):
+        with self.output_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_below_threshold_amount_becomes_carried(self):
+        """A payout amount below PEPEPOW_MIN_PAYOUT is marked below_threshold_carried (not pending)."""
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1000.0"
+        try:
+            self._write_accepted([{
+                "candidate_hash": "candabcdefghijklmnopqrstuvwx001",
+                "lifecycle_status": "confirmed",
+                "matched_height": 100,
+                "submit_timestamp": "2026-06-07T00:00:00Z",
+                "reward": 10.0  # small reward -> net ~9.9, well below 1000
+            }])
+            self._write_rounds([{
+                "candidate_hash": "candabcdefghijklmnopqrstuvwx001",
+                "total_share_score": 10.0,
+                "total_share_count": 10,
+                "shares": {
+                    "walletXYZ0000000000000000000001": {
+                        "share_count": 10,
+                        "share_score": 10.0,
+                        "share_percent": 100.0
+                    }
+                }
+            }])
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            self.assertEqual(rc, 0)
+            data = self._load_output()
+            items = data["items"]
+            self.assertEqual(len(items), 1)
+            cand = items[0]
+            self.assertEqual(cand["status"], "ready_for_manual_review")
+            self.assertEqual(len(cand["payouts"]), 1)
+            p = cand["payouts"][0]
+            self.assertEqual(p["wallet"], "walletXYZ0000000000000000000001")
+            self.assertEqual(p["status"], "below_threshold_carried",
+                             "Amount below min_payout must be marked below_threshold_carried")
+            self.assertAlmostEqual(p["carryInAmount"], 0.0)
+            self.assertLess(p["amount"], 1000.0)
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_carried_amount_combines_with_later_candidate(self):
+        """A carried amount from a prior block is included in a later eligible candidate's payout,
+        and if combined total reaches threshold the status becomes pending_manual_payment."""
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "100.0"
+        try:
+            # Prior carry: walletABC previously earned 80.0 but was below threshold
+            self._write_carry([{
+                "wallet": "walletABC000000000000000000001",
+                "amount": 80.0,
+                "sourceCandidateId": "candprev000000000000000000000001",
+                "sourceBlockHeight": 99,
+                "sourceBlockHash": "hashprev000000000000000000000001",
+                "status": "below_threshold_carried"
+            }])
+
+            # New block: walletABC earns 30.0 net (base). 80 + 30 = 110 >= 100 threshold
+            self._write_accepted([{
+                "candidate_hash": "candnew0000000000000000000000001",
+                "lifecycle_status": "confirmed",
+                "matched_height": 101,
+                "submit_timestamp": "2026-06-07T00:01:00Z",
+                "reward": 30.3030  # ~30.0 net after 1% fee
+            }])
+            self._write_rounds([{
+                "candidate_hash": "candnew0000000000000000000000001",
+                "total_share_score": 10.0,
+                "total_share_count": 10,
+                "shares": {
+                    "walletABC000000000000000000001": {
+                        "share_count": 10,
+                        "share_score": 10.0,
+                        "share_percent": 100.0
+                    }
+                }
+            }])
+            rc = self._run_candidates()
+            self.assertEqual(rc, 0)
+            data = self._load_output()
+            items = data["items"]
+            self.assertEqual(len(items), 1)
+            payouts = items[0]["payouts"]
+            self.assertEqual(len(payouts), 1)
+            p = payouts[0]
+            self.assertEqual(p["wallet"], "walletABC000000000000000000001")
+            self.assertAlmostEqual(p["carryInAmount"], 80.0,
+                                   msg="Carry-in amount must be included from prior below-threshold")
+            self.assertGreater(p["amount"], 100.0,
+                               msg="Combined amount must exceed threshold")
+            self.assertEqual(p["status"], "pending_manual_payment",
+                             "Combined carry+base >= threshold must be pending_manual_payment")
+            self.assertIn("candprev000000000000000000000001", p["carrySourceCandidateIds"])
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_carry_clears_after_record_payment(self):
+        """When a manual payment is recorded for a wallet, its consumed carry entries are removed
+        from the carry snapshot atomically."""
+        # Build candidates snapshot with carry metadata
+        candidates_data = {
+            "items": [{
+                "candidateId": "candpaidXXXXXXXXXXXXXXXXXXXXXX01",
+                "candidate_hash": "candpaidXXXXXXXXXXXXXXXXXXXXXX01",
+                "height": 200,
+                "blockHash": "candpaidXXXXXXXXXXXXXXXXXXXXXX01",
+                "payouts": [{
+                    "wallet": "walletPAID000000000000000000001",
+                    "amount": 150.0,
+                    "baseAmount": 50.0,
+                    "carryInAmount": 100.0,
+                    "status": "pending_manual_payment",
+                    "carrySourceCandidateIds": ["candsrcAAAAAAAAAAAAAAAAAAAAAAA01"]
+                }]
+            }]
+        }
+        with self.output_path.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+
+        # Carry snapshot has 2 entries for this wallet + 1 for another wallet
+        self._write_carry([
+            {
+                "wallet": "walletPAID000000000000000000001",
+                "amount": 100.0,
+                "sourceCandidateId": "candsrcAAAAAAAAAAAAAAAAAAAAAAA01",
+                "status": "below_threshold_carried"
+            },
+            {
+                "wallet": "walletPAID000000000000000000001",
+                "amount": 5.0,
+                "sourceCandidateId": "candsrcBBBBBBBBBBBBBBBBBBBBBBB01",  # unrelated source
+                "status": "below_threshold_carried"
+            },
+            {
+                "wallet": "walletOTHER00000000000000000001",  # different wallet, untouched
+                "amount": 20.0,
+                "sourceCandidateId": "candsrcAAAAAAAAAAAAAAAAAAAAAAA01",
+                "status": "below_threshold_carried"
+            }
+        ])
+
+        rc = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candpaidXXXXXXXXXXXXXXXXXXXXXX01",
+            wallet="walletPAID000000000000000000001",
+            amount=150.0,
+            txid="txidCARRYCLEARTEST0000000000001"
+        )
+        self.assertEqual(rc, 0)
+
+        with self.carry_path.open("r", encoding="utf-8") as f:
+            updated_carry = json.load(f)
+
+        remaining = updated_carry["items"]
+        # Only candsrcBBB (unrelated source for paid wallet) and walletOTHER should remain
+        self.assertEqual(len(remaining), 2,
+                         "Consumed carry entries must be cleared; unrelated ones must remain")
+        remaining_keys = {(i["wallet"], i["sourceCandidateId"]) for i in remaining}
+        self.assertIn(("walletPAID000000000000000000001", "candsrcBBBBBBBBBBBBBBBBBBBBBBB01"), remaining_keys,
+                      "Unrelated source for paid wallet must remain in carry")
+        self.assertIn(("walletOTHER00000000000000000001", "candsrcAAAAAAAAAAAAAAAAAAAAAAA01"), remaining_keys,
+                      "Other wallet's carry entry must remain untouched")
+        self.assertNotIn(("walletPAID000000000000000000001", "candsrcAAAAAAAAAAAAAAAAAAAAAAA01"), remaining_keys,
+                         "Consumed carry entry must be removed")
+
+    def test_blocked_already_paid_still_blocks_duplicate(self):
+        """A candidate where payment was already recorded is blocked with blocked_already_paid
+        even if re-generated; and a second record_payment attempt for same candidate+wallet is rejected."""
+        # Write an existing payment action for a candidate
+        existing_action = {
+            "candidate_id": "candduplicatestopperXXXXXXXXX001",
+            "wallet": "walletDUP000000000000000000001",
+            "amount": 500.0,
+            "txid": "txidDUPLICATESTOP00000000000001",
+            "timestamp": "2026-06-07T00:00:00Z"
+        }
+        with (self.output_path.parent / "payment-actions.jsonl").open("w", encoding="utf-8") as f:
+            f.write(json.dumps(existing_action) + "\n")
+
+        # Now generate candidates that include this already-paid candidate
+        self._write_accepted([{
+            "candidate_hash": "candduplicatestopperXXXXXXXXX001",
+            "lifecycle_status": "confirmed",
+            "matched_height": 300,
+            "submit_timestamp": "2026-06-07T00:00:00Z",
+            "reward": 50000.0
+        }])
+        self._write_rounds([{
+            "candidate_hash": "candduplicatestopperXXXXXXXXX001",
+            "total_share_score": 10.0,
+            "total_share_count": 10,
+            "shares": {
+                "walletDUP000000000000000000001": {
+                    "share_count": 10,
+                    "share_score": 10.0,
+                    "share_percent": 100.0
+                }
+            }
+        }])
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+        data = self._load_output()
+        cand = data["items"][0]
+        self.assertEqual(cand["status"], "blocked",
+                         "Already-paid candidate must be blocked")
+        self.assertEqual(cand["reason"], "blocked_already_paid",
+                         "Block reason must be blocked_already_paid")
+
+        # Also verify that record_payment rejects a duplicate for the same candidate+wallet
+        rc_dup = payout_helper.record_payment(
+            self.actions_log,
+            self.snapshot_path,
+            candidate_id="candduplicatestopperXXXXXXXXX001",
+            wallet="walletDUP000000000000000000001",
+            amount=500.0,
+            txid="txidDUPLICATE2222200000000000001"
+        )
+        self.assertEqual(rc_dup, 1,
+                         "record_payment must reject duplicate candidate_id+wallet pair")
+
+
+import unittest.mock
+
+class WalletRpcDryRunTests(unittest.TestCase):
+    """Focused tests for the Wallet RPC dry-run payout intent layer."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp_dir.name)
+        self.candidates_path = self.tmp_path / "payout-candidates.json"
+        self.output_path = self.tmp_path / "payout-wallet-dry-run.json"
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _write_candidates(self, items):
+        with self.candidates_path.open("w", encoding="utf-8") as f:
+            json.dump({"items": items, "updated_at": "2026-06-07T00:00:00Z"}, f)
+
+    @unittest.mock.patch('payout_helper.query_rpc')
+    def test_dry_run_creates_artifact(self, mock_rpc):
+        """Dry-run validates candidates and writes output snapshot atomically with correct fields."""
+        def side_effect(method, params):
+            if method == "getbalance":
+                return 50000.0
+            if method == "validateaddress":
+                return {"isvalid": True}
+            return None
+        mock_rpc.side_effect = side_effect
+
+        self._write_candidates([
+            {
+                "candidateId": "candeligible000000000000000001",
+                "blockHash": "candeligible000000000000000001",
+                "height": 500,
+                "status": "ready_for_manual_review",
+                "payouts": [
+                    {
+                        "wallet": "PEPEPOW1WalletAddressTarget001",
+                        "amount": 120.5,
+                        "status": "pending_manual_payment"
+                    },
+                    {
+                        "wallet": "PEPEPOW1WalletAddressTarget002",
+                        "amount": 50.0,
+                        "status": "below_threshold_carried"
+                    }
+                ]
+            }
+        ])
+
+        rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+        self.assertEqual(rc, 0)
+        self.assertTrue(self.output_path.exists())
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["mode"], "dry_run")
+        self.assertEqual(data["realSendEnabled"], False)
+        self.assertAlmostEqual(data["totalReadyAmount"], 120.5)
+        self.assertAlmostEqual(data["walletAvailableBalance"], 50000.0)
+        self.assertEqual(data["item count"], 1)
+        self.assertEqual(data["blocked items"], 0)
+        self.assertEqual(len(data["warnings"]), 0)
+
+        items = data["items"]
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["candidateId"], "candeligible000000000000000001")
+        self.assertEqual(item["wallet"], "PEPEPOW1WalletAddressTarget001")
+        self.assertAlmostEqual(item["amount"], 120.5)
+        self.assertEqual(item["status"], "ready_for_wallet_send_preview")
+        self.assertEqual(item["validationMode"], "rpc")
+        self.assertEqual(item["rpcWouldSend"], False)
+
+    @unittest.mock.patch('payout_helper.query_rpc')
+    def test_dry_run_does_not_call_send_rpc(self, mock_rpc):
+        """Dry-run verifies balance and address but never calls any transaction-sending RPC methods."""
+        mock_rpc.return_value = None
+
+        self._write_candidates([
+            {
+                "candidateId": "candeligible000000000000000001",
+                "blockHash": "candeligible000000000000000001",
+                "height": 500,
+                "status": "ready_for_manual_review",
+                "payouts": [
+                    {
+                        "wallet": "PEPEPOW1WalletAddressTarget001",
+                        "amount": 100.0,
+                        "status": "pending_manual_payment"
+                    }
+                ]
+            }
+        ])
+
+        rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+        self.assertEqual(rc, 0)
+
+        called_methods = [call[0][0] for call in mock_rpc.call_args_list]
+        for method in called_methods:
+            self.assertNotIn(method, ["sendtoaddress", "sendmany", "walletpassphrase", "walletunlock"])
+
+    @unittest.mock.patch('payout_helper.query_rpc')
+    def test_insufficient_balance_blocks_output(self, mock_rpc):
+        """When total payouts exceed available wallet balance, items are marked blocked_insufficient_balance."""
+        def side_effect(method, params):
+            if method == "getbalance":
+                return 50.0
+            if method == "validateaddress":
+                return {"isvalid": True}
+            return None
+        mock_rpc.side_effect = side_effect
+
+        self._write_candidates([
+            {
+                "candidateId": "candeligible000000000000000001",
+                "blockHash": "candeligible000000000000000001",
+                "height": 500,
+                "status": "ready_for_manual_review",
+                "payouts": [
+                    {
+                        "wallet": "PEPEPOW1WalletAddressTarget001",
+                        "amount": 100.0,
+                        "status": "pending_manual_payment"
+                    }
+                ]
+            }
+        ])
+
+        rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["blocked items"], 1)
+        self.assertEqual(data["items"][0]["status"], "blocked_insufficient_balance")
+        self.assertIn("Insufficient wallet balance for ready payouts", data["warnings"])
+
+    @unittest.mock.patch('payout_helper.query_rpc')
+    def test_missing_payout_candidates_returns_empty_dry_run_safely(self, mock_rpc):
+        """Missing candidate file is handled gracefully and returns empty dry-run structure."""
+        mock_rpc.return_value = 1000.0
+
+        if self.candidates_path.exists():
+            self.candidates_path.unlink()
+
+        rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["item count"], 0)
+        self.assertEqual(data["blocked items"], 0)
+        self.assertEqual(data["items"], [])
+
+    @unittest.mock.patch('payout_helper.query_rpc')
+    def test_malformed_payout_candidate_is_blocked(self, mock_rpc):
+        """Malformed payout candidate with missing/invalid fields gets blocked."""
+        def side_effect(method, params):
+            if method == "getbalance":
+                return 1000.0
+            if method == "validateaddress":
+                return {"isvalid": True}
+            return None
+        mock_rpc.side_effect = side_effect
+
+        self._write_candidates([
+            {
+                "height": -10,
+                "status": "ready_for_manual_review",
+                "payouts": [
+                    {
+                        "wallet": "PEPEPOW1WalletAddressTarget001",
+                        "amount": 10.0,
+                        "status": "pending_manual_payment"
+                    }
+                ]
+            }
+        ])
+
+        rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+        self.assertEqual(rc, 0)
+
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["blocked items"], 1)
+        self.assertEqual(data["items"][0]["status"], "blocked_malformed_candidate")
+
+    @unittest.mock.patch('payout_helper.query_rpc')
+    def test_real_wallet_payout_flag_does_not_cause_send(self, mock_rpc):
+        """Command must refuse to perform any sends even if PEPEPOW_ENABLE_REAL_WALLET_PAYOUT is enabled."""
+        import os
+        os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
+        os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "5"
+        
+        try:
+            self._write_candidates([
+                {
+                    "candidateId": "candeligible000000000000000001",
+                    "blockHash": "candeligible000000000000000001",
+                    "height": 500,
+                    "status": "ready_for_manual_review",
+                    "payouts": [
+                        {
+                            "wallet": "PEPEPOW1WalletAddressTarget001",
+                            "amount": 100.0,
+                            "status": "pending_manual_payment"
+                        }
+                    ]
+                }
+            ])
+
+            rc = payout_helper.payout_wallet_dry_run(self.candidates_path, self.output_path)
+            self.assertEqual(rc, 0)
+
+            called_methods = [call[0][0] for call in mock_rpc.call_args_list]
+            for method in called_methods:
+                self.assertNotIn(method, ["sendtoaddress", "sendmany", "walletpassphrase", "walletunlock"])
+                
+            with self.output_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            self.assertEqual(data["realSendEnabled"], False)
+            self.assertEqual(data["items"][0]["rpcWouldSend"], False)
+        finally:
+            os.environ.pop("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", None)
+            os.environ.pop("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS", None)
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-

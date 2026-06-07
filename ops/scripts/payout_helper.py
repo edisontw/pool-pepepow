@@ -1203,13 +1203,29 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                             print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
             print("-"*80)
 
+    # Compute ready_payment_total: sum of pending_manual_payment payout amounts across all candidates
+    ready_payment_total = 0.0
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        payouts = c.get("payouts")
+        if isinstance(payouts, list):
+            for p in payouts:
+                if isinstance(p, dict) and p.get("status") == "pending_manual_payment":
+                    try:
+                        ready_payment_total += float(p.get("amount", 0.0))
+                    except (ValueError, TypeError):
+                        pass
+
+    # blocked_candidates_count is computed earlier in the JSON branch; recompute for text branch
+    _blocked_count = sum(1 for c in candidates if isinstance(c, dict) and c.get("status") == "blocked")
+
     print("Carry Status Summary")
     print("="*80)
-    print(f"carry_items: {carry_items_count}")
-    print(f"carry_total_amount: {carry_total_amount}")
-    print(f"wallets_with_carry: {wallets_with_carry}")
-    print(f"candidate_payouts_with_carry: {candidate_payouts_with_carry_count}")
-    print(f"candidate_carry_applied_amount: {candidate_carry_applied_amount}")
+    print(f"ready_payment_total: {ready_payment_total}")
+    print(f"below_threshold_carry_total: {carry_total_amount}")
+    print(f"wallet_carry_count: {len(wallets_with_carry)}")
+    print(f"blocked_candidates: {_blocked_count}")
     print(f"carry_audit_status: {carry_audit_status}")
     print("="*80)
     return 0
@@ -1282,6 +1298,238 @@ def payout_review_check(candidates_path: Path, carry_path: Path, payments_path: 
         print("carry_audit_status: warning")
         return 1
 
+def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
+    """Dry-run wallet payout validation and balance checking.
+    Does not send funds. Does not call transaction-sending or wallet-unlock commands.
+    """
+    # TODO(security): Safety check - ensure we never execute real transactions.
+    # We strictly enforce read-only commands (getbalance, getwalletinfo, validateaddress).
+    
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    
+    # Check RPC endpoint and wallet balance
+    wallet_balance_read_ok = False
+    wallet_available_balance = 0.0
+    warnings = []
+    
+    # Try calling getbalance or getwalletinfo via query_rpc
+    try:
+        balance_res = query_rpc("getbalance", [])
+        if balance_res is not None:
+            wallet_available_balance = float(balance_res)
+            wallet_balance_read_ok = True
+        else:
+            wallet_info = query_rpc("getwalletinfo", [])
+            if isinstance(wallet_info, dict) and "balance" in wallet_info:
+                wallet_available_balance = float(wallet_info["balance"])
+                wallet_balance_read_ok = True
+    except Exception:
+        pass
+        
+    if not wallet_balance_read_ok:
+        warnings.append("Wallet RPC unreachable or balance unreadable")
+
+    pattern = re.compile(r"^[A-Za-z0-9]{26,128}$")
+    
+    candidates = []
+    if candidates_path.exists():
+        try:
+            with candidates_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                candidates = data.get("items") or data.get("candidates") or []
+        except Exception as exc:
+            warnings.append(f"Failed to read candidates file: {exc}")
+
+    if not isinstance(candidates, list):
+        candidates = []
+        warnings.append("Malformed candidates file structure")
+
+    items = []
+    blocked_items_count = 0
+    total_ready_amount = 0.0
+    
+    # Validate each candidate and its payouts
+    for c in candidates:
+        if not isinstance(c, dict):
+            blocked_items_count += 1
+            continue
+            
+        c_id = c.get("candidateId") or c.get("candidate_hash")
+        height = c.get("height")
+        block_hash = c.get("blockHash") or c.get("candidate_hash")
+        c_status = c.get("status")
+        payouts = c.get("payouts")
+        
+        # Check if candidate is structurally malformed
+        cand_malformed = False
+        if not c_id or height is None or not block_hash or not c_status:
+            cand_malformed = True
+            
+        try:
+            height_val = int(height) if height is not None else 0
+        except (ValueError, TypeError):
+            cand_malformed = True
+            height_val = 0
+            
+        if not isinstance(payouts, list):
+            blocked_items_count += 1
+            continue
+            
+        for p in payouts:
+            if not isinstance(p, dict):
+                blocked_items_count += 1
+                continue
+                
+            p_status = p.get("status")
+            # Only process payouts with status pending_manual_payment
+            if p_status != "pending_manual_payment":
+                continue
+                
+            wallet = p.get("wallet")
+            amount = p.get("amount")
+            
+            payout_item = {
+                "candidateId": c_id or "",
+                "wallet": wallet or "",
+                "amount": amount,
+                "status": "ready_for_wallet_send_preview",
+                "validationMode": "local",
+                "rpcWouldSend": False
+            }
+            
+            # 1. Structural/Metadata validation
+            if cand_malformed:
+                payout_item["status"] = "blocked_malformed_candidate"
+                blocked_items_count += 1
+                items.append(payout_item)
+                continue
+                
+            # Pattern check for ID and hashes
+            if not pattern.match(c_id) or not pattern.match(block_hash):
+                payout_item["status"] = "blocked_invalid_candidate"
+                blocked_items_count += 1
+                items.append(payout_item)
+                continue
+                
+            if height_val <= 0:
+                payout_item["status"] = "blocked_invalid_block_height"
+                blocked_items_count += 1
+                items.append(payout_item)
+                continue
+                
+            # Validate amount
+            try:
+                amt_val = float(amount) if amount is not None else 0.0
+            except (ValueError, TypeError):
+                amt_val = 0.0
+            if amt_val <= 0.0:
+                payout_item["status"] = "blocked_invalid_amount"
+                blocked_items_count += 1
+                items.append(payout_item)
+                continue
+                
+            # Validate wallet address string presence & basic local pattern check
+            if not wallet or not isinstance(wallet, str):
+                payout_item["status"] = "blocked_invalid_address"
+                blocked_items_count += 1
+                items.append(payout_item)
+                continue
+                
+            # 2. Address validation via RPC validateaddress if reachable
+            is_valid_address = False
+            validation_mode = "local"
+            
+            # Try validateaddress RPC call
+            try:
+                rpc_val = query_rpc("validateaddress", [wallet])
+                if isinstance(rpc_val, dict) and "isvalid" in rpc_val:
+                    is_valid_address = bool(rpc_val["isvalid"])
+                    validation_mode = "rpc"
+            except Exception:
+                pass
+                
+            if validation_mode == "local":
+                is_valid_address = bool(pattern.match(wallet))
+                
+            payout_item["validationMode"] = validation_mode
+            
+            if not is_valid_address:
+                payout_item["status"] = "blocked_invalid_address"
+                blocked_items_count += 1
+                items.append(payout_item)
+                continue
+                
+            # If all validations pass, this item is a candidate for wallet send
+            total_ready_amount += amt_val
+            items.append(payout_item)
+
+    # 3. Sufficient Balance Check
+    if wallet_balance_read_ok:
+        insufficient_balance = total_ready_amount > wallet_available_balance
+    else:
+        insufficient_balance = True
+        warnings.append("Insufficient balance check skipped: wallet balance unreadable")
+        
+    # Apply insufficient balance blocking if needed
+    ready_count = 0
+    for item in items:
+        # Only modify the status of items that are currently "ready_for_wallet_send_preview"
+        if item["status"] == "ready_for_wallet_send_preview":
+            if insufficient_balance:
+                item["status"] = "blocked_insufficient_balance"
+                blocked_items_count += 1
+            else:
+                ready_count += 1
+
+    # Add warning about balance if insufficient
+    if wallet_balance_read_ok and insufficient_balance:
+        warnings.append("Insufficient wallet balance for ready payouts")
+
+    # Generate snapshot data
+    out_data = {
+        "generatedAt": generated_at,
+        "mode": "dry_run",
+        "realSendEnabled": False,
+        "totalReadyAmount": total_ready_amount,
+        "walletAvailableBalance": wallet_available_balance,
+        "item count": len(items),
+        "blocked items": blocked_items_count,
+        "warnings": warnings,
+        "items": items
+    }
+    
+    # Write atomically
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(dir=output_path.parent)
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(out_data, f, indent=2, sort_keys=True)
+            os.replace(temp_path, output_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
+    except Exception as exc:
+        print(f"Error: Failed to write dry-run snapshot atomically: {exc}", file=sys.stderr)
+        return 1
+
+    # Output short review summary
+    print("Payout Wallet Dry-Run Summary")
+    print("="*80)
+    print(f"dry_run_status: {'warning' if insufficient_balance or not wallet_balance_read_ok or warnings else 'success'}")
+    print(f"ready_count: {ready_count}")
+    print(f"blocked_count: {blocked_items_count}")
+    print(f"total_ready_amount: {total_ready_amount}")
+    print(f"wallet_balance_read_ok: {str(wallet_balance_read_ok).lower()}")
+    print(f"wallet_available_balance: {wallet_available_balance}")
+    print(f"insufficient_balance: {str(insufficient_balance).lower()}")
+    print(f"artifact_path: {output_path}")
+    print("="*80)
+    
+    return 0
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
@@ -1328,6 +1576,10 @@ def main() -> int:
     parser_check.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_check.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
     parser_check.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+
+    parser_dry = subparsers.add_parser("payout-wallet-dry-run", help="Dry-run wallet payout validation and balance checking")
+    parser_dry.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_dry.add_argument("--output", type=str, required=True, help="Path to output payout-wallet-dry-run.json")
 
     args = parser.parse_args()
 
@@ -1380,6 +1632,11 @@ def main() -> int:
             Path(args.candidates),
             Path(args.carry_snapshot),
             Path(args.payments_snapshot)
+        )
+    elif args.command == "payout-wallet-dry-run":
+        return payout_wallet_dry_run(
+            Path(args.candidates),
+            Path(args.output)
         )
 
     return 0

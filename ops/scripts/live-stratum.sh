@@ -110,6 +110,8 @@ set_effective_defaults() {
   TEMPLATE_JOB_CACHE_SIZE="${PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE:-64}"
   REAL_SUBMITBLOCK_ENABLED="${PEPEPOW_ENABLE_REAL_SUBMITBLOCK:-false}"
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
+  REAL_WALLET_PAYOUT_ENABLED="${PEPEPOW_ENABLE_REAL_WALLET_PAYOUT:-false}"
+  REAL_WALLET_PAYOUT_MAX_SENDS="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-1}"
   CLEAN_JOBS_LEGACY="${PEPEPOW_STRATUM_NOTIFY_CLEAN_JOBS_LEGACY:-false}"
   VERSION_SOURCE_ORDER="${PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED:-false}"
   RPC_HOST="${detected_rpc_host}"
@@ -532,6 +534,8 @@ PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS=${TEMPLATE_JOB_TTL_SECONDS}
 PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE=${TEMPLATE_JOB_CACHE_SIZE}
 PEPEPOW_ENABLE_REAL_SUBMITBLOCK=${REAL_SUBMITBLOCK_ENABLED}
 PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=${REAL_SUBMITBLOCK_MAX_SENDS}
+PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=${REAL_WALLET_PAYOUT_ENABLED}
+PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=${REAL_WALLET_PAYOUT_MAX_SENDS}
 PEPEPOWD_RPC_HOST=${RPC_HOST}
 PEPEPOWD_RPC_PORT=${RPC_PORT}
 PEPEPOWD_RPC_URL=${RPC_URL}
@@ -1145,6 +1149,15 @@ payout_carry_audit_service() {
     --candidates "${input_candidates}" \
     --carry-snapshot "${input_carry}" \
     --payments-snapshot "${input_payments}"
+}
+
+payout_wallet_dry_run_service() {
+  ensure_runtime_dir
+  local candidates_file="${RUNTIME_DIR}/payout-candidates.json"
+  local output_file="${RUNTIME_DIR}/payout-wallet-dry-run.json"
+  python3 "${SCRIPT_DIR}/payout_helper.py" payout-wallet-dry-run \
+    --candidates "${candidates_file}" \
+    --output "${output_file}"
 }
 
 
@@ -3704,6 +3717,9 @@ case "${SUBCOMMAND}" in
   payout-carry-audit)
     payout_carry_audit_service
     ;;
+  payout-wallet-dry-run)
+    payout_wallet_dry_run_service
+    ;;
   payout-review)
     payout_review_service "$@"
     ;;
@@ -3778,7 +3794,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payout-review|payout-review-check|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payout-wallet-dry-run|payout-review|payout-review-check|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
     exit 1
     ;;
 esac
