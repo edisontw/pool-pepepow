@@ -397,9 +397,8 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         round_share_total = None
         payouts = []
 
-        is_orphan = (l_status == "orphan")
-        if (daemon_confirmations is not None and daemon_confirmations < 0) or (c_hash in rounds_map and rounds_map[c_hash].get("status") == "orphan"):
-            is_orphan = True
+        followup_status = c.get("followup_status") or c.get("followupStatus")
+        is_orphan = l_status == "orphan" or followup_status == "no-match-found"
 
         is_already_paid = False
         if c_hash in rounds_map:
@@ -459,10 +458,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 # 3. Round validation
                 elif c_hash not in rounds_map:
                     status = "blocked"
-                    reason = "missing_round_data"
-                elif rounds_map[c_hash].get("status") == "orphan":
-                    status = "blocked"
-                    reason = "orphan_block"
+                    reason = "blocked_missing_round"
                 else:
                     r_data = rounds_map[c_hash]
                     shares = r_data.get("shares")
@@ -472,8 +468,30 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                         reason = "missing_share_data"
                     else:
                         # 5. Round weight validation
-                        total_score = r_data.get("total_share_score", 0.0)
-                        total_count = r_data.get("total_share_count", 0)
+                        try:
+                            total_score = float(r_data.get("total_share_score") or 0.0)
+                        except (ValueError, TypeError):
+                            total_score = 0.0
+                        try:
+                            total_count = float(r_data.get("total_share_count") or 0.0)
+                        except (ValueError, TypeError):
+                            total_count = 0.0
+
+                        def sum_share_field(field_name: str) -> float:
+                            field_total = 0.0
+                            for share_info in shares.values():
+                                if not isinstance(share_info, dict):
+                                    continue
+                                try:
+                                    field_total += float(share_info.get(field_name) or 0.0)
+                                except (ValueError, TypeError):
+                                    continue
+                            return field_total
+
+                        if total_score <= 0:
+                            total_score = sum_share_field("share_score")
+                        if total_count <= 0:
+                            total_count = sum_share_field("share_count")
 
                         weight_mode = "share_difficulty_sum"
                         total_weight = total_score
@@ -483,7 +501,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
 
                         if total_weight <= 0:
                             status = "blocked"
-                            reason = "zero_total_round_weight"
+                            reason = "blocked_zero_weight"
                         else:
                             # 6. Internally consistent ready state
                             status = "ready_for_manual_review"
