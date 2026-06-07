@@ -14,6 +14,7 @@ import tempfile
 import base64
 import urllib.request
 import urllib.error
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ def load_env_vars() -> dict[str, str]:
                 break
             except Exception:
                 pass
+    env.update({k: v for k, v in os.environ.items() if isinstance(v, str)})
     return env
 
 def query_rpc(method: str, params: list[Any]) -> Any:
@@ -99,6 +101,60 @@ def query_rpc(method: str, params: list[Any]) -> Any:
     except Exception:
         pass
     return None
+
+READ_ONLY_WALLET_CLI_METHODS = {"getbalance", "getwalletinfo", "validateaddress"}
+
+def query_wallet_cli(method: str, params: list[Any]) -> Any:
+    """Run a configured wallet CLI read-only command and parse its result."""
+    if method not in READ_ONLY_WALLET_CLI_METHODS:
+        return None
+
+    env = load_env_vars()
+    cli_path = env.get("PEPEPOW_WALLET_CLI") or "/home/ubuntu/PEPEPOW-cli"
+    if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
+        return None
+
+    safe_args = [cli_path, method] + [str(param) for param in params]
+    try:
+        proc = subprocess.run(
+            safe_args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+
+    if proc.returncode != 0:
+        return None
+
+    stdout = proc.stdout.strip()
+    if method == "getbalance":
+        try:
+            return float(stdout)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+
+def wallet_readonly_call(method: str, params: list[Any]) -> Any:
+    """Read wallet data via direct RPC, falling back to the configured CLI."""
+    env = load_env_vars()
+    rpc_configured = bool(
+        env.get("PEPEPOWD_RPC_URL")
+        or env.get("PEPEPOWD_RPC_USER")
+        or env.get("PEPEPOWD_RPC_PASSWORD")
+    )
+    if rpc_configured:
+        result = query_rpc(method, params)
+        if result is not None:
+            return result
+    return query_wallet_cli(method, params)
+
 
 def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
     # Try verbosity=2
@@ -1314,12 +1370,12 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
     
     # Try calling getbalance or getwalletinfo via query_rpc
     try:
-        balance_res = query_rpc("getbalance", [])
+        balance_res = wallet_readonly_call("getbalance", [])
         if balance_res is not None:
             wallet_available_balance = float(balance_res)
             wallet_balance_read_ok = True
         else:
-            wallet_info = query_rpc("getwalletinfo", [])
+            wallet_info = wallet_readonly_call("getwalletinfo", [])
             if isinstance(wallet_info, dict) and "balance" in wallet_info:
                 wallet_available_balance = float(wallet_info["balance"])
                 wallet_balance_read_ok = True
@@ -1442,7 +1498,7 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
             
             # Try validateaddress RPC call
             try:
-                rpc_val = query_rpc("validateaddress", [wallet])
+                rpc_val = wallet_readonly_call("validateaddress", [wallet])
                 if isinstance(rpc_val, dict) and "isvalid" in rpc_val:
                     is_valid_address = bool(rpc_val["isvalid"])
                     validation_mode = "rpc"
@@ -1493,6 +1549,10 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
         "realSendEnabled": False,
         "totalReadyAmount": total_ready_amount,
         "walletAvailableBalance": wallet_available_balance,
+        "readyCount": ready_count,
+        "blockedCount": blocked_items_count,
+        "walletBalanceReadOk": wallet_balance_read_ok,
+        "insufficientBalance": insufficient_balance,
         "item count": len(items),
         "blocked items": blocked_items_count,
         "warnings": warnings,
