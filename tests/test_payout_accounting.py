@@ -476,6 +476,61 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertAlmostEqual(item["payouts"][0]["amount"], 4343.625)
         self.assertNotAlmostEqual(item["payouts"][0]["amount"], 6930.0)
 
+    def test_coinbase_pool_wallet_diagnostic_reports_mismatch(self):
+        old_expected = os.environ.get("PEPEPOW_POOL_CORE_REWARD_ADDRESS")
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        try:
+            item = self._generate_single_candidate(
+                "hash_pool_wallet_mismatch",
+                [
+                    {
+                        "value": 4387.5,
+                        "scriptPubKey": {
+                            "type": "nonstandard",
+                            "asm": "1",
+                            "hex": "51",
+                        },
+                    },
+                    {
+                        "value": 2362.5,
+                        "scriptPubKey": {
+                            "type": "pubkeyhash",
+                            "addresses": ["PLigcFyT6QcrDfzbAMFdYvAnhuTp8RDpUq"],
+                        },
+                    },
+                    {
+                        "value": 250.0,
+                        "scriptPubKey": {
+                            "type": "pubkeyhash",
+                            "addresses": ["PHjJrmyDGCAjQFsbiucsC1Ex1nPbu8hgiC"],
+                        },
+                    },
+                ],
+            )
+        finally:
+            if old_expected is None:
+                os.environ.pop("PEPEPOW_POOL_CORE_REWARD_ADDRESS", None)
+            else:
+                os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = old_expected
+
+        self.assertEqual(
+            item["expectedPoolRewardAddress"],
+            "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho",
+        )
+        self.assertEqual(item["minerRewardAddresses"], [])
+        self.assertEqual(
+            item["coinbaseRewardAddresses"],
+            ["PLigcFyT6QcrDfzbAMFdYvAnhuTp8RDpUq", "PHjJrmyDGCAjQFsbiucsC1Ex1nPbu8hgiC"],
+        )
+        self.assertFalse(item["coinbaseMatchesExpectedPoolWallet"])
+        for forbidden_key in (
+            "PEPEPOWD_RPC_PASSWORD",
+            "Authorization",
+            "auth",
+            "cookie",
+        ):
+            self.assertNotIn(forbidden_key, item)
+
     def test_coinbase_miner_reward_detected_when_vout0(self):
         item = self._generate_single_candidate(
             "hash_miner_vout0",

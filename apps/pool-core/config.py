@@ -10,6 +10,7 @@ DEFAULT_STRATUM_VARDIFF_INITIAL_DIFFICULTY = 0.1
 DEFAULT_STRATUM_VARDIFF_MIN_DIFFICULTY = 0.0000015
 DEFAULT_STRATUM_VARDIFF_MAX_DIFFICULTY = 64.0
 DEFAULT_STRATUM_WIRE_DIFFICULTY_SCALE = 65536.0
+DEFAULT_POOL_REWARD_ADDRESS = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -70,6 +71,7 @@ class PoolCoreConfig:
     stratum_vardiff_min_shares: int
     stratum_vardiff_fast_share_interval_seconds: float
     stratum_vardiff_slow_share_interval_seconds: float
+    pool_reward_address: str = DEFAULT_POOL_REWARD_ADDRESS
     pepepow_header_version_source_order_enabled: bool = False
 
 
@@ -344,6 +346,9 @@ def load_config() -> PoolCoreConfig:
                 )
             ),
         ),
+        pool_reward_address=os.getenv(
+            "PEPEPOW_POOL_CORE_REWARD_ADDRESS", DEFAULT_POOL_REWARD_ADDRESS
+        ).strip(),
         pepepow_header_version_source_order_enabled=_env_bool(
             "PEPEPOW_HEADER_VERSION_SOURCE_ORDER_ENABLED", False
         ),

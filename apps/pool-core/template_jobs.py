@@ -37,6 +37,7 @@ SYNTHETIC_NBITS = "1d00ffff"
 SYNTHETIC_COINB1 = "0100000001"
 SYNTHETIC_COINB2 = "ffffffff"
 PLACEHOLDER_PAYOUT_SCRIPT = "51"
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
 def utc_now() -> datetime:
@@ -122,6 +123,7 @@ class TemplateJobManager:
         self._fetch_interval_seconds = config.template_fetch_interval_seconds
         self._job_ttl_seconds = config.template_job_ttl_seconds
         self._job_cache_size = config.template_job_cache_size
+        self._pool_reward_address = config.pool_reward_address
         self._retired_job_cache_size = max(16, config.template_job_cache_size * 4)
         self._retired_job_max_age_seconds = max(300, config.template_job_ttl_seconds * 2)
         self._rpc_client = rpc_client
@@ -348,7 +350,11 @@ class TemplateJobManager:
         rpc_started_at = time.perf_counter()
         try:
             raw_template = await asyncio.to_thread(self._rpc_client.get_block_template)
-            template = _parse_block_template(raw_template, fetched_at=current_time)
+            template = _parse_block_template(
+                raw_template,
+                fetched_at=current_time,
+                pool_reward_address=self._pool_reward_address,
+            )
         except (DaemonRpcError, ValueError) as exc:
             self._rpc_status = RPC_STATUS_UNREACHABLE
             self._fetch_status = FETCH_STATUS_ERROR
@@ -428,7 +434,10 @@ class TemplateJobManager:
 
 
 def _parse_block_template(
-    raw_template: Any, *, fetched_at: datetime
+    raw_template: Any,
+    *,
+    fetched_at: datetime,
+    pool_reward_address: str | None = None,
 ) -> TemplateSnapshot:
     if not isinstance(raw_template, dict):
         raise ValueError("getblocktemplate returned a non-object payload")
@@ -446,6 +455,7 @@ def _parse_block_template(
     ) = _build_template_preimage_material(
         raw_template,
         current_time=current_time,
+        pool_reward_address=pool_reward_address,
     )
     template_anchor_payload = {
         "previousblockhash": prevhash,
@@ -489,6 +499,7 @@ def _build_template_preimage_material(
     raw_template: dict[str, Any],
     *,
     current_time: int,
+    pool_reward_address: str | None = None,
 ) -> tuple[str, str, list[str], dict[str, Any], dict[str, Any]]:
     height = _as_uint32(raw_template.get("height"), field_name="height")
     coinbase_value = _as_uint64(
@@ -507,13 +518,19 @@ def _build_template_preimage_material(
         )
 
     remaining_amount = coinbase_value - payout_total
+    pool_reward_script = (
+        _address_to_p2pkh_script(pool_reward_address)
+        if pool_reward_address
+        else PLACEHOLDER_PAYOUT_SCRIPT
+    )
     outputs: list[dict[str, Any]] = []
     if remaining_amount > 0 or not payout_outputs:
         outputs.append(
             {
                 "amount": remaining_amount,
-                "script": PLACEHOLDER_PAYOUT_SCRIPT,
-                "kind": "placeholder-miner",
+                "script": pool_reward_script,
+                "kind": "pool-miner-reward" if pool_reward_address else "placeholder-miner",
+                "address": pool_reward_address,
             }
         )
     outputs.extend(payout_outputs)
@@ -554,7 +571,8 @@ def _build_template_preimage_material(
         "coinbaseFlagsHex": coinbase_flags.hex(),
         "coinbaseOutputsDigest": outputs_digest,
         "transactionsDigest": transactions_digest,
-        "placeholderPayout": remaining_amount > 0 or not payout_outputs,
+        "placeholderPayout": (remaining_amount > 0 or not payout_outputs) and not pool_reward_address,
+        "poolRewardAddress": pool_reward_address,
     }
     authoritative_context = {
         "referenceCaptured": True,
@@ -616,6 +634,7 @@ def _build_template_preimage_material(
                 "scriptLength": len(output["script"]) // 2,
                 "scriptHex": output["script"],
                 "placeholderScript": output["script"] == PLACEHOLDER_PAYOUT_SCRIPT,
+                "address": output.get("address"),
             }
             for index, output in enumerate(outputs)
         ],
@@ -627,6 +646,35 @@ def _build_template_preimage_material(
         preimage_context,
         authoritative_context,
     )
+
+
+def _address_to_p2pkh_script(address: str) -> str:
+    payload = _decode_base58check(address)
+    if len(payload) != 21:
+        raise ValueError("pool reward address must decode to version + hash160")
+    return f"76a914{payload[1:].hex()}88ac"
+
+
+def _decode_base58check(value: str) -> bytes:
+    raw_value = value.strip()
+    if not raw_value:
+        raise ValueError("pool reward address is empty")
+    number = 0
+    for char in raw_value:
+        try:
+            digit = BASE58_ALPHABET.index(char)
+        except ValueError as exc:
+            raise ValueError("pool reward address contains invalid base58 character") from exc
+        number = number * 58 + digit
+    decoded = number.to_bytes((number.bit_length() + 7) // 8, byteorder="big")
+    decoded = (b"\x00" * (len(raw_value) - len(raw_value.lstrip("1")))) + decoded
+    if len(decoded) < 5:
+        raise ValueError("pool reward address is too short")
+    payload, checksum = decoded[:-4], decoded[-4:]
+    expected_checksum = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    if checksum != expected_checksum:
+        raise ValueError("pool reward address checksum is invalid")
+    return payload
 
 
 def _as_hex_string(raw_value: Any, *, field_name: str) -> str:

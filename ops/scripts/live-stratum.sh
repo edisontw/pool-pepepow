@@ -71,6 +71,7 @@ TEMPLATE_JOB_TTL_SECONDS=""
 TEMPLATE_JOB_CACHE_SIZE=""
 REAL_SUBMITBLOCK_ENABLED=""
 REAL_SUBMITBLOCK_MAX_SENDS=""
+POOL_REWARD_ADDRESS=""
 RPC_HOST=""
 RPC_PORT=""
 RPC_URL=""
@@ -111,6 +112,7 @@ set_effective_defaults() {
   TEMPLATE_JOB_CACHE_SIZE="${PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE:-64}"
   REAL_SUBMITBLOCK_ENABLED="${PEPEPOW_ENABLE_REAL_SUBMITBLOCK:-false}"
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
+  POOL_REWARD_ADDRESS="${PEPEPOW_POOL_CORE_REWARD_ADDRESS:-PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho}"
   REAL_WALLET_PAYOUT_ENABLED="${PEPEPOW_ENABLE_REAL_WALLET_PAYOUT:-false}"
   REAL_WALLET_PAYOUT_MAX_SENDS="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-1}"
   WALLET_CLI="${PEPEPOW_WALLET_CLI:-/home/ubuntu/PEPEPOW-cli}"
@@ -188,6 +190,7 @@ load_launch_env_if_present() {
   local loaded_notify_debug_capture_limit
   local loaded_real_submitblock_enabled
   local loaded_real_submitblock_max_sends
+  local loaded_pool_reward_address
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_wallet_cli
@@ -219,6 +222,7 @@ load_launch_env_if_present() {
   loaded_template_job_cache_size="$(launch_env_value PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE)"
   loaded_real_submitblock_enabled="$(launch_env_value PEPEPOW_ENABLE_REAL_SUBMITBLOCK)"
   loaded_real_submitblock_max_sends="$(launch_env_value PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS)"
+  loaded_pool_reward_address="$(launch_env_value PEPEPOW_POOL_CORE_REWARD_ADDRESS)"
   loaded_rpc_host="$(launch_env_value PEPEPOWD_RPC_HOST)"
   loaded_rpc_port="$(launch_env_value PEPEPOWD_RPC_PORT)"
   loaded_rpc_url="$(launch_env_value PEPEPOWD_RPC_URL)"
@@ -280,6 +284,9 @@ load_launch_env_if_present() {
   fi
   if [[ -z "${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS+x}" && -n "${loaded_real_submitblock_max_sends}" ]]; then
     REAL_SUBMITBLOCK_MAX_SENDS="${loaded_real_submitblock_max_sends}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_CORE_REWARD_ADDRESS+x}" && -n "${loaded_pool_reward_address}" ]]; then
+    POOL_REWARD_ADDRESS="${loaded_pool_reward_address}"
   fi
   if [[ -z "${PEPEPOWD_RPC_HOST+x}" && -n "${loaded_rpc_host}" ]]; then
     RPC_HOST="${loaded_rpc_host}"
@@ -542,6 +549,7 @@ PEPEPOW_POOL_CORE_TEMPLATE_JOB_TTL_SECONDS=${TEMPLATE_JOB_TTL_SECONDS}
 PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE=${TEMPLATE_JOB_CACHE_SIZE}
 PEPEPOW_ENABLE_REAL_SUBMITBLOCK=${REAL_SUBMITBLOCK_ENABLED}
 PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=${REAL_SUBMITBLOCK_MAX_SENDS}
+PEPEPOW_POOL_CORE_REWARD_ADDRESS=${POOL_REWARD_ADDRESS}
 PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=${REAL_WALLET_PAYOUT_ENABLED}
 PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=${REAL_WALLET_PAYOUT_MAX_SENDS}
 PEPEPOWD_RPC_HOST=${RPC_HOST}
@@ -2999,6 +3007,7 @@ start_service() {
     export PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE="${TEMPLATE_JOB_CACHE_SIZE}"
     export PEPEPOW_ENABLE_REAL_SUBMITBLOCK="${REAL_SUBMITBLOCK_ENABLED}"
     export PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS="${REAL_SUBMITBLOCK_MAX_SENDS}"
+    export PEPEPOW_POOL_CORE_REWARD_ADDRESS="${POOL_REWARD_ADDRESS}"
     export PEPEPOWD_RPC_HOST="${RPC_HOST}"
     export PEPEPOWD_RPC_PORT="${RPC_PORT}"
     export PEPEPOWD_RPC_URL="${RPC_URL}"

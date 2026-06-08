@@ -401,10 +401,29 @@ PEPEPOW_MINER_SPLIT_RATIO = 0.65
 PEPEPOW_MASTERNODE_SPLIT_RATIO = 0.35
 PEPEPOW_SPECIAL_REWARD_AMOUNT = 250.0
 PEPEPOW_REWARD_MATCH_TOLERANCE = 0.00000001
+DEFAULT_POOL_REWARD_ADDRESS = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
 
 
 def _amount_matches(actual: float, expected: float) -> bool:
     return abs(actual - expected) <= PEPEPOW_REWARD_MATCH_TOLERANCE
+
+
+def expected_pool_reward_address() -> str:
+    env = load_env_vars()
+    return (env.get("PEPEPOW_POOL_CORE_REWARD_ADDRESS") or DEFAULT_POOL_REWARD_ADDRESS).strip()
+
+
+def coinbase_output_addresses(output: dict[str, Any]) -> list[str]:
+    script_pub_key = output.get("scriptPubKey")
+    if not isinstance(script_pub_key, dict):
+        return []
+    addresses = script_pub_key.get("addresses")
+    if isinstance(addresses, list):
+        return [str(address) for address in addresses if address]
+    address = script_pub_key.get("address")
+    if address:
+        return [str(address)]
+    return []
 
 
 def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
@@ -447,16 +466,27 @@ def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
             masternode_reward_amount = value
 
     excluded = []
+    all_reward_addresses: list[str] = []
+    miner_reward_addresses: list[str] = []
     for index, out, _value in spendable_outputs:
+        output_addresses = coinbase_output_addresses(out)
+        all_reward_addresses.extend(output_addresses)
+        if index == miner_index:
+            miner_reward_addresses = output_addresses
         if index != miner_index:
             excluded.append(_coinbase_output_summary(index, out))
 
+    expected_address = expected_pool_reward_address()
     return {
         "coinbaseTotalReward": total_reward,
         "minerRewardOutputIndex": miner_index,
         "minerRewardAmount": miner_reward_amount,
         "masternodeRewardAmount": masternode_reward_amount,
         "specialRewardAmount": special_reward_amount,
+        "coinbaseRewardAddresses": all_reward_addresses,
+        "minerRewardAddresses": miner_reward_addresses,
+        "expectedPoolRewardAddress": expected_address,
+        "coinbaseMatchesExpectedPoolWallet": expected_address in miner_reward_addresses,
         "excludedCoinbaseOutputs": excluded,
         "rewardSource": "coinbase_detected_miner_split_reward",
     }
@@ -479,6 +509,10 @@ def fetch_coinbase_reward_from_daemon(
         "minerRewardAmount": None,
         "masternodeRewardAmount": None,
         "specialRewardAmount": None,
+        "coinbaseRewardAddresses": [],
+        "minerRewardAddresses": [],
+        "expectedPoolRewardAddress": expected_pool_reward_address(),
+        "coinbaseMatchesExpectedPoolWallet": None,
         "excludedCoinbaseOutputs": [],
         "rewardSource": "coinbase_detected_miner_split_reward",
         "coinbaseLookupStatus": "not_attempted",
@@ -699,6 +733,10 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         miner_reward_amount = None
         masternode_reward_amount = None
         special_reward_amount = None
+        coinbase_reward_addresses = []
+        miner_reward_addresses = []
+        expected_pool_reward_addr = expected_pool_reward_address()
+        coinbase_matches_expected_pool_wallet = None
         excluded_coinbase_outputs = []
         reward_source = None
         if l_status == "confirmed":
@@ -727,6 +765,10 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             miner_reward_amount = coinbase_reward.get("minerRewardAmount")
             masternode_reward_amount = coinbase_reward.get("masternodeRewardAmount")
             special_reward_amount = coinbase_reward.get("specialRewardAmount")
+            coinbase_reward_addresses = coinbase_reward.get("coinbaseRewardAddresses") or []
+            miner_reward_addresses = coinbase_reward.get("minerRewardAddresses") or []
+            expected_pool_reward_addr = coinbase_reward.get("expectedPoolRewardAddress")
+            coinbase_matches_expected_pool_wallet = coinbase_reward.get("coinbaseMatchesExpectedPoolWallet")
             excluded_coinbase_outputs = coinbase_reward.get("excludedCoinbaseOutputs") or []
             reward_source = coinbase_reward.get("rewardSource")
 
@@ -973,6 +1015,11 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "minerRewardAmount": miner_reward_amount,
             "masternodeRewardAmount": masternode_reward_amount,
             "specialRewardAmount": special_reward_amount,
+            "coinbaseRewardAddresses": coinbase_reward_addresses,
+            "minerRewardAddresses": miner_reward_addresses,
+            "expectedPoolRewardAddress": expected_pool_reward_addr,
+            "coinbase_matches_expected_pool_wallet": coinbase_matches_expected_pool_wallet,
+            "coinbaseMatchesExpectedPoolWallet": coinbase_matches_expected_pool_wallet,
             "excludedCoinbaseOutputs": excluded_coinbase_outputs,
             "reward_source": reward_source,
             "rewardSource": reward_source

@@ -806,6 +806,30 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    def test_template_coinbase_uses_configured_pool_reward_wallet(self):
+        raw_template = SuccessfulTemplateRpcClient().get_block_template()
+        _coinb1, _coinb2, _branch, preimage_context, authoritative_context = (
+            template_jobs._build_template_preimage_material(
+                raw_template,
+                current_time=raw_template["curtime"],
+                pool_reward_address="PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho",
+            )
+        )
+
+        first_output = authoritative_context["outputSummaries"][0]
+        self.assertEqual(first_output["kind"], "pool-miner-reward")
+        self.assertEqual(first_output["address"], "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho")
+        self.assertEqual(
+            first_output["scriptHex"],
+            "76a914774b5900d43b25b51476d00967a45f1d5daa4e1088ac",
+        )
+        self.assertFalse(first_output["placeholderScript"])
+        self.assertFalse(preimage_context["placeholderPayout"])
+        self.assertEqual(
+            preimage_context["poolRewardAddress"],
+            "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho",
+        )
+
     def test_append_candidate_followup_event_records_match_found(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -6927,7 +6951,6 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         
         meets_block_target = daemon_hash_int <= target_int
         self.assertFalse(meets_block_target)
-
 
 
 
