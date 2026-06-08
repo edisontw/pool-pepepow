@@ -411,7 +411,13 @@ class PayoutAccountingTests(unittest.TestCase):
                     "lifecycle_status": "confirmed",
                     "matched_height": 4580896,
                     "coinbase_outputs": [
-                        {"value": 4387.5, "scriptPubKey": {"type": "nonstandard", "asm": "1"}},
+                        {
+                            "value": 4387.5,
+                            "scriptPubKey": {
+                                "type": "pubkeyhash",
+                                "address": "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho",
+                            },
+                        },
                         {"value": 2362.5},
                         {"value": 250.0},
                     ],
@@ -523,6 +529,9 @@ class PayoutAccountingTests(unittest.TestCase):
             ["PLigcFyT6QcrDfzbAMFdYvAnhuTp8RDpUq", "PHjJrmyDGCAjQFsbiucsC1Ex1nPbu8hgiC"],
         )
         self.assertFalse(item["coinbaseMatchesExpectedPoolWallet"])
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["blockedReason"], "blocked_coinbase_reward_mismatch")
+        self.assertEqual(item["payouts"], [])
         for forbidden_key in (
             "PEPEPOWD_RPC_PASSWORD",
             "Authorization",
@@ -530,6 +539,36 @@ class PayoutAccountingTests(unittest.TestCase):
             "cookie",
         ):
             self.assertNotIn(forbidden_key, item)
+
+    def test_coinbase_pool_wallet_match_can_proceed_to_review(self):
+        old_expected = os.environ.get("PEPEPOW_POOL_CORE_REWARD_ADDRESS")
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        try:
+            item = self._generate_single_candidate(
+                "hash_pool_wallet_match",
+                [
+                    {
+                        "value": 4387.5,
+                        "scriptPubKey": {
+                            "type": "pubkeyhash",
+                            "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                        },
+                    },
+                    {"value": 2362.5},
+                    {"value": 250.0},
+                ],
+            )
+        finally:
+            if old_expected is None:
+                os.environ.pop("PEPEPOW_POOL_CORE_REWARD_ADDRESS", None)
+            else:
+                os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = old_expected
+
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertIsNone(item["blockedReason"])
+        self.assertEqual(item["minerRewardAddresses"], ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"])
+        self.assertTrue(item["coinbaseMatchesExpectedPoolWallet"])
+        self.assertEqual(len(item["payouts"]), 1)
 
     def test_coinbase_miner_reward_detected_when_vout0(self):
         item = self._generate_single_candidate(

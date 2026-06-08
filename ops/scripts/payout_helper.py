@@ -468,15 +468,22 @@ def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
     excluded = []
     all_reward_addresses: list[str] = []
     miner_reward_addresses: list[str] = []
+    miner_reward_script_pub_key = None
     for index, out, _value in spendable_outputs:
         output_addresses = coinbase_output_addresses(out)
         all_reward_addresses.extend(output_addresses)
         if index == miner_index:
             miner_reward_addresses = output_addresses
+            if isinstance(out.get("scriptPubKey"), dict):
+                miner_reward_script_pub_key = _coinbase_output_summary(index, out).get("scriptPubKey")
         if index != miner_index:
             excluded.append(_coinbase_output_summary(index, out))
 
     expected_address = expected_pool_reward_address()
+    if miner_index is None or miner_reward_script_pub_key is None:
+        coinbase_matches_expected_pool_wallet = None
+    else:
+        coinbase_matches_expected_pool_wallet = expected_address in miner_reward_addresses
     return {
         "coinbaseTotalReward": total_reward,
         "minerRewardOutputIndex": miner_index,
@@ -485,8 +492,9 @@ def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
         "specialRewardAmount": special_reward_amount,
         "coinbaseRewardAddresses": all_reward_addresses,
         "minerRewardAddresses": miner_reward_addresses,
+        "minerRewardScriptPubKey": miner_reward_script_pub_key,
         "expectedPoolRewardAddress": expected_address,
-        "coinbaseMatchesExpectedPoolWallet": expected_address in miner_reward_addresses,
+        "coinbaseMatchesExpectedPoolWallet": coinbase_matches_expected_pool_wallet,
         "excludedCoinbaseOutputs": excluded,
         "rewardSource": "coinbase_detected_miner_split_reward",
     }
@@ -511,6 +519,7 @@ def fetch_coinbase_reward_from_daemon(
         "specialRewardAmount": None,
         "coinbaseRewardAddresses": [],
         "minerRewardAddresses": [],
+        "minerRewardScriptPubKey": None,
         "expectedPoolRewardAddress": expected_pool_reward_address(),
         "coinbaseMatchesExpectedPoolWallet": None,
         "excludedCoinbaseOutputs": [],
@@ -735,6 +744,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         special_reward_amount = None
         coinbase_reward_addresses = []
         miner_reward_addresses = []
+        miner_reward_script_pub_key = None
         expected_pool_reward_addr = expected_pool_reward_address()
         coinbase_matches_expected_pool_wallet = None
         excluded_coinbase_outputs = []
@@ -767,6 +777,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             special_reward_amount = coinbase_reward.get("specialRewardAmount")
             coinbase_reward_addresses = coinbase_reward.get("coinbaseRewardAddresses") or []
             miner_reward_addresses = coinbase_reward.get("minerRewardAddresses") or []
+            miner_reward_script_pub_key = coinbase_reward.get("minerRewardScriptPubKey")
             expected_pool_reward_addr = coinbase_reward.get("expectedPoolRewardAddress")
             coinbase_matches_expected_pool_wallet = coinbase_reward.get("coinbaseMatchesExpectedPoolWallet")
             excluded_coinbase_outputs = coinbase_reward.get("excludedCoinbaseOutputs") or []
@@ -826,6 +837,9 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             if miner_reward_val <= 0:
                 status = "blocked"
                 reason = "blocked_missing_miner_reward_output"
+            elif coinbase_matches_expected_pool_wallet is False:
+                status = "blocked"
+                reason = "blocked_coinbase_reward_mismatch"
             else:
                 total_block_reward = coinbase_total_reward
                 miner_gross_reward = miner_reward_val
@@ -1017,6 +1031,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "specialRewardAmount": special_reward_amount,
             "coinbaseRewardAddresses": coinbase_reward_addresses,
             "minerRewardAddresses": miner_reward_addresses,
+            "minerRewardScriptPubKey": miner_reward_script_pub_key,
             "expectedPoolRewardAddress": expected_pool_reward_addr,
             "coinbase_matches_expected_pool_wallet": coinbase_matches_expected_pool_wallet,
             "coinbaseMatchesExpectedPoolWallet": coinbase_matches_expected_pool_wallet,
