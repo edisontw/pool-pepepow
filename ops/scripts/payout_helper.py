@@ -16,6 +16,7 @@ import urllib.request
 import urllib.error
 import subprocess
 import fcntl
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,7 +65,17 @@ def load_env_vars() -> dict[str, str]:
     env.update({k: v for k, v in os.environ.items() if isinstance(v, str)})
     return env
 
-def query_rpc(method: str, params: list[Any]) -> Any:
+def summarize_rpc_params(params: list[Any]) -> list[Any]:
+    summary = []
+    for param in params:
+        if isinstance(param, str) and re.fullmatch(r"[0-9a-fA-F]{64}", param):
+            summary.append(f"{param[:12]}...{param[-8:]}")
+        else:
+            summary.append(param)
+    return summary
+
+
+def query_rpc_result(method: str, params: list[Any], timeout: float = 5) -> dict[str, Any]:
     env = load_env_vars()
     rpc_url = env.get("PEPEPOWD_RPC_URL")
     if not rpc_url:
@@ -92,16 +103,51 @@ def query_rpc(method: str, params: list[Any]) -> Any:
         method="POST"
     )
     
+    meta = {"method": method, "paramsSummary": summarize_rpc_params(params)}
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            if isinstance(res_data, dict):
-                if res_data.get("error"):
-                    return None
-                return res_data.get("result")
-    except Exception:
-        pass
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            try:
+                res_data = json.loads(response.read().decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                return {**meta, "ok": False, "error": "malformed_json_response", "exceptionType": type(exc).__name__, "exceptionMessage": str(exc)}
+            if not isinstance(res_data, dict):
+                return {**meta, "ok": False, "error": "malformed_json_response"}
+            rpc_error = res_data.get("error")
+            if rpc_error:
+                if isinstance(rpc_error, dict):
+                    return {
+                        **meta,
+                        "ok": False,
+                        "error": "rpc_json_error",
+                        "rpcErrorCode": rpc_error.get("code"),
+                        "rpcErrorMessage": rpc_error.get("message"),
+                    }
+                return {**meta, "ok": False, "error": "rpc_json_error", "rpcErrorMessage": str(rpc_error)}
+            if res_data.get("result") is None:
+                return {**meta, "ok": False, "error": "rpc_null_result"}
+            return {**meta, "ok": True, "result": res_data.get("result")}
+    except urllib.error.HTTPError as exc:
+        return {**meta, "ok": False, "error": "http_error", "httpStatus": exc.code, "exceptionType": type(exc).__name__, "exceptionMessage": str(exc)}
+    except (TimeoutError, socket.timeout) as exc:
+        return {**meta, "ok": False, "error": "timeout", "exceptionType": type(exc).__name__, "exceptionMessage": str(exc)}
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        reason_type = type(reason).__name__ if reason is not None else type(exc).__name__
+        reason_message = str(reason if reason is not None else exc)
+        error = "timeout" if isinstance(reason, (TimeoutError, socket.timeout)) else "connection_failure"
+        return {**meta, "ok": False, "error": error, "exceptionType": reason_type, "exceptionMessage": reason_message}
+    except Exception as exc:
+        return {**meta, "ok": False, "error": "exception", "exceptionType": type(exc).__name__, "exceptionMessage": str(exc)}
+
+
+def query_rpc(method: str, params: list[Any], timeout: float = 5) -> Any:
+    result = query_rpc_result(method, params, timeout=timeout)
+    if result.get("ok"):
+        return result.get("result")
     return None
+
+
+_REAL_QUERY_RPC = query_rpc
 
 READ_ONLY_WALLET_CLI_METHODS = {"getbalance", "getwalletinfo", "validateaddress"}
 
@@ -171,6 +217,29 @@ def wallet_readonly_call(method: str, params: list[Any]) -> Any:
     return None
 
 
+def daemon_readonly_call(method: str, params: list[Any]) -> Any:
+    """Read daemon chain data through direct RPC with a strict timeout."""
+    result, _meta = daemon_readonly_lookup(method, params)
+    return result
+
+
+def daemon_readonly_lookup(method: str, params: list[Any]) -> tuple[Any, dict[str, Any]]:
+    """Read daemon chain data and return compact diagnostics for failures."""
+    if query_rpc is not _REAL_QUERY_RPC:
+        meta = {"method": method, "paramsSummary": summarize_rpc_params(params)}
+        try:
+            result = query_rpc(method, params, timeout=5)
+        except Exception as exc:
+            return None, {**meta, "error": "exception", "exceptionType": type(exc).__name__, "exceptionMessage": str(exc)}
+        if result is None:
+            return None, {**meta, "error": "rpc_null_result"}
+        return result, meta
+    rpc_result = query_rpc_result(method, params, timeout=5)
+    if rpc_result.get("ok"):
+        return rpc_result.get("result"), rpc_result
+    return None, rpc_result
+
+
 def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
     """Write JSON atomically using a temp file and os.replace."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +256,7 @@ def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
 
 FAILED_PAYMENT_ACTION_STATUSES = {"failed", "send_failed", "reserved"}
 SUCCESS_PAYMENT_ACTION_STATUSES = {"sent", "paid", "paid_manual", "manual_payment_recorded"}
+SUCCESS_PAYMENT_ACTIONS = {"manual_payment_recorded"}
 
 
 def action_represents_successful_payment(action: dict[str, Any]) -> bool:
@@ -205,7 +275,76 @@ def action_represents_successful_payment(action: dict[str, Any]) -> bool:
             return False
         if normalized in SUCCESS_PAYMENT_ACTION_STATUSES:
             return bool(action.get("txid"))
+    action_name = action.get("action")
+    if isinstance(action_name, str) and action_name.strip().lower() in SUCCESS_PAYMENT_ACTIONS:
+        return bool(action.get("txid"))
     return bool(action.get("txid") and action.get("candidate_id") and action.get("wallet"))
+
+
+def load_paid_payment_pairs(actions_log_path: Path, candidates_path: Path | None = None) -> set[tuple[str, str]]:
+    """Load successful paid candidate_id + wallet pairs from the append-only actions log."""
+    paid_pairs: set[tuple[str, str]] = set()
+    if actions_log_path.exists():
+        try:
+            with actions_log_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        act = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(act, dict) or not action_represents_successful_payment(act):
+                        continue
+                    c_id = act.get("candidate_id")
+                    wallet = act.get("wallet")
+                    if c_id and wallet:
+                        paid_pairs.add((str(c_id), str(wallet)))
+                        source_ids = act.get("carrySourceCandidateIds")
+                        if isinstance(source_ids, list):
+                            for source_id in source_ids:
+                                if source_id:
+                                    paid_pairs.add((str(source_id), str(wallet)))
+        except Exception:
+            pass
+
+    if not paid_pairs or candidates_path is None or not candidates_path.exists():
+        return paid_pairs
+
+    try:
+        with candidates_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return paid_pairs
+    if not isinstance(data, dict):
+        return paid_pairs
+    candidates = data.get("items") or data.get("candidates") or []
+    if not isinstance(candidates, list):
+        return paid_pairs
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        c_id = candidate.get("candidateId") or candidate.get("candidate_hash")
+        payouts = candidate.get("payouts")
+        if not c_id or not isinstance(payouts, list):
+            continue
+        for payout in payouts:
+            if not isinstance(payout, dict):
+                continue
+            wallet = payout.get("wallet")
+            if not wallet or (str(c_id), str(wallet)) not in paid_pairs:
+                continue
+            source_ids = payout.get("carrySourceCandidateIds")
+            if source_ids is None:
+                source_ids = payout.get("sourceCandidateIds")
+            if not isinstance(source_ids, list):
+                continue
+            for source_id in source_ids:
+                if source_id:
+                    paid_pairs.add((str(source_id), str(wallet)))
+    return paid_pairs
 
 
 def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: str) -> bool:
@@ -323,12 +462,18 @@ def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
     }
 
 
-def fetch_coinbase_reward_from_daemon(height: Any) -> dict[str, Any]:
+def fetch_coinbase_reward_from_daemon(
+    height: Any,
+    candidate_block_hash: Any = None,
+    allow_height_fallback: bool = True,
+) -> dict[str, Any]:
     """Fetch PEPEPOW coinbase reward accounting data for a confirmed height."""
     result: dict[str, Any] = {
         "blockHash": None,
+        "resolvedBlockHash": None,
         "confirmations": None,
         "coinbaseTxid": None,
+        "resolvedCoinbaseTxid": None,
         "coinbaseTotalReward": None,
         "minerRewardOutputIndex": None,
         "minerRewardAmount": None,
@@ -336,20 +481,66 @@ def fetch_coinbase_reward_from_daemon(height: Any) -> dict[str, Any]:
         "specialRewardAmount": None,
         "excludedCoinbaseOutputs": [],
         "rewardSource": "coinbase_detected_miner_split_reward",
+        "coinbaseLookupStatus": "not_attempted",
+        "coinbaseLookupError": None,
+        "coinbaseLookupStep": None,
+        "coinbaseLookupMethod": None,
+        "coinbaseLookupParamsSummary": None,
+        "coinbaseLookupRpcErrorCode": None,
+        "coinbaseLookupRpcErrorMessage": None,
+        "coinbaseLookupHttpStatus": None,
+        "coinbaseLookupExceptionType": None,
+        "coinbaseLookupExceptionMessage": None,
     }
+
+    def set_lookup_failure(error: str, step: str, meta: dict[str, Any] | None = None) -> None:
+        meta = meta or {}
+        result["coinbaseLookupStatus"] = "error"
+        result["coinbaseLookupError"] = error
+        result["coinbaseLookupStep"] = step
+        result["coinbaseLookupMethod"] = meta.get("method")
+        result["coinbaseLookupParamsSummary"] = meta.get("paramsSummary")
+        result["coinbaseLookupRpcErrorCode"] = meta.get("rpcErrorCode")
+        result["coinbaseLookupRpcErrorMessage"] = meta.get("rpcErrorMessage")
+        result["coinbaseLookupHttpStatus"] = meta.get("httpStatus")
+        result["coinbaseLookupExceptionType"] = meta.get("exceptionType")
+        result["coinbaseLookupExceptionMessage"] = meta.get("exceptionMessage")
 
     try:
         height_int = int(height)
     except (ValueError, TypeError):
+        set_lookup_failure("invalid_height", "height")
         return result
 
-    block_hash = query_rpc("getblockhash", [height_int])
-    if not isinstance(block_hash, str) or not block_hash:
+    def valid_hash(value: Any) -> str | None:
+        if isinstance(value, str) and value:
+            return value
+        return None
+
+    candidate_hash = valid_hash(candidate_block_hash)
+    block_hash = candidate_hash
+    used_candidate_hash = block_hash is not None
+
+    if block_hash is None:
+        block_hash, lookup_meta = daemon_readonly_lookup("getblockhash", [height_int])
+        block_hash = valid_hash(block_hash)
+    if block_hash is None:
+        set_lookup_failure("getblockhash_failed", "getblockhash", locals().get("lookup_meta"))
         return result
 
     result["blockHash"] = block_hash
-    block_data = query_rpc("getblock", [block_hash, True])
+    result["resolvedBlockHash"] = block_hash
+    block_data, block_lookup_meta = daemon_readonly_lookup("getblock", [block_hash, True])
+    if not isinstance(block_data, dict) and used_candidate_hash and allow_height_fallback:
+        fallback_block_hash, fallback_meta = daemon_readonly_lookup("getblockhash", [height_int])
+        fallback_block_hash = valid_hash(fallback_block_hash)
+        if fallback_block_hash and fallback_block_hash != block_hash:
+            block_hash = fallback_block_hash
+            result["blockHash"] = block_hash
+            result["resolvedBlockHash"] = block_hash
+            block_data, block_lookup_meta = daemon_readonly_lookup("getblock", [block_hash, True])
     if not isinstance(block_data, dict):
+        set_lookup_failure("getblock_failed", "getblock", block_lookup_meta)
         return result
 
     confirmations = block_data.get("confirmations")
@@ -361,24 +552,31 @@ def fetch_coinbase_reward_from_daemon(height: Any) -> dict[str, Any]:
 
     tx_list = block_data.get("tx")
     if not isinstance(tx_list, list) or not tx_list:
+        set_lookup_failure("missing_coinbase_tx", "getblock")
         return result
 
     coinbase_txid = tx_list[0]
     if isinstance(coinbase_txid, dict):
         coinbase_txid = coinbase_txid.get("txid") or coinbase_txid.get("hash")
     if not isinstance(coinbase_txid, str) or not coinbase_txid:
+        set_lookup_failure("invalid_coinbase_txid", "getblock")
         return result
 
     result["coinbaseTxid"] = coinbase_txid
-    coinbase_tx = query_rpc("getrawtransaction", [coinbase_txid, 1])
+    result["resolvedCoinbaseTxid"] = coinbase_txid
+    coinbase_tx, tx_lookup_meta = daemon_readonly_lookup("getrawtransaction", [coinbase_txid, 1])
     if not isinstance(coinbase_tx, dict):
+        set_lookup_failure("getrawtransaction_failed", "getrawtransaction", tx_lookup_meta)
         return result
 
     vout_list = coinbase_tx.get("vout")
     if not isinstance(vout_list, list):
+        set_lookup_failure("missing_coinbase_vout", "getrawtransaction")
         return result
 
     result.update(detect_coinbase_miner_reward(vout_list))
+    result["coinbaseLookupStatus"] = "ok"
+    result["coinbaseLookupError"] = None
     return result
 
 
@@ -423,25 +621,8 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
     except (ValueError, TypeError):
         min_payout = 100000.0
 
-    paid_pairs = set()
     actions_log_path = output_path.parent / "payment-actions.jsonl"
-    if actions_log_path.exists():
-        try:
-            with actions_log_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        act = json.loads(line)
-                        c_id = act.get("candidate_id")
-                        w = act.get("wallet")
-                        if c_id and w:
-                            paid_pairs.add((c_id, w))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    paid_pairs = load_paid_payment_pairs(actions_log_path, output_path)
 
     wallet_carry_state: dict[str, dict[str, Any]] = {}
     for wallet, items in carry_map.items():
@@ -493,10 +674,26 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         c_hash = c.get("candidate_hash")
         l_status = c.get("lifecycle_status")
         height = c.get("matched_height")
-        block_hash = c_hash
+        explicit_block_hash = c.get("blockHash") or c.get("block_hash")
+        candidate_block_hash = explicit_block_hash
+        if not candidate_block_hash and isinstance(c_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", c_hash):
+            candidate_block_hash = c_hash
+        block_hash = candidate_block_hash or c_hash
         
         daemon_confirmations = None
         coinbase_txid = None
+        resolved_block_hash = None
+        resolved_coinbase_txid = None
+        coinbase_lookup_status = "not_attempted"
+        coinbase_lookup_error = None
+        coinbase_lookup_step = None
+        coinbase_lookup_method = None
+        coinbase_lookup_params_summary = None
+        coinbase_lookup_rpc_error_code = None
+        coinbase_lookup_rpc_error_message = None
+        coinbase_lookup_http_status = None
+        coinbase_lookup_exception_type = None
+        coinbase_lookup_exception_message = None
         coinbase_total_reward = None
         miner_reward_output_index = None
         miner_reward_amount = None
@@ -505,10 +702,26 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         excluded_coinbase_outputs = []
         reward_source = None
         if l_status == "confirmed":
-            coinbase_reward = fetch_coinbase_reward_from_daemon(height)
+            coinbase_reward = fetch_coinbase_reward_from_daemon(
+                height,
+                candidate_block_hash,
+                allow_height_fallback=not bool(explicit_block_hash),
+            )
             daemon_confirmations = coinbase_reward.get("confirmations")
             block_hash = coinbase_reward.get("blockHash") or block_hash
+            resolved_block_hash = coinbase_reward.get("resolvedBlockHash")
             coinbase_txid = coinbase_reward.get("coinbaseTxid")
+            resolved_coinbase_txid = coinbase_reward.get("resolvedCoinbaseTxid")
+            coinbase_lookup_status = coinbase_reward.get("coinbaseLookupStatus")
+            coinbase_lookup_error = coinbase_reward.get("coinbaseLookupError")
+            coinbase_lookup_step = coinbase_reward.get("coinbaseLookupStep")
+            coinbase_lookup_method = coinbase_reward.get("coinbaseLookupMethod")
+            coinbase_lookup_params_summary = coinbase_reward.get("coinbaseLookupParamsSummary")
+            coinbase_lookup_rpc_error_code = coinbase_reward.get("coinbaseLookupRpcErrorCode")
+            coinbase_lookup_rpc_error_message = coinbase_reward.get("coinbaseLookupRpcErrorMessage")
+            coinbase_lookup_http_status = coinbase_reward.get("coinbaseLookupHttpStatus")
+            coinbase_lookup_exception_type = coinbase_reward.get("coinbaseLookupExceptionType")
+            coinbase_lookup_exception_message = coinbase_reward.get("coinbaseLookupExceptionMessage")
             coinbase_total_reward = coinbase_reward.get("coinbaseTotalReward")
             miner_reward_output_index = coinbase_reward.get("minerRewardOutputIndex")
             miner_reward_amount = coinbase_reward.get("minerRewardAmount")
@@ -743,6 +956,18 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "shares": shares_info,
             "submit_timestamp": c.get("submit_timestamp"),
             "coinbaseTxid": coinbase_txid,
+            "resolvedBlockHash": resolved_block_hash,
+            "resolvedCoinbaseTxid": resolved_coinbase_txid,
+            "coinbaseLookupStatus": coinbase_lookup_status,
+            "coinbaseLookupError": coinbase_lookup_error,
+            "coinbaseLookupStep": coinbase_lookup_step,
+            "coinbaseLookupMethod": coinbase_lookup_method,
+            "coinbaseLookupParamsSummary": coinbase_lookup_params_summary,
+            "coinbaseLookupRpcErrorCode": coinbase_lookup_rpc_error_code,
+            "coinbaseLookupRpcErrorMessage": coinbase_lookup_rpc_error_message,
+            "coinbaseLookupHttpStatus": coinbase_lookup_http_status,
+            "coinbaseLookupExceptionType": coinbase_lookup_exception_type,
+            "coinbaseLookupExceptionMessage": coinbase_lookup_exception_message,
             "coinbaseTotalReward": coinbase_total_reward,
             "minerRewardOutputIndex": miner_reward_output_index,
             "minerRewardAmount": miner_reward_amount,
@@ -832,7 +1057,7 @@ def generate_payments_snapshot(
         except Exception:
             pass
 
-    items = []
+    items_by_payment_key: dict[tuple[str, str], dict[str, Any]] = {}
     for act in existing_actions:
         if not action_represents_successful_payment(act):
             continue
@@ -894,9 +1119,13 @@ def generate_payments_snapshot(
             except (ValueError, TypeError):
                 pass
 
-        items.append(item)
+        if txid and w:
+            items_by_payment_key[(str(txid), str(w))] = item
+        else:
+            items_by_payment_key[(str(id(act)), "")] = item
 
     # Sort descending by paidAt
+    items = list(items_by_payment_key.values())
     items.sort(key=lambda x: x.get("paidAt", ""), reverse=True)
 
     snapshot_data = {
@@ -2267,6 +2496,15 @@ def payout_wallet_send_once(
                 "status": "sent",
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
+            for metadata_key in (
+                "carrySourceCandidateIds",
+                "carrySourceCount",
+                "carryInAmount",
+                "baseAmount",
+                "sourceCandidateIds",
+            ):
+                if metadata_key in matching_payout:
+                    sent_action[metadata_key] = matching_payout.get(metadata_key)
             append_payment_action(actions_log_path, sent_action)
             clear_consumed_carry(
                 payments_snapshot_path.parent / "payout-candidates.json",

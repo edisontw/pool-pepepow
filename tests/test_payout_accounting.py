@@ -37,7 +37,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 out[int(c["matched_height"])] = c
         return out
 
-    def _mock_coinbase_rpc(self, method, params):
+    def _mock_coinbase_rpc(self, method, params, timeout=5):
         by_height = self._accepted_candidates_by_height()
         if method == "getblockhash":
             c = by_height.get(int(params[0]))
@@ -969,7 +969,7 @@ class PayoutAccountingTests(unittest.TestCase):
         original_query_rpc = payout_helper.query_rpc
         
         rpc_calls = []
-        def mock_query_rpc(method, params):
+        def mock_query_rpc(method, params, timeout=5):
             rpc_calls.append((method, params))
             if method == "getblockhash":
                 height = params[0]
@@ -1140,6 +1140,378 @@ class PayoutAccountingTests(unittest.TestCase):
 
         finally:
             payout_helper.query_rpc = original_query_rpc
+
+    def test_confirmed_candidate_with_blockhash_resolves_coinbase_using_blockhash(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+
+        candidate_id = "candprefblockhash000000000001"
+        preferred_block_hash = "blockprefblockhash00000000001"
+
+        def mock_query_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params))
+            if method == "getblock":
+                self.assertEqual(params, [preferred_block_hash, True])
+                return {"confirmations": 12, "tx": ["coinbaseprefblockhash00000001"]}
+            if method == "getrawtransaction":
+                self.assertEqual(params, ["coinbaseprefblockhash00000001", 1])
+                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+            if method == "getblockhash":
+                self.fail("getblockhash should not be called when candidate blockHash resolves")
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": preferred_block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581232,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "ok")
+            self.assertIsNone(item["coinbaseLookupError"])
+            self.assertEqual(item["resolvedBlockHash"], preferred_block_hash)
+            self.assertEqual(item["coinbaseTxid"], "coinbaseprefblockhash00000001")
+            self.assertEqual(item["coinbaseTotalReward"], 7000.0)
+            self.assertEqual(item["minerRewardAmount"], 4387.5)
+            self.assertEqual(item["specialRewardAmount"], 250.0)
+            self.assertNotEqual(item["blockedReason"], "blocked_missing_miner_reward_output")
+            self.assertEqual([call[0] for call in rpc_calls], ["getblock", "getrawtransaction"])
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+    def test_confirmed_candidate_falls_back_to_getblockhash_when_blockhash_missing(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+        candidate_id = "candfallbackheight0000000001"
+        resolved_block_hash = "blockfallbackheight000000001"
+
+        def mock_query_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params))
+            if method == "getblockhash":
+                self.assertEqual(params, [4581282])
+                return resolved_block_hash
+            if method == "getblock":
+                self.assertEqual(params, [resolved_block_hash, True])
+                return {"confirmations": 12, "tx": ["coinbasefallbackheight000001"]}
+            if method == "getrawtransaction":
+                self.assertEqual(params, ["coinbasefallbackheight000001", 1])
+                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581282,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "ok")
+            self.assertEqual(item["resolvedBlockHash"], resolved_block_hash)
+            self.assertEqual(item["minerRewardAmount"], 4387.5)
+            self.assertNotEqual(item["blockedReason"], "blocked_missing_miner_reward_output")
+            self.assertEqual([call[0] for call in rpc_calls], ["getblockhash", "getblock", "getrawtransaction"])
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+    def test_coinbase_rpc_failure_emits_lookup_diagnostics(self):
+        original_query_rpc = payout_helper.query_rpc
+        candidate_id = "candrpcfailure0000000000001"
+        block_hash = "blockrpcfailure000000000001"
+
+        def mock_query_rpc(method, params, timeout=5):
+            if method == "getblock":
+                return None
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["blockedReason"], "blocked_missing_miner_reward_output")
+            self.assertEqual(item["coinbaseLookupStatus"], "error")
+            self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
+            self.assertEqual(item["coinbaseLookupStep"], "getblock")
+            self.assertEqual(item["coinbaseLookupMethod"], "getblock")
+            self.assertEqual(item["coinbaseLookupParamsSummary"], [block_hash, True])
+            self.assertEqual(item["resolvedBlockHash"], block_hash)
+            self.assertIsNone(item["coinbaseTxid"])
+            self.assertIsNone(item["minerRewardAmount"])
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+
+    def test_getblock_rpc_json_error_records_code_message_and_step(self):
+        original_query_rpc = payout_helper.query_rpc
+        original_query_rpc_result = payout_helper.query_rpc_result
+        candidate_id = "candjsonerror000000000000001"
+        block_hash = "b" * 64
+
+        def mock_query_rpc_result(method, params, timeout=5):
+            if method == "getblock":
+                return {
+                    "ok": False,
+                    "method": method,
+                    "paramsSummary": payout_helper.summarize_rpc_params(params),
+                    "error": "rpc_json_error",
+                    "rpcErrorCode": -5,
+                    "rpcErrorMessage": "Block not found",
+                }
+            return {"ok": False, "method": method, "paramsSummary": payout_helper.summarize_rpc_params(params), "error": "rpc_null_result"}
+
+        payout_helper.query_rpc = payout_helper._REAL_QUERY_RPC
+        payout_helper.query_rpc_result = mock_query_rpc_result
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "error")
+            self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
+            self.assertEqual(item["coinbaseLookupStep"], "getblock")
+            self.assertEqual(item["coinbaseLookupMethod"], "getblock")
+            self.assertEqual(item["coinbaseLookupParamsSummary"], ["bbbbbbbbbbbb...bbbbbbbb", True])
+            self.assertEqual(item["coinbaseLookupRpcErrorCode"], -5)
+            self.assertEqual(item["coinbaseLookupRpcErrorMessage"], "Block not found")
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            payout_helper.query_rpc_result = original_query_rpc_result
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+    def test_getblock_exception_failure_records_exception_metadata(self):
+        original_query_rpc = payout_helper.query_rpc
+        original_query_rpc_result = payout_helper.query_rpc_result
+        candidate_id = "candhttperror000000000000001"
+        block_hash = "c" * 64
+
+        def mock_query_rpc_result(method, params, timeout=5):
+            if method == "getblock":
+                return {
+                    "ok": False,
+                    "method": method,
+                    "paramsSummary": payout_helper.summarize_rpc_params(params),
+                    "error": "connection_failure",
+                    "exceptionType": "ConnectionRefusedError",
+                    "exceptionMessage": "connection refused",
+                }
+            return {"ok": False, "method": method, "paramsSummary": payout_helper.summarize_rpc_params(params), "error": "rpc_null_result"}
+
+        payout_helper.query_rpc = payout_helper._REAL_QUERY_RPC
+        payout_helper.query_rpc_result = mock_query_rpc_result
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "error")
+            self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
+            self.assertEqual(item["coinbaseLookupStep"], "getblock")
+            self.assertEqual(item["coinbaseLookupMethod"], "getblock")
+            self.assertEqual(item["coinbaseLookupExceptionType"], "ConnectionRefusedError")
+            self.assertEqual(item["coinbaseLookupExceptionMessage"], "connection refused")
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            payout_helper.query_rpc_result = original_query_rpc_result
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+    def test_64_hex_candidate_hash_can_be_used_as_block_hash(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+        candidate_id = "a" * 64
+
+        def mock_query_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params, timeout))
+            if method == "getblock":
+                self.assertEqual(params, [candidate_id, True])
+                return {"confirmations": 12, "tx": ["coinbase64hex000000000000001"]}
+            if method == "getrawtransaction":
+                self.assertEqual(params, ["coinbase64hex000000000000001", 1])
+                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+            if method == "getblockhash":
+                self.fail("getblockhash should not be called when 64-hex candidate_hash resolves")
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "ok")
+            self.assertEqual(item["resolvedBlockHash"], candidate_id)
+            self.assertEqual(item["resolvedCoinbaseTxid"], "coinbase64hex000000000000001")
+            self.assertEqual(item["minerRewardAmount"], 4387.5)
+            self.assertNotEqual(item["blockedReason"], "blocked_missing_miner_reward_output")
+            self.assertEqual([call[0] for call in rpc_calls], ["getblock", "getrawtransaction"])
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+    def test_coinbase_lookup_failure_path_is_timeout_bounded(self):
+        original_query_rpc = payout_helper.query_rpc
+        candidate_id = "candtimeoutfailure000000000001"
+        block_hash = "blocktimeoutfailure00000000001"
+        rpc_calls = []
+
+        def mock_query_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params, timeout))
+            raise TimeoutError("simulated timeout")
+
+        payout_helper.query_rpc = mock_query_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "error")
+            self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
+            self.assertEqual(item["resolvedBlockHash"], block_hash)
+            self.assertTrue(rpc_calls)
+            self.assertTrue(all(call[2] == 5 for call in rpc_calls))
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
 
     def test_payout_candidates_already_paid(self):
         accepted_data = {
@@ -2743,7 +3115,7 @@ class CarryFocusedTests(unittest.TestCase):
                 out[int(c["matched_height"])] = c
         return out
 
-    def _mock_coinbase_rpc(self, method, params):
+    def _mock_coinbase_rpc(self, method, params, timeout=5):
         by_height = self._accepted_candidates_by_height()
         if method == "getblockhash":
             c = by_height.get(int(params[0]))
@@ -2995,6 +3367,200 @@ class CarryFocusedTests(unittest.TestCase):
         finally:
             payout_helper.wallet_readonly_call = original_wallet_readonly_call
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_send_once_sent_row_is_treated_as_already_paid(self):
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
+        try:
+            wallet = "walletSENT000000000000000001"
+            candidate_id = "candsentpaid0000000000000001"
+            self.actions_log.write_text(json.dumps({
+                "candidate_id": candidate_id,
+                "wallet": wallet,
+                "amount": 13030.875,
+                "txid": "txidsentpaid000000000000000001",
+                "status": "sent",
+                "timestamp": "2026-06-07T17:49:24.005055Z",
+            }) + "\n", encoding="utf-8")
+            self._write_same_wallet_candidates([candidate_id], reward=20000.0, wallet=wallet)
+
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+            item = self._load_output()["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_already_paid")
+            self.assertEqual(item["payouts"], [])
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_legacy_manual_record_payment_row_is_treated_as_already_paid(self):
+        wallet = "walletLEGACY0000000000000001"
+        candidate_id = "candlegacypaid00000000000001"
+        self.actions_log.write_text(json.dumps({
+            "candidate_id": candidate_id,
+            "wallet": wallet,
+            "amount": 500.0,
+            "txid": "txidlegacypaid00000000000001",
+        }) + "\n", encoding="utf-8")
+
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, candidate_id, wallet))
+
+    def test_manual_payment_recorded_action_is_treated_as_already_paid(self):
+        wallet = "walletACTION0000000000000001"
+        candidate_id = "candactionpaid00000000000001"
+        self.actions_log.write_text(json.dumps({
+            "action": "manual_payment_recorded",
+            "candidate_id": candidate_id,
+            "wallet": wallet,
+            "amount": 500.0,
+            "txid": "txidactionpaid00000000000001",
+        }) + "\n", encoding="utf-8")
+
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, candidate_id, wallet))
+
+    def test_paid_aggregate_is_not_emitted_again_or_reused_as_carry(self):
+        import os
+        original_wallet_readonly_call = payout_helper.wallet_readonly_call
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
+        try:
+            payout_helper.wallet_readonly_call = lambda method, params: (
+                50000.0 if method == "getbalance" else {"isvalid": True}
+            )
+            wallet = "walletAGG000000000000000001"
+            candidate_ids = [
+                "candaggone000000000000000001",
+                "candaggtwo000000000000000001",
+                "candaggthr000000000000000001",
+                "candaggfour00000000000000001",
+                "candaggfive00000000000000001",
+                "candaggsix000000000000000001",
+            ]
+            self._write_same_wallet_candidates(candidate_ids, reward=4387.5, wallet=wallet)
+
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+            first_items = self._load_output()["items"]
+            first_pending = [
+                item["candidateId"]
+                for item in first_items
+                if item["payouts"] and item["payouts"][0]["status"] == "pending_manual_payment"
+            ]
+            self.assertEqual(first_pending, [candidate_ids[2], candidate_ids[5]])
+
+            dry_run_path = self.tmp_path / "payout-wallet-dry-run.json"
+            rc_dry = payout_helper.payout_wallet_dry_run(self.output_path, dry_run_path)
+            self.assertEqual(rc_dry, 0)
+            with dry_run_path.open("r", encoding="utf-8") as f:
+                first_dry_run = json.load(f)
+            self.assertEqual(first_dry_run["readyCount"], 2)
+            self.assertAlmostEqual(first_dry_run["totalReadyAmount"], 26061.75)
+
+            self.actions_log.write_text(json.dumps({
+                "candidate_id": candidate_ids[2],
+                "wallet": wallet,
+                "amount": 13030.875,
+                "txid": "txidaggregatepaid000000000001",
+                "status": "sent",
+                "carrySourceCandidateIds": candidate_ids[:3],
+                "carrySourceCount": 3,
+                "timestamp": "2026-06-07T17:49:24.005055Z",
+            }) + "\n", encoding="utf-8")
+            self.output_path.unlink()
+
+            rc = self._run_candidates(carry=None)
+            self.assertEqual(rc, 0)
+            regenerated = self._load_output()["items"]
+            by_id = {item["candidateId"]: item for item in regenerated}
+            for paid_source_id in candidate_ids[:3]:
+                self.assertEqual(by_id[paid_source_id]["status"], "blocked")
+                self.assertEqual(by_id[paid_source_id]["reason"], "blocked_already_paid")
+                self.assertEqual(by_id[paid_source_id]["payouts"], [])
+
+            second_pending = [
+                item["payouts"][0]
+                for item in regenerated
+                if item["payouts"] and item["payouts"][0]["status"] == "pending_manual_payment"
+            ]
+            self.assertEqual(len(second_pending), 1)
+            self.assertEqual(second_pending[0]["carrySourceCandidateIds"], candidate_ids[3:])
+            for paid_source_id in candidate_ids[:3]:
+                self.assertNotIn(paid_source_id, second_pending[0]["carrySourceCandidateIds"])
+
+            rc_dry = payout_helper.payout_wallet_dry_run(self.output_path, dry_run_path)
+            self.assertEqual(rc_dry, 0)
+            with dry_run_path.open("r", encoding="utf-8") as f:
+                second_dry_run = json.load(f)
+            self.assertEqual(second_dry_run["readyCount"], 1)
+            self.assertAlmostEqual(second_dry_run["totalReadyAmount"], 13030.875)
+            self.assertEqual(second_dry_run["items"][0]["candidateId"], candidate_ids[5])
+        finally:
+            payout_helper.wallet_readonly_call = original_wallet_readonly_call
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def test_paid_action_with_carry_sources_marks_all_sources_paid(self):
+        wallet = "walletPAIDAGG000000000000001"
+        aggregate_id = "candpaidagg0000000000000001"
+        source_ids = [
+            "candpaidaggsrc00000000000001",
+            "candpaidaggsrc00000000000002",
+            aggregate_id,
+        ]
+        self.actions_log.write_text(json.dumps({
+            "candidate_id": aggregate_id,
+            "wallet": wallet,
+            "amount": 13030.875,
+            "txid": "txidpaidagg0000000000000001",
+            "status": "sent",
+            "carrySourceCandidateIds": source_ids,
+            "carrySourceCount": 3,
+        }) + "\n", encoding="utf-8")
+
+        paid_pairs = payout_helper.load_paid_payment_pairs(self.actions_log)
+
+        for source_id in source_ids:
+            self.assertIn((source_id, wallet), paid_pairs)
+
+    def test_metadata_repair_row_expands_paid_sources_without_duplicate_payment(self):
+        wallet = "walletREPAIR000000000000001"
+        aggregate_id = "candrepairagg00000000000001"
+        source_ids = [
+            "candrepairsrc00000000000001",
+            "candrepairsrc00000000000002",
+            aggregate_id,
+        ]
+        original_action = {
+            "candidate_id": aggregate_id,
+            "wallet": wallet,
+            "amount": 13030.875,
+            "txid": "txidrepairpaid0000000000001",
+            "status": "sent",
+            "timestamp": "2026-06-07T17:49:24.005055Z",
+        }
+        repair_action = {
+            "candidate_id": aggregate_id,
+            "wallet": wallet,
+            "amount": 13030.875,
+            "txid": "txidrepairpaid0000000000001",
+            "status": "sent",
+            "timestamp": "2026-06-08T00:00:00Z",
+            "carrySourceCandidateIds": source_ids,
+            "carrySourceCount": 3,
+        }
+        self.actions_log.write_text(
+            json.dumps(original_action) + "\n" + json.dumps(repair_action) + "\n",
+            encoding="utf-8",
+        )
+
+        paid_pairs = payout_helper.load_paid_payment_pairs(self.actions_log)
+        for source_id in source_ids:
+            self.assertIn((source_id, wallet), paid_pairs)
+
+        rc = payout_helper.generate_payments_snapshot(self.actions_log, self.snapshot_path)
+        self.assertEqual(rc, 0)
+        with self.snapshot_path.open("r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+        self.assertEqual(len(snapshot["items"]), 1)
+        self.assertEqual(snapshot["items"][0]["txid"], "txidrepairpaid0000000000001")
 
     def test_already_paid_carry_source_is_not_reused(self):
         import os
@@ -3556,9 +4122,16 @@ class WalletSendOnceTests(unittest.TestCase):
                 os.environ[key] = value
         self.tmp_dir.cleanup()
 
-    def _write_candidate(self, *, amount=None, wallet=None, status="pending_manual_payment"):
+    def _write_candidate(self, *, amount=None, wallet=None, status="pending_manual_payment", payout_extra=None):
         payout_amount = self.amount if amount is None else amount
         payout_wallet = self.wallet if wallet is None else wallet
+        payout = {
+            "wallet": payout_wallet,
+            "amount": payout_amount,
+            "status": status,
+        }
+        if isinstance(payout_extra, dict):
+            payout.update(payout_extra)
         with self.candidates_path.open("w", encoding="utf-8") as f:
             json.dump({
                 "items": [{
@@ -3566,11 +4139,7 @@ class WalletSendOnceTests(unittest.TestCase):
                     "blockHash": self.candidate_id,
                     "height": 500,
                     "status": "ready_for_manual_review",
-                    "payouts": [{
-                        "wallet": payout_wallet,
-                        "amount": payout_amount,
-                        "status": status,
-                    }],
+                    "payouts": [payout],
                 }]
             }, f)
 
@@ -3828,6 +4397,42 @@ class WalletSendOnceTests(unittest.TestCase):
 
     @unittest.mock.patch('payout_helper.wallet_readonly_call')
     @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_successful_send_records_carry_metadata_in_action(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        self._install_noop_cli()
+        source_ids = [
+            "candsendsrc0000000000000001",
+            "candsendsrc0000000000000002",
+            self.candidate_id,
+        ]
+        self._write_candidate(payout_extra={
+            "carrySourceCandidateIds": source_ids,
+            "carrySourceCount": 3,
+            "carryInAmount": 80.0,
+            "baseAmount": 20.0,
+            "sourceCandidateIds": source_ids[:2],
+        })
+        txid = "txidcarrymeta000000000000001"
+        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
+
+        rc = self._run_send_once()
+        self.assertEqual(rc, 0)
+
+        with self.actions_log.open("r", encoding="utf-8") as f:
+            actions = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(actions), 1)
+        action = actions[0]
+        self.assertEqual(action["status"], "sent")
+        self.assertEqual(action["txid"], txid)
+        self.assertEqual(action["carrySourceCandidateIds"], source_ids)
+        self.assertEqual(action["carrySourceCount"], 3)
+        self.assertAlmostEqual(action["carryInAmount"], 80.0)
+        self.assertAlmostEqual(action["baseAmount"], 20.0)
+        self.assertEqual(action["sourceCandidateIds"], source_ids[:2])
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
     def test_budget_exceeded_under_lock_blocks_send(self, mock_run, mock_wallet):
         self._enable_real_once()
         self._write_candidate()
@@ -4018,6 +4623,22 @@ class WalletSendPreflightTests(unittest.TestCase):
         }) + "\n", encoding="utf-8")
 
         rc = self._run_preflight()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._read_result()["status"], "blocked_already_paid")
+
+    def test_preflight_rejects_paid_aggregate_sent_row(self):
+        self._enable_real_once()
+        self._write_candidate(amount=13030.875)
+        self.actions_log.write_text(json.dumps({
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": 13030.875,
+            "txid": "txidaggregatepaid000000000001",
+            "status": "sent",
+            "timestamp": "2026-06-07T17:49:24.005055Z",
+        }) + "\n", encoding="utf-8")
+
+        rc = self._run_preflight(amount=13030.875)
         self.assertEqual(rc, 0)
         self.assertEqual(self._read_result()["status"], "blocked_already_paid")
 
