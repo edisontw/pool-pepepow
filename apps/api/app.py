@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+import time
 from http import HTTPStatus
 from typing import Any
 
@@ -436,6 +438,50 @@ def create_app(config: AppConfig | None = None) -> Flask:
             }
         )
 
+    @app.get("/api/stats")
+    def mining_pool_stats():
+        try:
+            record = get_snapshot_record()
+        except SnapshotUnavailableError:
+            record = None
+        return jsonify(
+            _build_mining_pool_stats_payload(
+                record,
+                _load_json_items(
+                    app_config.activity_snapshot_path.parent / "accepted-candidates.json",
+                    app_config.runtime_snapshot_path.parent / "accepted-candidates.json",
+                    "accepted_candidates",
+                ),
+                _load_json_items(
+                    app_config.activity_snapshot_path.parent / "payments-snapshot.json",
+                    app_config.runtime_snapshot_path.parent / "payments-snapshot.json",
+                    "items",
+                ),
+            )
+        )
+
+    @app.get("/api/status")
+    def mining_pool_status():
+        try:
+            record = get_snapshot_record()
+        except SnapshotUnavailableError:
+            record = None
+        pool_hashrate = _pool_hashrate(record)
+        active_workers = _active_worker_count(record)
+        return jsonify(
+            {
+                "hoohashv110": {
+                    "name": "hoohashv110",
+                    "port": 39333,
+                    "coins": 1,
+                    "fees": 1,
+                    "hashrate": pool_hashrate,
+                    "workers": active_workers,
+                    "hashrate_last24h": pool_hashrate,
+                }
+            }
+        )
+
     return app
 
 
@@ -445,6 +491,193 @@ def _placeholder_fields(snapshot: dict[str, Any]) -> list[str]:
     if isinstance(placeholder_fields, list):
         return [field for field in placeholder_fields if isinstance(field, str)]
     return []
+
+
+def _load_json_items(primary_path, fallback_path, item_key: str) -> list[dict[str, Any]]:
+    path = primary_path if primary_path.exists() else fallback_path
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    items = data.get(item_key, [])
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed != parsed:
+        return default
+    return parsed
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_hashrate(value: Any) -> str:
+    hashrate = _as_float(value)
+    units = ("H", "KH", "MH", "GH")
+    unit_index = 0
+    while abs(hashrate) >= 1000 and unit_index < len(units) - 1:
+        hashrate /= 1000.0
+        unit_index += 1
+    if hashrate == 0:
+        rendered = "0"
+    elif abs(hashrate) >= 100:
+        rendered = f"{hashrate:.0f}"
+    elif abs(hashrate) >= 10:
+        rendered = f"{hashrate:.1f}"
+    else:
+        rendered = f"{hashrate:.2f}".rstrip("0").rstrip(".")
+    return f"{rendered} {units[unit_index]}"
+
+
+def _pool_hashrate(record: SnapshotRecord | None) -> float:
+    if record is None:
+        return 0.0
+    pool = record.data.get("pool", {})
+    if not isinstance(pool, dict):
+        return 0.0
+    return _as_float(pool.get("poolHashrate"))
+
+
+def _active_worker_count(record: SnapshotRecord | None) -> int:
+    if record is None:
+        return 0
+    pool = record.data.get("pool", {})
+    if not isinstance(pool, dict):
+        return 0
+    return _as_int(pool.get("activeWorkers"))
+
+
+def _active_miner_workers(record: SnapshotRecord | None) -> dict[str, dict[str, Any]]:
+    if record is None:
+        return {}
+    miners = record.data.get("miners", {})
+    if not isinstance(miners, dict):
+        return {}
+
+    workers: dict[str, dict[str, Any]] = {}
+    for wallet, miner_data in miners.items():
+        if not isinstance(wallet, str) or not isinstance(miner_data, dict):
+            continue
+        for worker in miner_data.get("workers", []):
+            if not isinstance(worker, dict):
+                continue
+            worker_name = str(worker.get("name") or "default")
+            key = f"{wallet}.{worker_name}"
+            hashrate = _as_float(worker.get("hashrate"))
+            share_count = _as_float(
+                worker.get("shareCount", worker.get("acceptedShares", 0.0))
+            )
+            workers[key] = {
+                "shares": share_count,
+                "invalidshares": 0,
+                "hashrateString": _format_hashrate(hashrate),
+            }
+    return workers
+
+
+def _share_counts(record: SnapshotRecord | None) -> tuple[int, int]:
+    if record is None:
+        return 0, 0
+    miners = record.data.get("miners", {})
+    if not isinstance(miners, dict):
+        return 0, 0
+    accepted = 0
+    rejected = 0
+    for miner_data in miners.values():
+        if not isinstance(miner_data, dict):
+            continue
+        summary = miner_data.get("summary", {})
+        if not isinstance(summary, dict):
+            continue
+        accepted += _as_int(summary.get("acceptedShares"))
+        rejected += _as_int(summary.get("rejectedShares"))
+    return accepted, rejected
+
+
+def _block_counts(accepted_candidates: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"pending": 0, "confirmed": 0, "orphaned": 0}
+    for candidate in accepted_candidates:
+        status = str(candidate.get("lifecycle_status") or candidate.get("lifecycleStatus") or "").lower()
+        maturity = str(candidate.get("maturity_label") or candidate.get("maturityLabel") or "").lower()
+        if status == "confirmed" or maturity == "mature":
+            counts["confirmed"] += 1
+        elif status == "orphan" or "orphan" in maturity:
+            counts["orphaned"] += 1
+        elif status:
+            counts["pending"] += 1
+    return counts
+
+
+def _total_paid(payments: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for payment in payments:
+        total += _as_float(payment.get("amount"))
+    return total
+
+
+def _build_mining_pool_stats_payload(
+    record: SnapshotRecord | None,
+    accepted_candidates: list[dict[str, Any]],
+    payments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    pool_hashrate = _pool_hashrate(record)
+    active_workers = _active_worker_count(record)
+    accepted_shares, rejected_shares = _share_counts(record)
+    block_counts = _block_counts(accepted_candidates)
+    total_paid = _total_paid(payments)
+    workers = _active_miner_workers(record)
+    hashrate_string = _format_hashrate(pool_hashrate)
+
+    return {
+        "time": int(time.time()),
+        "global": {
+            "workers": active_workers,
+            "hashrate": pool_hashrate,
+        },
+        "algos": {
+            "hoohashv110": {
+                "workers": active_workers,
+                "hashrate": pool_hashrate,
+                "hashrateString": hashrate_string,
+            }
+        },
+        "pools": {
+            "hoohashv110-pepew": {
+                "name": "hoohashv110-pepew",
+                "symbol": "PEPEW",
+                "algorithm": "hoohashv110",
+                "fee": "1",
+                "feeType": "PPLNS",
+                "poolStats": {
+                    "validShares": str(accepted_shares),
+                    "validBlocks": str(block_counts["confirmed"]),
+                    "invalidShares": str(rejected_shares),
+                    "totalPaid": str(total_paid),
+                },
+                "blocks": block_counts,
+                "workers": workers,
+                "hashrate": pool_hashrate,
+                "workerCount": active_workers,
+                "hashrateString": hashrate_string,
+            }
+        },
+    }
 
 
 app = create_app()

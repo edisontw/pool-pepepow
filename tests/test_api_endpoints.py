@@ -950,5 +950,97 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(payload["recentPayments"], [])
             self.assertEqual(payload["totalPaidManual"], 0.0)
 
+    def test_stats_endpoint_returns_compatibility_shape(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            candidates_path = Path(tmp_dir) / "accepted-candidates.json"
+            candidates_path.write_text(
+                json.dumps({
+                    "accepted_candidates": [
+                        {"lifecycle_status": "confirmed"},
+                        {"lifecycle_status": "immature"},
+                        {"lifecycle_status": "orphan"},
+                    ]
+                }),
+                encoding="utf-8",
+            )
+            payments_path = Path(tmp_dir) / "payments-snapshot.json"
+            payments_path.write_text(
+                json.dumps({"items": [{"amount": 100.5}, {"amount": 9.5}]}),
+                encoding="utf-8",
+            )
+
+            app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
+            client = app.test_client()
+
+            response = client.get("/api/stats")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertIn("global", payload)
+            self.assertIn("hoohashv110", payload["algos"])
+            self.assertIn("hoohashv110-pepew", payload["pools"])
+            pool = payload["pools"]["hoohashv110-pepew"]
+            self.assertEqual(pool["symbol"], "PEPEW")
+            self.assertEqual(pool["algorithm"], "hoohashv110")
+            self.assertEqual(pool["workerCount"], 3)
+            self.assertEqual(pool["blocks"]["confirmed"], 1)
+            self.assertEqual(pool["blocks"]["pending"], 1)
+            self.assertEqual(pool["blocks"]["orphaned"], 1)
+            self.assertEqual(pool["poolStats"]["validShares"], "4")
+            self.assertEqual(pool["poolStats"]["invalidShares"], "1")
+            self.assertEqual(pool["poolStats"]["totalPaid"], "110.0")
+
+    def test_status_endpoint_returns_compatibility_shape(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
+            client = app.test_client()
+
+            response = client.get("/api/status")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertIn("hoohashv110", payload)
+            algo = payload["hoohashv110"]
+            self.assertEqual(algo["name"], "hoohashv110")
+            self.assertEqual(algo["port"], 39333)
+            self.assertEqual(algo["coins"], 1)
+            self.assertEqual(algo["fees"], 1)
+            self.assertEqual(algo["workers"], 3)
+            self.assertEqual(algo["hashrate"], 57266230.61333334)
+            self.assertEqual(algo["hashrate_last24h"], 57266230.61333334)
+            self.assertNotIn("estimate_current", algo)
+            self.assertNotIn("actual_last24h", algo)
+            self.assertNotIn("rental_current", algo)
+            self.assertNotIn("24h_btc", algo)
+
+    def test_stats_and_status_missing_snapshots_do_not_500(self):
+        missing_path = REPO_ROOT / "apps" / "api" / "data" / "mock" / "missing.json"
+        app = create_app(make_config(missing_path, missing_path))
+        client = app.test_client()
+
+        stats_response = client.get("/api/stats")
+        self.assertEqual(stats_response.status_code, 200)
+        stats_payload = stats_response.get_json()
+        self.assertEqual(stats_payload["global"]["workers"], 0)
+        self.assertEqual(stats_payload["global"]["hashrate"], 0.0)
+        self.assertIn("hoohashv110-pepew", stats_payload["pools"])
+
+        status_response = client.get("/api/status")
+        self.assertEqual(status_response.status_code, 200)
+        status_payload = status_response.get_json()
+        self.assertIn("hoohashv110", status_payload)
+        self.assertEqual(status_payload["hoohashv110"]["workers"], 0)
+        self.assertEqual(status_payload["hoohashv110"]["hashrate"], 0.0)
+
 if __name__ == "__main__":
     unittest.main()
