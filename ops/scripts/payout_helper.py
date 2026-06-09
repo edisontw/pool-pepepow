@@ -18,6 +18,7 @@ import subprocess
 import fcntl
 import socket
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 from typing import Any
 
@@ -401,11 +402,37 @@ PEPEPOW_MINER_SPLIT_RATIO = 0.65
 PEPEPOW_MASTERNODE_SPLIT_RATIO = 0.35
 PEPEPOW_SPECIAL_REWARD_AMOUNT = 250.0
 PEPEPOW_REWARD_MATCH_TOLERANCE = 0.00000001
+PEPEPOW_PAYOUT_SEND_QUANTUM = Decimal("0.001")
 DEFAULT_POOL_REWARD_ADDRESS = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
 
 
 def _amount_matches(actual: float, expected: float) -> bool:
     return abs(actual - expected) <= PEPEPOW_REWARD_MATCH_TOLERANCE
+
+
+def _normalize_payout_send_amount(value: Any) -> str | None:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite() or amount <= 0:
+        return None
+    normalized = amount.quantize(PEPEPOW_PAYOUT_SEND_QUANTUM, rounding=ROUND_DOWN)
+    return format(normalized, "f").rstrip("0").rstrip(".")
+
+
+def _payout_send_amount_matches(actual: Any, expected: Any) -> bool:
+    try:
+        actual_float = float(actual)
+        expected_float = float(expected)
+    except (TypeError, ValueError):
+        return False
+    if abs(actual_float - expected_float) <= 1e-8:
+        return True
+    return (
+        _normalize_payout_send_amount(actual)
+        == _normalize_payout_send_amount(expected)
+    )
 
 
 def expected_pool_reward_address() -> str:
@@ -2296,7 +2323,7 @@ def payout_wallet_send_preflight(
     except (TypeError, ValueError):
         return finish("blocked_amount_mismatch")
 
-    if abs(payout_amount - expected_amount) > 1e-8:
+    if not _payout_send_amount_matches(payout_amount, expected_amount):
         return finish("blocked_amount_mismatch")
 
     if payment_already_recorded(actions_log_path, candidate_id, wallet):
@@ -2449,7 +2476,7 @@ def payout_wallet_send_once(
     except (TypeError, ValueError):
         return finish("blocked_amount_mismatch")
 
-    if abs(payout_amount - expected_amount) > 1e-8:
+    if not _payout_send_amount_matches(payout_amount, expected_amount):
         return finish("blocked_amount_mismatch")
 
     if payment_already_recorded(actions_log_path, candidate_id, wallet):
@@ -2610,7 +2637,7 @@ def auto_payout_once(
         max_sends = int(max_sends)
     except (TypeError, ValueError):
         max_sends = 5
-    max_sends = max(0, min(max_sends, 5))
+    max_sends = max(0, max_sends)
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     items: list[dict[str, Any]] = []
     send_invocations = 0
@@ -2708,6 +2735,10 @@ def auto_payout_once(
                 if amount < min_payout:
                     append_skip(c_id, wallet, amount, "below_threshold")
                     continue
+                send_amount = _normalize_payout_send_amount(amount_raw)
+                if send_amount is None:
+                    append_skip(c_id, wallet, amount_raw, "amount_invalid")
+                    continue
                 if payment_already_recorded(actions_log_path, c_id, wallet):
                     append_skip(c_id, wallet, amount, "blocked_already_paid")
                     continue
@@ -2726,7 +2757,7 @@ def auto_payout_once(
                     send_output,
                     c_id,
                     wallet,
-                    amount,
+                    send_amount,
                 )
                 send_status = "unknown"
                 if send_output.exists():
@@ -2742,7 +2773,7 @@ def auto_payout_once(
                 items.append({
                     "candidateId": c_id,
                     "wallet": wallet,
-                    "amount": amount,
+                    "amount": send_amount,
                     "action": "send_once",
                     "sendOnceRc": rc,
                     "sendOnceStatus": send_status,
@@ -2849,12 +2880,17 @@ def main() -> int:
     parser_preflight.add_argument("--wallet", type=str, required=True, help="Wallet address to preflight")
     parser_preflight.add_argument("--amount", type=float, required=True, help="Exact amount to preflight")
 
+    try:
+        auto_max_sends_default = int(os.getenv("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS", "5"))
+    except (TypeError, ValueError):
+        auto_max_sends_default = 5
+
     parser_auto = subparsers.add_parser("auto-payout-once", help="Run one guarded self-test auto payout pass")
     parser_auto.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_auto.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
     parser_auto.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
     parser_auto.add_argument("--output", type=str, required=True, help="Path to output auto-payout-once-result.json")
-    parser_auto.add_argument("--max-sends", type=int, default=5, help="Maximum send-once invocations for this run")
+    parser_auto.add_argument("--max-sends", type=int, default=auto_max_sends_default, help="Maximum send-once invocations for this run")
     parser_auto.add_argument("--min-payout", type=float, default=1000.0, help="Minimum payout amount")
     parser_auto.add_argument("--allowed-wallet", action="append", default=[], help="Allowed wallet address; repeatable")
 

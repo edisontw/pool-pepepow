@@ -1141,17 +1141,21 @@ auto_payout_once_service() {
 
   local followup_count max_sends min_payout wallet_max_sends allowed_wallet
   followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-5}"
-  max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-5}"
   min_payout="1000"
-  wallet_max_sends="10"
+  wallet_max_sends="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-${REAL_WALLET_PAYOUT_MAX_SENDS:-10}}"
+  max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-${wallet_max_sends}}"
   allowed_wallet="PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"
 
   if [[ ! "${followup_count}" =~ ^[0-9]+$ ]] || [[ "${followup_count}" -lt 1 ]]; then
     echo "auto-payout-once followup count must be a positive integer" >&2
     return 1
   fi
-  if [[ ! "${max_sends}" =~ ^[0-9]+$ ]] || [[ "${max_sends}" -lt 1 ]] || [[ "${max_sends}" -gt 5 ]]; then
-    echo "auto-payout-once max sends must be between 1 and 5" >&2
+  if [[ ! "${wallet_max_sends}" =~ ^[0-9]+$ ]] || [[ "${wallet_max_sends}" -lt 1 ]]; then
+    echo "auto-payout-once wallet max sends must be a positive integer" >&2
+    return 1
+  fi
+  if [[ ! "${max_sends}" =~ ^[0-9]+$ ]] || [[ "${max_sends}" -lt 1 ]]; then
+    echo "auto-payout-once max sends must be a positive integer" >&2
     return 1
   fi
 

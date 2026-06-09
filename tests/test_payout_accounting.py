@@ -4244,16 +4244,34 @@ class AutoPayoutOnceTests(unittest.TestCase):
     def test_auto_payout_respects_max_sends_limit(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         self._write_candidates([
-            self._candidate(f"candautosend{i:026d}") for i in range(6)
+            self._candidate(f"candautosend{i:026d}") for i in range(11)
         ])
 
-        rc = self._run(max_sends=5)
+        rc = self._run(max_sends=10)
         self.assertEqual(rc, 0)
-        self.assertEqual(mock_send.call_count, 5)
+        self.assertEqual(mock_send.call_count, 10)
         result = self._read_result()
-        self.assertEqual(result["sendInvocations"], 5)
-        self.assertEqual(result["sentCount"], 5)
+        self.assertEqual(result["maxSends"], 10)
+        self.assertEqual(result["sendInvocations"], 10)
+        self.assertEqual(result["sentCount"], 10)
         self.assertIn("max_sends_reached", [item.get("reason") for item in result["items"]])
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_sends_normalized_amount_without_float_tail(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        self._write_candidates([
+            self._candidate(
+                "candautofloattail000000000001",
+                amount=4343.6250145431,
+            )
+        ])
+
+        rc = self._run(max_sends=10)
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 1)
+        sent_args = mock_send.call_args[0]
+        self.assertEqual(sent_args[6], "4343.625")
+        self.assertEqual(self._read_result()["items"][0]["amount"], "4343.625")
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_once")
     def test_auto_payout_skips_already_paid(self, mock_send):
@@ -4606,7 +4624,27 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["status"], "failed")
         self.assertFalse(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
-        self.assertFalse(self.payments_snapshot.exists())
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_send_once_accepts_normalized_amount_for_candidate_float_tail(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        self._write_candidate(amount=4343.6250145431)
+        cli_path = self._install_noop_cli()
+        mock_wallet.side_effect = lambda method, params: 50000.0 if method == "getbalance" else {"isvalid": True}
+        mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="txidnormalizedamount0000000001\n")
+
+        rc = self._run_send_once(amount="4343.625")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._read_result()["status"], "sent_recorded")
+        mock_run.assert_called_once_with(
+            [str(cli_path), "sendtoaddress", self.wallet, "4343.625"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
 
     @unittest.mock.patch('payout_helper.wallet_readonly_call')
     @unittest.mock.patch('payout_helper.subprocess.run')

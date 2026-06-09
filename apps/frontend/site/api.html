@@ -42,17 +42,43 @@
         <section class="panel">
           <h2>Quick external integration</h2>
           <p class="muted">
-            Use these endpoints for dashboards, monitoring, and simple scripts. Responses are JSON and may change as the public pool view improves, so integrations should ignore fields they do not need.
+            Use the stats endpoint for MiningPoolStats and external pool listing sites. Use the status endpoint only when a parser expects a zpool/YiiMP-style object. Detailed endpoints are also available for dashboards and simple scripts.
           </p>
-          <pre class="code-block">curl -fsS https://pool.pepepow.net/api/pool/summary</pre>
+          <div class="kv-list">
+            <div><span>Main stats API</span><strong><code>https://pool.pepepow.net/api/stats</code></strong></div>
+            <div><span>Secondary compatibility API</span><strong><code>https://pool.pepepow.net/api/status</code></strong></div>
+            <div><span>Pool summary</span><strong><code>https://pool.pepepow.net/api/pool/summary</code></strong></div>
+            <div><span>Network summary</span><strong><code>https://pool.pepepow.net/api/network/summary</code></strong></div>
+            <div><span>Blocks</span><strong><code>https://pool.pepepow.net/api/blocks</code></strong></div>
+            <div><span>Payments</span><strong><code>https://pool.pepepow.net/api/payments</code></strong></div>
+            <div><span>Accepted candidates</span><strong><code>https://pool.pepepow.net/api/accepted-candidates</code></strong></div>
+          </div>
+          <pre class="code-block">curl -s https://pool.pepepow.net/api/stats | jq
+curl -s https://pool.pepepow.net/api/status | jq</pre>
         </section>
 
         <section class="panel">
           <h2>Endpoints</h2>
           <div class="list-state">
             <article class="item-card">
+              <h3>GET /api/stats</h3>
+              <p class="muted">Purpose: Return a NOMP-like pool stats format for MiningPoolStats and external pool listing sites.</p>
+              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/stats</code></p>
+              <pre class="code-block">curl -s https://pool.pepepow.net/api/stats | jq</pre>
+              <p class="muted">Expected use: main public stats API for pool listings. Includes global workers and hashrate, algo summary, pool summary, worker summary, block counts, and payment totals where available.</p>
+            </article>
+
+            <article class="item-card">
+              <h3>GET /api/status</h3>
+              <p class="muted">Purpose: Return a minimal zpool/YiiMP-like status object for compatibility fallback.</p>
+              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/status</code></p>
+              <pre class="code-block">curl -s https://pool.pepepow.net/api/status | jq</pre>
+              <p class="muted">Expected use: secondary compatibility endpoint only. It does not include fake profitability or rental fields.</p>
+            </article>
+
+            <article class="item-card">
               <h3>GET /api/health</h3>
-              <p class="muted">Purpose: Check whether the public API is reachable.</p>
+              <p class="muted">Purpose: Check whether the public API is reachable. This is a health check only, not the main stats API.</p>
               <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/health</code></p>
               <pre class="code-block">curl -fsS https://pool.pepepow.net/api/health</pre>
               <p class="muted">Expected use: uptime checks and simple service monitoring.</p>
@@ -111,7 +137,9 @@
         <section class="panel">
           <h2>Safety and boundaries</h2>
           <ul class="text-list">
-            <li>The public API is read-only and intended for website and community status integrations.</li>
+            <li>These endpoints are read-only and intended for website and community status integrations.</li>
+            <li>Stats responses are derived from existing pool snapshots.</li>
+            <li>They do not expose daemon RPC, wallet RPC, submit controls, admin controls, or runtime JSONL files.</li>
             <li>Do not depend on private operational details; only use the public JSON fields your integration needs.</li>
             <li>Payment data is informational and reflects records visible through the public pool website.</li>
             <li>Use reasonable polling intervals so community dashboards do not overload the pool website.</li>
