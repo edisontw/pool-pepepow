@@ -72,6 +72,7 @@ TEMPLATE_JOB_CACHE_SIZE=""
 REAL_SUBMITBLOCK_ENABLED=""
 REAL_SUBMITBLOCK_MAX_SENDS=""
 POOL_REWARD_ADDRESS=""
+MIN_PAYOUT=""
 RPC_HOST=""
 RPC_PORT=""
 RPC_URL=""
@@ -113,6 +114,7 @@ set_effective_defaults() {
   REAL_SUBMITBLOCK_ENABLED="${PEPEPOW_ENABLE_REAL_SUBMITBLOCK:-false}"
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
   POOL_REWARD_ADDRESS="${PEPEPOW_POOL_CORE_REWARD_ADDRESS:-PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho}"
+  MIN_PAYOUT="${PEPEPOW_MIN_PAYOUT:-100000.0}"
   REAL_WALLET_PAYOUT_ENABLED="${PEPEPOW_ENABLE_REAL_WALLET_PAYOUT:-false}"
   REAL_WALLET_PAYOUT_MAX_SENDS="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-1}"
   WALLET_CLI="${PEPEPOW_WALLET_CLI:-/home/ubuntu/PEPEPOW-cli}"
@@ -191,6 +193,7 @@ load_launch_env_if_present() {
   local loaded_real_submitblock_enabled
   local loaded_real_submitblock_max_sends
   local loaded_pool_reward_address
+  local loaded_min_payout
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_wallet_cli
@@ -223,6 +226,7 @@ load_launch_env_if_present() {
   loaded_real_submitblock_enabled="$(launch_env_value PEPEPOW_ENABLE_REAL_SUBMITBLOCK)"
   loaded_real_submitblock_max_sends="$(launch_env_value PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS)"
   loaded_pool_reward_address="$(launch_env_value PEPEPOW_POOL_CORE_REWARD_ADDRESS)"
+  loaded_min_payout="$(launch_env_value PEPEPOW_MIN_PAYOUT)"
   loaded_rpc_host="$(launch_env_value PEPEPOWD_RPC_HOST)"
   loaded_rpc_port="$(launch_env_value PEPEPOWD_RPC_PORT)"
   loaded_rpc_url="$(launch_env_value PEPEPOWD_RPC_URL)"
@@ -287,6 +291,9 @@ load_launch_env_if_present() {
   fi
   if [[ -z "${PEPEPOW_POOL_CORE_REWARD_ADDRESS+x}" && -n "${loaded_pool_reward_address}" ]]; then
     POOL_REWARD_ADDRESS="${loaded_pool_reward_address}"
+  fi
+  if [[ -z "${PEPEPOW_MIN_PAYOUT+x}" && -n "${loaded_min_payout}" ]]; then
+    MIN_PAYOUT="${loaded_min_payout}"
   fi
   if [[ -z "${PEPEPOWD_RPC_HOST+x}" && -n "${loaded_rpc_host}" ]]; then
     RPC_HOST="${loaded_rpc_host}"
@@ -379,6 +386,8 @@ template_job_ttl_seconds: ${TEMPLATE_JOB_TTL_SECONDS}
 template_job_cache_size: ${TEMPLATE_JOB_CACHE_SIZE}
 enable_real_submitblock: ${REAL_SUBMITBLOCK_ENABLED}
 real_submitblock_max_sends: ${REAL_SUBMITBLOCK_MAX_SENDS}
+pool_reward_address: ${POOL_REWARD_ADDRESS}
+min_payout: ${MIN_PAYOUT}
 rpc_host: ${RPC_HOST}
 rpc_port: ${RPC_PORT}
 rpc_url: ${RPC_URL}
@@ -550,6 +559,7 @@ PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE=${TEMPLATE_JOB_CACHE_SIZE}
 PEPEPOW_ENABLE_REAL_SUBMITBLOCK=${REAL_SUBMITBLOCK_ENABLED}
 PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=${REAL_SUBMITBLOCK_MAX_SENDS}
 PEPEPOW_POOL_CORE_REWARD_ADDRESS=${POOL_REWARD_ADDRESS}
+PEPEPOW_MIN_PAYOUT=${MIN_PAYOUT}
 PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=${REAL_WALLET_PAYOUT_ENABLED}
 PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=${REAL_WALLET_PAYOUT_MAX_SENDS}
 PEPEPOWD_RPC_HOST=${RPC_HOST}
@@ -583,12 +593,13 @@ print_snapshot_summary() {
     return
   fi
 
-  python3 - "${ACTIVITY_SNAPSHOT}" <<'PY'
+  python3 - "${ACTIVITY_SNAPSHOT}" "${POOL_REWARD_ADDRESS}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+pool_reward_address = sys.argv[2]
 payload = json.loads(path.read_text(encoding="utf-8"))
 meta = payload.get("meta", {})
 pool = payload.get("pool", {})
@@ -607,6 +618,7 @@ print(f"template_mode_effective: {meta.get('templateModeEffective')}")
 print(f"template_fetch_status: {meta.get('templateFetchStatus')}")
 print(f"template_daemon_rpc_status: {meta.get('templateDaemonRpcStatus')}")
 print(f"template_latest_age_seconds: {meta.get('templateLatestTemplateAgeSeconds')}")
+print(f"pool_reward_address: {pool_reward_address}")
 print(f"real_submit_enabled: {meta.get('realSubmitblockEnabled')}")
 print(f"real_submit_send_budget: {meta.get('realSubmitblockSendBudget')}")
 print(f"real_submit_send_budget_remaining: {meta.get('realSubmitblockSendBudgetRemaining')}")
@@ -644,12 +656,14 @@ drill_status_service() {
     return 1
   fi
 
-  python3 - "${ACTIVITY_SNAPSHOT}" <<'PY'
+  python3 - "${ACTIVITY_SNAPSHOT}" "${POOL_REWARD_ADDRESS}" "${MIN_PAYOUT}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+pool_reward_address = sys.argv[2]
+min_payout = sys.argv[3]
 payload = json.loads(path.read_text(encoding="utf-8"))
 meta = payload.get("meta", {})
 template_fetch_status = meta.get("templateFetchStatus")
@@ -662,6 +676,8 @@ print("drill_status: ready")
 print(f"template_mode_effective: {meta.get('templateModeEffective')}")
 print(f"template_fetch_status: {template_fetch_status}")
 print(f"template_daemon_rpc_reachable: {template_daemon_rpc_reachable}")
+print(f"pool_reward_address: {pool_reward_address}")
+print(f"min_payout: {min_payout}")
 print(f"real_submit_enabled: {real_submit_enabled}")
 print(f"real_submit_send_budget: {meta.get('realSubmitblockSendBudget')}")
 print(f"real_submit_send_budget_remaining: {meta.get('realSubmitblockSendBudgetRemaining')}")
@@ -2986,6 +3002,7 @@ start_service() {
   rotate_log_if_needed
   touch "${LOG_FILE}"
   printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "live-stratum start requested" >>"${LOG_FILE}"
+  printf '%s pool_reward_address=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "${POOL_REWARD_ADDRESS}" >>"${LOG_FILE}"
 
   (
     cd "${POOL_CORE_DIR}"

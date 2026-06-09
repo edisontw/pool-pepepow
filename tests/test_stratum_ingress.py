@@ -817,12 +817,19 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
         )
 
         first_output = authoritative_context["outputSummaries"][0]
+        coinb2_bytes = bytes.fromhex(_coinb2)
+        script_length = coinb2_bytes[13]
+        serialized_first_output_script = coinb2_bytes[14 : 14 + script_length].hex()
+
         self.assertEqual(first_output["kind"], "pool-miner-reward")
         self.assertEqual(first_output["address"], "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho")
         self.assertEqual(
             first_output["scriptHex"],
             "76a914774b5900d43b25b51476d00967a45f1d5daa4e1088ac",
         )
+        self.assertEqual(serialized_first_output_script, first_output["scriptHex"])
+        self.assertNotEqual(serialized_first_output_script, "51")
+        self.assertNotIn("504b547771336e484e", serialized_first_output_script)
         self.assertFalse(first_output["placeholderScript"])
         self.assertFalse(preimage_context["placeholderPayout"])
         self.assertEqual(
@@ -6951,6 +6958,5 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         
         meets_block_target = daemon_hash_int <= target_int
         self.assertFalse(meets_block_target)
-
 
 
