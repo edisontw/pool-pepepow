@@ -33,10 +33,16 @@
             <p class="eyebrow">Algorithm</p>
             <h2 id="algorithm">Loading...</h2>
             <p class="muted">
-              A community-operated PEPEPOW pool implementation focused on stability, transparency, and reproducible deployment. 
-              Public mining endpoint and share tracking are active, with manual payment records available. 
-              Built as a reference community pool, not a large-scale commercial operation.
+              Public PEPEPOW mining is available through the Stratum endpoint below.
+              Accepted shares are tracked pool-side, and recorded payments are published for transparency after review.
+              This is a community-operated PEPEPOW-only pool, not a large-scale commercial operation.
             </p>
+            <div class="quick-facts">
+              <div><span>Pool online?</span><strong id="pool-status-inline">Checking API</strong></div>
+              <div><span>How to mine</span><strong><a href="/connect.html">Use your PEPEPOW wallet as username</a></strong></div>
+              <div><span>Stratum</span><strong>pool.pepepow.net:39333</strong></div>
+              <div><span>Payments</span><strong>Recorded payments after operator review</strong></div>
+            </div>
           </div>
           <div class="status-stack">
             <div class="status-badge" id="pool-status">Checking status</div>
@@ -60,13 +66,20 @@
               <strong id="active-workers">-</strong>
             </article>
             <article>
-              <span>Last Block Found</span>
+              <span>Last confirmed block shown</span>
               <strong id="last-block-time">-</strong>
             </article>
           </div>
           <p class="muted small-gap" style="font-size: 0.85rem; margin-top: 1rem;">
             * Estimated from pool-accepted shares and current pool difficulty settings. Miner-reported hashrate may differ.
           </p>
+          <div class="info-note">
+            <strong>What these numbers mean</strong>
+            <p>
+              Active miners/workers and share-rate are pool-side estimates from recent accepted shares.
+              They are useful for pool visibility, but they are not exact local GPU hashrate or a payment statement.
+            </p>
+          </div>
         </section>
 
         <section class="panel">
@@ -89,7 +102,7 @@
             <code id="stratum-endpoint">stratum+tcp://pool.pepepow.net:39333</code>
           </div>
           <p class="muted small-gap">
-            The public mining endpoint is open to the community. Accepted shares are tracked pool-side, and manual payment records are updated transparently.
+            Start with the connection guide, then check your wallet on Miner Lookup after your first accepted share appears.
           </p>
           <a class="button" href="/connect.html">Open connection guide</a>
         </section>

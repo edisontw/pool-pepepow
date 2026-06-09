@@ -1,133 +1,124 @@
 # pool-pepepow
 
-PEPEPOW community pool skeleton for a single low-resource ARM64 Ubuntu host.
+PEPEPOW-only community pool implementation for a single operator-managed Ubuntu host.
+
+The current project provides a public static website, a read-only public API, active
+Stratum ingress, daemon-template-backed mining, candidate follow-up, controlled
+submitblock validation, and payout review tooling. Manual payment records are public.
+A private operator-owned auto wallet payout self-test exists, but this is not public automatic payout readiness.
+
+## Quick Links
+
+- How to deploy: [Quickstart](docs/deploy-pepepow-pool-quickstart.md), [Oracle Ubuntu deployment](docs/oracle-ubuntu-deployment.md), and [deployment plan](docs/deployment-plan.md)
+- Architecture: [Architecture](docs/architecture.md)
+- API docs: [Public API page](apps/frontend/site/api.html)
+- Operations/runbooks: [Runbooks](docs/runbooks/README.md)
+- Prelaunch checklist: [docs/runbooks/prelaunch-checklist.md](docs/runbooks/prelaunch-checklist.md)
+- Benchmarks/milestones: [Benchmarks](docs/benchmarks/)
 
 ## Current Scope
 
-This repository currently contains:
+This repository currently includes:
 
-- a lightweight public API service
-- a static frontend that reads the API only
-- a minimal `pool-core` runtime snapshot producer
-- a daemon-independent Stratum ingress service with synthetic Stratum v1 job broadcast
-- a local JSONL share ingest and accounting pipeline
-- bounded JSONL rotation/retention plus snapshot-first replay
-- systemd/nginx/env deployment examples
-- fallback mock snapshot data
+- PEPEPOW-only pool services; no multi-coin support.
+- Static frontend that reads the public API only.
+- Flask/Waitress public API backed by snapshot files.
+- Stratum ingress for PEPEPOW mining clients.
+- Daemon-template-backed job path for live mining.
+- Candidate handling, follow-up observation, and guarded submitblock tooling.
+- Controlled/self-test submitblock path validation.
+- Round accounting, payout candidate generation, and manual payment records.
+- Private operator-owned auto wallet payout self-test tooling.
+- Systemd, nginx, and environment examples for deployment.
 
-This round still does not implement:
+This repository does not provide:
 
-- real share validation against daemon templates
-- real block template retrieval
-- candidate block handling or `submitblock`
-- payout automation
-- Redis-backed runtime accounting
+- multi-coin pool routing
+- exchange payout integration
+- user accounts or login
+- public daemon RPC
+- public wallet RPC
+- public admin payout controls
+- Redis-backed runtime dependency
+- a claim of public automatic payout readiness
+
+Redis is not required for the current deployment model.
 
 ## Services
 
-- `apps/api`
-  - Flask + Waitress
-  - reads runtime snapshot first, fallback snapshot second
 - `apps/frontend/site`
   - static HTML/CSS/JS
-  - consumes public API only
+  - consumes public `GET /api/*` endpoints only
+- `apps/api`
+  - Flask + Waitress API
+  - reads pool/runtime snapshots and safe sidecar snapshots
+  - exposes public read-only status, blocks, payments, miner lookup, and pool-listing compatibility endpoints
 - `apps/pool-core`
-  - read-only daemon adapter
-  - daemon-independent Stratum ingress
-  - synthetic/fake `mining.set_difficulty` and `mining.notify`
-  - writes public runtime snapshot JSON
-  - writes additive activity snapshot JSON
-  - merges local share/activity accounting into the snapshot
+  - Stratum ingress
+  - daemon-template job handling
+  - share/activity snapshot generation
+  - candidate and follow-up event recording
+- `ops/scripts`
+  - deployment and operations helpers
+  - payout review, carry, preflight, guarded one-shot send, and private auto wallet payout self-test commands
+- `ops/systemd` and `ops/nginx`
+  - example service and public HTTPS configuration files
 
 ## Public And Private Boundaries
 
 Public:
 
-- nginx website
-- nginx API
-- future stratum endpoint
+- HTTPS website
+- read-only HTTPS API
+- Stratum mining endpoint
+- public block, miner, and manual payment views
+- MiningPoolStats-compatible `/api/stats` and secondary `/api/status`
 
-Private only:
+Private/operator-only:
 
-- PEPEPOWd RPC
-- Redis
-- payout tooling
-- admin automation
+- daemon RPC
+- wallet RPC
+- submitblock controls
+- payout review and wallet send commands
+- admin controls
+- runtime snapshots and event logs
 
-## Local Start
+The public frontend must not proxy daemon RPC, wallet RPC, payout commands, submit
+controls, or admin controls.
 
-API:
+## Deployment Docs
+
+Detailed install and operations steps live in `docs/`:
+
+- [docs/oracle-ubuntu-deployment.md](docs/oracle-ubuntu-deployment.md)
+- [docs/deploy-pepepow-pool-quickstart.md](docs/deploy-pepepow-pool-quickstart.md)
+- [docs/deployment-plan.md](docs/deployment-plan.md)
+- [docs/local-development.md](docs/local-development.md)
+- [docs/runbooks/snapshot-pipeline.md](docs/runbooks/snapshot-pipeline.md)
+- [docs/runbooks/prelaunch-checklist.md](docs/runbooks/prelaunch-checklist.md)
+- [docs/runbooks/stratum-activity-ingest.md](docs/runbooks/stratum-activity-ingest.md)
+- [docs/runbooks/controlled-live-submitblock.md](docs/runbooks/controlled-live-submitblock.md)
+- [docs/runbooks/manual-payout-review.md](docs/runbooks/manual-payout-review.md)
+
+Key milestones:
+
+- [2026-06-05 controlled submitblock success](docs/benchmarks/2026-06-05-controlled-submitblock-success.md)
+- [2026-06-09 first auto wallet payout self-test](docs/benchmarks/2026-06-09-first-auto-wallet-payout-self-test.md)
+
+## Verification Commands
+
+Run focused checks for the area being changed:
 
 ```bash
-cd /home/ubuntu/pool-pepepow/apps/api
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+./ops/scripts/prelaunch-repo-check.sh
+PYTHONPATH=apps/api:ops/scripts python3 -m unittest tests.test_api_endpoints
+PYTHONPATH=ops/scripts python3 -m unittest tests.test_payout_accounting
+bash -n ops/scripts/*.sh
+git diff --check
 ```
 
-Producer once:
+For broader local validation:
 
 ```bash
-cd /home/ubuntu/pool-pepepow/apps/pool-core
-python3 producer.py --once
-```
-
-Frontend:
-
-```bash
-cd /home/ubuntu/pool-pepepow/apps/frontend/site
-python3 -m http.server 3000
-```
-
-## Runtime Snapshot Flow
-
-1. `PEPEPOWd` exposes read-only RPC on localhost/private network only
-2. `apps/pool-core/producer.py` reads low-cost RPC data and writes a snapshot
-3. `apps/pool-core` optionally reads a local JSONL share log for miner activity
-4. `apps/api` serves the runtime snapshot
-5. if runtime snapshot is missing, API falls back to repository mock data
-6. frontend reads only `GET /api/*`
-
-Current Stratum job flow is synthetic/fake work for protocol compatibility only.
-It is non-validated, not blockchain verified, and does not use real templates yet.
-
-## RPC Enablement
-
-Daemon RPC must be explicitly configured in `~/.PEPEPOWcore/PEPEPOW.conf`.
-After editing the file, stop `PEPEPOWd` and start it again. Do not rely on
-reload behavior.
-
-The current live host uses `rpcport=8834`; keep repo env files aligned with the
-working daemon configuration.
-
-`8834` is the daemon RPC port and should stay bound to `127.0.0.1` only.
-`8833` is the P2P network port and is not used by the pool API or producer.
-
-## Reindex-Safe Validation
-
-While the daemon is running with `-reindex` or is otherwise unsynced, this round
-accepts validation of:
-
-- RPC connectivity and authentication
-- `producer.py --once`
-- runtime snapshot generation
-- API runtime-vs-fallback behavior
-- stale/degraded metadata
-- local share/activity accounting
-
-This round does not treat reindex-time height, difficulty, or latest block data
-as final live acceptance.
-
-## Verification
-
-```bash
-cd /home/ubuntu/pool-pepepow
 python3 -m unittest discover tests
 ```
-
-See:
-
-- [docs/local-development.md](/home/ubuntu/pool-pepepow/docs/local-development.md)
-- [docs/oracle-ubuntu-deployment.md](/home/ubuntu/pool-pepepow/docs/oracle-ubuntu-deployment.md)
-- [docs/runbooks/snapshot-pipeline.md](/home/ubuntu/pool-pepepow/docs/runbooks/snapshot-pipeline.md)

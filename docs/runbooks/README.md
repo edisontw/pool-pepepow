@@ -2,6 +2,7 @@
 
 - local development: `../local-development.md`
 - Oracle Ubuntu deployment: `../oracle-ubuntu-deployment.md`
+- prelaunch checklist: `./prelaunch-checklist.md`
 - snapshot pipeline: `./snapshot-pipeline.md`
 - Stratum activity ingest: `./stratum-activity-ingest.md`
 - external GPU smoke benchmark: `../benchmarks/2026-04-14-external-gpu-stratum-smoke.md`

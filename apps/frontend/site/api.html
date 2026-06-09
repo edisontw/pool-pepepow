@@ -139,7 +139,7 @@ curl -s https://pool.pepepow.net/api/status | jq</pre>
           <ul class="text-list">
             <li>These endpoints are read-only and intended for website and community status integrations.</li>
             <li>Stats responses are derived from existing pool snapshots.</li>
-            <li>They do not expose daemon RPC, wallet RPC, submit controls, admin controls, or runtime JSONL files.</li>
+            <li>They do not expose private node services, wallet services, submit controls, admin controls, or runtime JSONL files.</li>
             <li>Do not depend on private operational details; only use the public JSON fields your integration needs.</li>
             <li>Payment data is informational and reflects records visible through the public pool website.</li>
             <li>Use reasonable polling intervals so community dashboards do not overload the pool website.</li>

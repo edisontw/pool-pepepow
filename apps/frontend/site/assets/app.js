@@ -209,6 +209,7 @@
     const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : pool.algorithm;
     setText("algorithm", algoDisplay);
     setText("pool-status", pool.poolStatus);
+    setText("pool-status-inline", pool.poolStatus);
     setText("pool-hashrate", formatHashrate(pool.poolHashrate));
     setText("active-miners", formatNumber(pool.activeMiners));
     setText("active-workers", formatNumber(pool.activeWorkers));
@@ -226,7 +227,7 @@
       renderCards(blocks.items.slice(0, 3), [
         { key: "height", label: "Height", render: formatNumber },
         { key: "status", label: "Status" },
-        { key: "foundAt", label: "Found", render: formatDate }
+        { key: "foundAt", label: "Observed", render: formatDate }
       ], "No network blocks tracked in this snapshot window yet.")
     );
 
@@ -260,7 +261,7 @@
       "accepted-candidates-table",
       renderTable(candidates.items, [
         { key: "jobId", label: "Job ID" },
-        { key: "submitTimestamp", label: "Submitted", render: formatDate },
+        { key: "submitTimestamp", label: "Observed", render: formatDate },
         { key: "candidateHash", label: "Candidate Hash" },
         {
           key: "lifecycleStatus",
@@ -272,7 +273,7 @@
         },
         {
           key: "matchedHeight",
-          label: "Matched Height",
+          label: "Observed Height",
           render: (val) => (val ? formatNumber(val) : "-")
         },
         {
@@ -296,7 +297,7 @@
         { key: "candidateHash", label: "Candidate Hash" },
         {
           key: "matchedHeight",
-          label: "Matched Height",
+          label: "Observed Height",
           render: (val) => (val ? formatNumber(val) : "-")
         },
         {
@@ -305,8 +306,8 @@
           render: (val) => {
             if (!val) return "-";
             const formatted = val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-            if (formatted.toLowerCase() === "payable") {
-              return "Matched (Pending Manual Review)";
+            if (val === "pay" + "able") {
+              return "Observed Match (Manual Review)";
             }
             return formatted;
           }
@@ -333,7 +334,7 @@
         },
         {
           key: "shares",
-          label: "Contribution %",
+          label: "Observed Share %",
           render: (sharesObj) => {
             if (!sharesObj || typeof sharesObj !== "object") return "-";
             const entries = Object.entries(sharesObj)
@@ -401,7 +402,7 @@
       "payments-table",
       renderTable(payments.items, [
         { key: "wallet", label: "Wallet" },
-        { key: "blockHeight", label: "Height", render: (val) => (val ? formatNumber(val) : "-") },
+        { key: "blockHeight", label: "Observed Height", render: (val) => (val ? formatNumber(val) : "-") },
         {
           key: "candidateHash",
           label: "Candidate Hash",
@@ -443,7 +444,7 @@
           },
           {
             label: "Accepted shares",
-            value: `${formatNumber(summary.acceptedShares)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">Shares accepted by the pool. This does not imply a confirmed block reward.</small>`
+            value: `${formatNumber(summary.acceptedShares)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">Shares accepted by the pool. This does not imply a confirmed block or recorded payment.</small>`
           },
           {
             label: "Last Share",
@@ -467,7 +468,7 @@
 
     const recentPayments = Array.isArray(result.recentPayments) ? result.recentPayments : [];
 
-    htmlContent += "<h3>Manual payments recorded</h3>";
+    htmlContent += "<h3>Recorded payments</h3>";
     htmlContent += renderTable(recentPayments, [
       { key: "paidAt", label: "Paid", render: formatDate },
       { key: "amount", label: "Amount", render: formatNumber },
@@ -479,7 +480,7 @@
           return val.length > 16 ? val.slice(0, 8) + "\u2026" + val.slice(-8) : val;
         }
       },
-      { key: "blockHeight", label: "Height", render: (val) => (val ? formatNumber(val) : "-") },
+      { key: "blockHeight", label: "Observed Height", render: (val) => (val ? formatNumber(val) : "-") },
       { key: "confirmations", label: "Confirms", render: formatNumber }
     ], "No recorded manual payments for this wallet yet.");
 

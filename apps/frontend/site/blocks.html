@@ -31,7 +31,7 @@
         <section class="panel">
           <h2>Recent network blocks</h2>
           <p class="muted">
-            Block states shown here are sourced from the public API snapshot contract.
+            Block states shown here come from public pool snapshots. Accepted shares are not the same as confirmed blocks.
           </p>
           <div id="blocks-table" class="list-state">Loading blocks...</div>
         </section>
@@ -39,7 +39,7 @@
         <section class="panel">
           <h2>Accepted pool candidates / chain observation</h2>
           <p class="muted">
-            Pool-found candidates are tracked for chain-match and lifecycle observation. Note: Payout review remains a separate manual operator step; candidates represent chain match observations only and are not payout-ready.
+            Pool candidates are tracked for chain-match and lifecycle observation. Candidate observation is not a confirmed block or a recorded payment.
           </p>
           <div id="accepted-candidates-table" class="list-state">Loading accepted candidates...</div>
         </section>
@@ -47,7 +47,7 @@
         <section class="panel">
           <h2>Rounds / observation preview</h2>
           <p class="muted">
-            Internal round observation preview based on pool-side shares and candidate match. Note: Payout execution is disabled and requires manual operator review.
+            Internal round observation preview based on pool-side shares and candidate match. Payment records are published only after operator review or private self-test completion.
           </p>
           <div id="rounds-table" class="list-state">Loading rounds...</div>
         </section>

@@ -39,6 +39,16 @@
             <div><span>Endpoint</span><strong id="connect-endpoint">stratum+tcp://pool.pepepow.net:39333</strong></div>
             <div><span>Identity</span><strong>Wallet address</strong></div>
           </div>
+          <div class="info-note">
+            <strong>Connection checklist</strong>
+            <ul class="compact-list">
+              <li>Use a PEPEPOW wallet address as the miner username.</li>
+              <li>Add an optional worker suffix after a dot, such as <code>YOUR_WALLET.worker01</code>.</li>
+              <li>Select the PEPEPOW hoohash algorithm supported by your miner.</li>
+              <li>Connect to <code>pool.pepepow.net:39333</code>.</li>
+              <li>Leave password as <code>x</code> unless your miner requires another placeholder.</li>
+            </ul>
+          </div>
         </section>
 
         <section class="panel">
@@ -55,15 +65,15 @@
             <li>Website: <a href="https://pool.pepepow.net" style="color: var(--accent-alt); text-decoration: underline;" target="_blank" rel="noopener noreferrer">https://pool.pepepow.net</a></li>
             <li>Use your PEPEPOW wallet address as the username.</li>
             <li>Worker names can be appended with a dot suffix (e.g. <code>YOUR_WALLET.worker01</code>).</li>
-            <li>This pool is a community-operated reference implementation. Share tracking is pool-side, and payments are processed manually.</li>
+            <li>After mining starts, use Miner Lookup to confirm accepted shares for your wallet.</li>
+            <li>This pool is a community-operated reference implementation. Accepted shares are tracked pool-side, and recorded payments are published after review or private self-test completion.</li>
           </ul>
         </section>
 
         <section class="panel">
           <h3>Security boundary</h3>
           <p class="muted">
-            The public website and API do not proxy daemon RPC or Redis. The Stratum
-            endpoint is the miner-facing service.
+            The public website is for miner connection help, pool snapshots, and recorded payment history. It does not expose operator admin tools.
           </p>
         </section>
       </main>

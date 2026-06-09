@@ -23,7 +23,10 @@
 
 Keep private services bound to `127.0.0.1` or a private subnet only.
 
-## Suggested Paths
+## Fresh deployment recommended layout
+
+Use this layout for new Oracle Ubuntu deployments. It keeps code, environment
+files, and runtime state separate:
 
 - code: `/opt/pepepow-pool`
 - runtime snapshot: `/var/lib/pepepow-pool/pool-snapshot.json`
@@ -31,7 +34,22 @@ Keep private services bound to `127.0.0.1` or a private subnet only.
 - share log: `/var/lib/pepepow-pool/share-events.jsonl`
 - env files: `/opt/pepepow-pool/ops/env`
 
-## Live Deployment Paths (pool.pepepow.net)
+Fresh deployment flow:
+
+1. Clone the repository to `/opt/pepepow-pool`.
+2. Configure `PEPEPOWd` daemon RPC on localhost only.
+3. Configure environment files under `ops/env`.
+4. Install systemd units.
+5. Configure nginx for the static frontend and API proxy.
+6. Configure TLS for HTTPS.
+7. Run smoke tests for API, nginx, and Stratum.
+
+The static frontend can be served directly by nginx. The frontend systemd unit is optional when nginx serves `apps/frontend/site` as a static root.
+
+## Live host layout notes (pool.pepepow.net)
+
+This section is historical/current-host-specific. Do not use these paths as the
+preferred layout for a fresh deployment.
 
 The production host at `pool.pepepow.net` (`192.9.160.179`) was bootstrapped
 before the `/var/lib/pepepow-pool` layout was finalised. The live systemd units
@@ -54,9 +72,17 @@ These paths are **not renamed in this release**. They remain stable and all
 three systemd services (`pepepow-pool-core`, `pepepow-pool-stratum`,
 `pepepow-pool-api`) point to them via their `EnvironmentFile` directives.
 
-nginx and the static frontend are **not yet deployed** on this host.
-Port 80 and 443 are not listening. The stratum port `39333/tcp` is the only
-public TCP service beyond SSH.
+The current public site is served by nginx with HTTPS. Keep the live runtime
+paths stable during documentation cleanup; do not move `.runtime/systemd-smoke/`
+or `.runtime/live-stratum/` as part of a wording-only patch.
+
+## Do Not Do During Doc Cleanup
+
+- do not rename runtime directories
+- do not change systemd env paths
+- do not restart services
+- do not enable submitblock
+- do not touch wallet
 
 ## Bootstrap
 

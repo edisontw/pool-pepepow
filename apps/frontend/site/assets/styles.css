@@ -177,6 +177,52 @@ pre {
   color: var(--muted);
 }
 
+.quick-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.quick-facts div,
+.info-note {
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.quick-facts span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 0.25rem;
+}
+
+.quick-facts strong,
+.quick-facts a {
+  color: var(--text);
+}
+
+.info-note {
+  margin-top: 1rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.info-note p {
+  margin: 0.35rem 0 0;
+}
+
+.compact-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.compact-list li + li {
+  margin-top: 0.3rem;
+}
+
 .kv-list {
   display: grid;
   gap: 0.75rem;
@@ -319,7 +365,8 @@ input[type="text"] {
     justify-content: flex-start;
   }
 
-  .metric-grid {
+  .metric-grid,
+  .quick-facts {
     grid-template-columns: 1fr;
   }
 }
