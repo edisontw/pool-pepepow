@@ -1,0 +1,25 @@
+[Unit]
+Description=PEPEPOW Pool Guarded Auto Payout Once
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pepepow
+Group=pepepow
+WorkingDirectory=/opt/pepepow-pool
+EnvironmentFile=-/opt/pepepow-pool/ops/env/pool-core.env
+Environment=PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/var/lib/pepepow-pool
+Environment=PEPEPOW_MIN_PAYOUT=1000
+Environment=PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=10
+ExecStart=/opt/pepepow-pool/ops/scripts/live-stratum.sh auto-payout-once
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/pepepow-pool
+
+[Install]
+WantedBy=multi-user.target

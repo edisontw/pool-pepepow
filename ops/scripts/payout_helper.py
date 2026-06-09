@@ -2583,6 +2583,205 @@ def payout_wallet_send_once(
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+AUTO_PAYOUT_DEFAULT_ALLOWED_WALLETS = {"PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"}
+
+
+def _candidate_lifecycle_status(candidate: dict[str, Any]) -> str:
+    return str(candidate.get("lifecycleStatus") or candidate.get("lifecycle_status") or "")
+
+
+def _candidate_id(candidate: dict[str, Any]) -> str:
+    return str(candidate.get("candidateId") or candidate.get("candidate_hash") or "")
+
+
+def auto_payout_once(
+    candidates_path: Path,
+    actions_log_path: Path,
+    payments_snapshot_path: Path,
+    output_path: Path,
+    *,
+    allowed_wallets: set[str] | None = None,
+    min_payout: float = 1000.0,
+    max_sends: int = 5,
+) -> int:
+    """Select eligible self-test payouts and send each through the one-shot sender."""
+    allowed_wallets = allowed_wallets or AUTO_PAYOUT_DEFAULT_ALLOWED_WALLETS
+    try:
+        max_sends = int(max_sends)
+    except (TypeError, ValueError):
+        max_sends = 5
+    max_sends = max(0, min(max_sends, 5))
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    items: list[dict[str, Any]] = []
+    send_invocations = 0
+    sent_count = 0
+    skipped_count = 0
+
+    try:
+        with candidates_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        candidates = payload.get("items") if isinstance(payload, dict) else []
+        if not isinstance(candidates, list):
+            candidates = []
+    except Exception as exc:
+        result = {
+            "generatedAt": generated_at,
+            "mode": "auto_payout_once",
+            "status": "blocked_candidates_unreadable",
+            "error": str(exc),
+            "maxSends": max_sends,
+            "minPayout": min_payout,
+            "allowedWallets": sorted(allowed_wallets),
+            "items": [],
+            "sendInvocations": 0,
+            "sentCount": 0,
+            "skippedCount": 0,
+        }
+        atomic_write_json(output_path, result)
+        return 0
+
+    def append_skip(candidate_id: str, wallet: str, amount: Any, reason: str) -> None:
+        nonlocal skipped_count
+        skipped_count += 1
+        items.append({
+            "candidateId": candidate_id,
+            "wallet": wallet,
+            "amount": amount,
+            "action": "skipped",
+            "reason": reason,
+        })
+
+    old_env = {key: os.environ.get(key) for key in [
+        "PEPEPOW_ENABLE_REAL_WALLET_PAYOUT",
+        "PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS",
+    ]}
+    try:
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                skipped_count += 1
+                items.append({"action": "skipped", "reason": "malformed_candidate"})
+                continue
+
+            c_id = _candidate_id(candidate)
+            candidate_status = str(candidate.get("status") or "")
+            blocked_reason = candidate.get("blockedReason")
+            if blocked_reason is None:
+                blocked_reason = candidate.get("reason")
+            lifecycle_status = _candidate_lifecycle_status(candidate)
+
+            if candidate_status != "ready_for_manual_review":
+                append_skip(c_id, "", None, f"candidate_status_{candidate_status or 'missing'}")
+                continue
+            if lifecycle_status != "confirmed":
+                append_skip(c_id, "", None, f"lifecycle_status_{lifecycle_status or 'missing'}")
+                continue
+            if blocked_reason:
+                append_skip(c_id, "", None, str(blocked_reason))
+                continue
+            if candidate.get("coinbaseMatchesExpectedPoolWallet") is not True:
+                append_skip(c_id, "", None, "coinbase_not_expected_pool_wallet")
+                continue
+
+            payouts = candidate.get("payouts")
+            if not isinstance(payouts, list):
+                append_skip(c_id, "", None, "missing_payouts")
+                continue
+
+            for payout in payouts:
+                if not isinstance(payout, dict):
+                    append_skip(c_id, "", None, "malformed_payout")
+                    continue
+
+                wallet = str(payout.get("wallet") or "")
+                amount_raw = payout.get("amount")
+                if wallet not in allowed_wallets:
+                    append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
+                    continue
+                if payout.get("status") != "pending_manual_payment":
+                    append_skip(c_id, wallet, amount_raw, f"payout_status_{payout.get('status') or 'missing'}")
+                    continue
+                try:
+                    amount = float(amount_raw)
+                except (TypeError, ValueError):
+                    append_skip(c_id, wallet, amount_raw, "amount_invalid")
+                    continue
+                if amount < min_payout:
+                    append_skip(c_id, wallet, amount, "below_threshold")
+                    continue
+                if payment_already_recorded(actions_log_path, c_id, wallet):
+                    append_skip(c_id, wallet, amount, "blocked_already_paid")
+                    continue
+                if send_invocations >= max_sends:
+                    append_skip(c_id, wallet, amount, "max_sends_reached")
+                    continue
+
+                send_invocations += 1
+                send_output = output_path.with_name(f"payout-wallet-send-once-result-{send_invocations}.json")
+                os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
+                os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
+                rc = payout_wallet_send_once(
+                    candidates_path,
+                    actions_log_path,
+                    payments_snapshot_path,
+                    send_output,
+                    c_id,
+                    wallet,
+                    amount,
+                )
+                send_status = "unknown"
+                if send_output.exists():
+                    try:
+                        with send_output.open("r", encoding="utf-8") as f:
+                            send_payload = json.load(f)
+                        if isinstance(send_payload, dict):
+                            send_status = str(send_payload.get("status") or "unknown")
+                    except Exception:
+                        send_status = "result_unreadable"
+                if send_status == "sent_recorded":
+                    sent_count += 1
+                items.append({
+                    "candidateId": c_id,
+                    "wallet": wallet,
+                    "amount": amount,
+                    "action": "send_once",
+                    "sendOnceRc": rc,
+                    "sendOnceStatus": send_status,
+                    "sendOnceOutput": str(send_output),
+                })
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    result_status = "ok"
+    result = {
+        "generatedAt": generated_at,
+        "mode": "auto_payout_once",
+        "status": result_status,
+        "maxSends": max_sends,
+        "minPayout": min_payout,
+        "allowedWallets": sorted(allowed_wallets),
+        "items": items,
+        "sendInvocations": send_invocations,
+        "sentCount": sent_count,
+        "skippedCount": skipped_count,
+    }
+    atomic_write_json(output_path, result)
+    print("Auto Payout Once Summary")
+    print("="*80)
+    print(f"auto_payout_status: {result_status}")
+    print(f"min_payout: {min_payout}")
+    print(f"max_sends: {max_sends}")
+    print(f"send_invocations: {send_invocations}")
+    print(f"sent_count: {sent_count}")
+    print(f"skipped_count: {skipped_count}")
+    print(f"artifact_path: {output_path}")
+    print("="*80)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="PEPEPOW Manual Payout Accounting Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2649,6 +2848,15 @@ def main() -> int:
     parser_preflight.add_argument("--candidate-id", type=str, required=True, help="Candidate id to preflight")
     parser_preflight.add_argument("--wallet", type=str, required=True, help="Wallet address to preflight")
     parser_preflight.add_argument("--amount", type=float, required=True, help="Exact amount to preflight")
+
+    parser_auto = subparsers.add_parser("auto-payout-once", help="Run one guarded self-test auto payout pass")
+    parser_auto.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_auto.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_auto.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+    parser_auto.add_argument("--output", type=str, required=True, help="Path to output auto-payout-once-result.json")
+    parser_auto.add_argument("--max-sends", type=int, default=5, help="Maximum send-once invocations for this run")
+    parser_auto.add_argument("--min-payout", type=float, default=1000.0, help="Minimum payout amount")
+    parser_auto.add_argument("--allowed-wallet", action="append", default=[], help="Allowed wallet address; repeatable")
 
     args = parser.parse_args()
 
@@ -2725,6 +2933,17 @@ def main() -> int:
             args.candidate_id,
             args.wallet,
             args.amount,
+        )
+    elif args.command == "auto-payout-once":
+        allowed_wallets = set(args.allowed_wallet) if args.allowed_wallet else None
+        return auto_payout_once(
+            Path(args.candidates),
+            Path(args.actions_log),
+            Path(args.payments_snapshot),
+            Path(args.output),
+            allowed_wallets=allowed_wallets,
+            min_payout=args.min_payout,
+            max_sends=args.max_sends,
         )
 
     return 0

@@ -1,0 +1,12 @@
+[Unit]
+Description=Timer for PEPEPOW Pool Guarded Auto Payout
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=false
+
+[Install]
+WantedBy=timers.target

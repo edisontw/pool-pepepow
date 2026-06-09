@@ -4184,6 +4184,144 @@ class WalletRpcDryRunTests(unittest.TestCase):
 
 
 
+class AutoPayoutOnceTests(unittest.TestCase):
+    """Focused tests for the guarded auto-payout selector."""
+
+    allowed_wallet = "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"
+    other_wallet = "PL8s5WjXUGhHVSo743dwEXGtsifV5Yother"
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp_dir.name)
+        self.candidates_path = self.tmp_path / "payout-candidates.json"
+        self.actions_log = self.tmp_path / "payment-actions.jsonl"
+        self.payments_snapshot = self.tmp_path / "payments-snapshot.json"
+        self.output_path = self.tmp_path / "auto-payout-once-result.json"
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _candidate(self, candidate_id, *, wallet=None, amount=1000.0, payout_status="pending_manual_payment", **extra):
+        candidate = {
+            "candidateId": candidate_id,
+            "candidate_hash": candidate_id,
+            "lifecycleStatus": "confirmed",
+            "status": "ready_for_manual_review",
+            "coinbaseMatchesExpectedPoolWallet": True,
+            "payouts": [{
+                "wallet": wallet or self.allowed_wallet,
+                "amount": amount,
+                "status": payout_status,
+            }],
+        }
+        candidate.update(extra)
+        return candidate
+
+    def _write_candidates(self, items):
+        with self.candidates_path.open("w", encoding="utf-8") as f:
+            json.dump({"items": items}, f)
+
+    def _sent_side_effect(self, _candidates, _actions, _payments, output_path, *_args):
+        payout_helper.atomic_write_json(Path(output_path), {"status": "sent_recorded"})
+        return 0
+
+    def _run(self, *, max_sends=5):
+        return payout_helper.auto_payout_once(
+            self.candidates_path,
+            self.actions_log,
+            self.payments_snapshot,
+            self.output_path,
+            allowed_wallets={self.allowed_wallet},
+            min_payout=1000.0,
+            max_sends=max_sends,
+        )
+
+    def _read_result(self):
+        with self.output_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_respects_max_sends_limit(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        self._write_candidates([
+            self._candidate(f"candautosend{i:026d}") for i in range(6)
+        ])
+
+        rc = self._run(max_sends=5)
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 5)
+        result = self._read_result()
+        self.assertEqual(result["sendInvocations"], 5)
+        self.assertEqual(result["sentCount"], 5)
+        self.assertIn("max_sends_reached", [item.get("reason") for item in result["items"]])
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_skips_already_paid(self, mock_send):
+        candidate_id = "candautoalreadypaid000000000001"
+        self._write_candidates([self._candidate(candidate_id)])
+        self.actions_log.write_text(json.dumps({
+            "candidate_id": candidate_id,
+            "wallet": self.allowed_wallet,
+            "amount": 1000.0,
+            "txid": "txidautoalreadypaid000000000001",
+            "status": "sent",
+            "timestamp": "2026-06-09T00:00:00Z",
+        }) + "\n", encoding="utf-8")
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_already_paid")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_skips_coinbase_mismatch(self, mock_send):
+        self._write_candidates([
+            self._candidate(
+                "candautomismatch000000000000001",
+                coinbaseMatchesExpectedPoolWallet=False,
+                blockedReason="blocked_coinbase_reward_mismatch",
+            )
+        ])
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_coinbase_reward_mismatch")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_skips_below_threshold(self, mock_send):
+        self._write_candidates([
+            self._candidate(
+                "candautobelowthreshold000000001",
+                amount=999.99,
+            )
+        ])
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "below_threshold")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_pays_only_expected_wallet(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        self._write_candidates([
+            self._candidate("candautoallowedwallet000000001"),
+            self._candidate(
+                "candautounexpectedwallet0000001",
+                wallet=self.other_wallet,
+            ),
+        ])
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 1)
+        sent_args = mock_send.call_args[0]
+        self.assertEqual(sent_args[5], self.allowed_wallet)
+        reasons = [item.get("reason") for item in self._read_result()["items"]]
+        self.assertIn("wallet_not_allowed", reasons)
+
+
 class WalletSendOnceTests(unittest.TestCase):
     """Focused tests for guarded one-shot wallet payout sends."""
 
