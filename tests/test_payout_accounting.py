@@ -846,6 +846,99 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertTrue((self.tmp_path / "payment-actions.jsonl").exists())
         self.assertTrue((self.tmp_path / "payments-snapshot.json").exists())
 
+    def test_live_stratum_sh_auto_payout_config_validation(self):
+        import subprocess
+        import os
+        
+        env = dict(os.environ)
+        env["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(self.tmp_path)
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+
+        # 1. Test invalid min payout (abc)
+        env_invalid_payout = dict(env)
+        env_invalid_payout["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "abc"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_invalid_payout,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once min payout must be numeric and > 0", res.stderr)
+
+        # 2. Test invalid min payout (0)
+        env_zero_payout = dict(env)
+        env_zero_payout["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "0"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_zero_payout,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once min payout must be numeric and > 0", res.stderr)
+
+        # 3. Test invalid min payout (-10.5)
+        env_neg_payout = dict(env)
+        env_neg_payout["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "-10.5"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_neg_payout,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once min payout must be numeric and > 0", res.stderr)
+
+        # 4. Test invalid allowed wallet (empty)
+        env_empty_wallet = dict(env)
+        env_empty_wallet["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = ""
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_empty_wallet,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once allowed wallet must be non-empty", res.stderr)
+
+        # 5. Test invalid max sends (abc)
+        env_invalid_max = dict(env)
+        env_invalid_max["PEPEPOW_AUTO_PAYOUT_MAX_SENDS"] = "abc"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_invalid_max,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once max sends must be a positive integer", res.stderr)
+
+        # 6. Test invalid max sends (0)
+        env_zero_max = dict(env)
+        env_zero_max["PEPEPOW_AUTO_PAYOUT_MAX_SENDS"] = "0"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_zero_max,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once max sends must be a positive integer", res.stderr)
+
+        # 7. Test valid configuration (passes validation and returns 0)
+        env_valid = dict(env)
+        env_valid["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "50.5"
+        env_valid["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"
+        env_valid["PEPEPOW_AUTO_PAYOUT_MAX_SENDS"] = "3"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_valid,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0)
+
     def test_payout_candidates_harden_rules(self):
         # 1. Missing reward
         accepted_data = {
