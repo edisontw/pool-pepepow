@@ -73,6 +73,7 @@ REAL_SUBMITBLOCK_ENABLED=""
 REAL_SUBMITBLOCK_MAX_SENDS=""
 POOL_REWARD_ADDRESS=""
 MIN_PAYOUT=""
+POOL_FEE_PERCENT=""
 RPC_HOST=""
 RPC_PORT=""
 RPC_URL=""
@@ -115,6 +116,7 @@ set_effective_defaults() {
   REAL_SUBMITBLOCK_MAX_SENDS="${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS:-1}"
   POOL_REWARD_ADDRESS="${PEPEPOW_POOL_CORE_REWARD_ADDRESS:-PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho}"
   MIN_PAYOUT="${PEPEPOW_MIN_PAYOUT:-100000.0}"
+  POOL_FEE_PERCENT="${PEPEPOW_POOL_FEE_PERCENT:-1.0}"
   REAL_WALLET_PAYOUT_ENABLED="${PEPEPOW_ENABLE_REAL_WALLET_PAYOUT:-false}"
   REAL_WALLET_PAYOUT_MAX_SENDS="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-1}"
   WALLET_CLI="${PEPEPOW_WALLET_CLI:-/home/ubuntu/PEPEPOW-cli}"
@@ -194,6 +196,7 @@ load_launch_env_if_present() {
   local loaded_real_submitblock_max_sends
   local loaded_pool_reward_address
   local loaded_min_payout
+  local loaded_pool_fee_percent
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_wallet_cli
@@ -227,6 +230,7 @@ load_launch_env_if_present() {
   loaded_real_submitblock_max_sends="$(launch_env_value PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS)"
   loaded_pool_reward_address="$(launch_env_value PEPEPOW_POOL_CORE_REWARD_ADDRESS)"
   loaded_min_payout="$(launch_env_value PEPEPOW_MIN_PAYOUT)"
+  loaded_pool_fee_percent="$(launch_env_value PEPEPOW_POOL_FEE_PERCENT)"
   loaded_rpc_host="$(launch_env_value PEPEPOWD_RPC_HOST)"
   loaded_rpc_port="$(launch_env_value PEPEPOWD_RPC_PORT)"
   loaded_rpc_url="$(launch_env_value PEPEPOWD_RPC_URL)"
@@ -294,6 +298,9 @@ load_launch_env_if_present() {
   fi
   if [[ -z "${PEPEPOW_MIN_PAYOUT+x}" && -n "${loaded_min_payout}" ]]; then
     MIN_PAYOUT="${loaded_min_payout}"
+  fi
+  if [[ -z "${PEPEPOW_POOL_FEE_PERCENT+x}" && -n "${loaded_pool_fee_percent}" ]]; then
+    POOL_FEE_PERCENT="${loaded_pool_fee_percent}"
   fi
   if [[ -z "${PEPEPOWD_RPC_HOST+x}" && -n "${loaded_rpc_host}" ]]; then
     RPC_HOST="${loaded_rpc_host}"
@@ -388,6 +395,7 @@ enable_real_submitblock: ${REAL_SUBMITBLOCK_ENABLED}
 real_submitblock_max_sends: ${REAL_SUBMITBLOCK_MAX_SENDS}
 pool_reward_address: ${POOL_REWARD_ADDRESS}
 min_payout: ${MIN_PAYOUT}
+pool_fee_percent: ${POOL_FEE_PERCENT}
 rpc_host: ${RPC_HOST}
 rpc_port: ${RPC_PORT}
 rpc_url: ${RPC_URL}
@@ -560,6 +568,7 @@ PEPEPOW_ENABLE_REAL_SUBMITBLOCK=${REAL_SUBMITBLOCK_ENABLED}
 PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=${REAL_SUBMITBLOCK_MAX_SENDS}
 PEPEPOW_POOL_CORE_REWARD_ADDRESS=${POOL_REWARD_ADDRESS}
 PEPEPOW_MIN_PAYOUT=${MIN_PAYOUT}
+PEPEPOW_POOL_FEE_PERCENT=${POOL_FEE_PERCENT}
 PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=${REAL_WALLET_PAYOUT_ENABLED}
 PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=${REAL_WALLET_PAYOUT_MAX_SENDS}
 PEPEPOWD_RPC_HOST=${RPC_HOST}
@@ -1159,10 +1168,11 @@ auto_payout_once_service() {
     return 1
   fi
 
-  PEPEPOW_MIN_PAYOUT="${min_payout}" candidate_followup_service candidate-followup "${followup_count}" --record
-  PEPEPOW_MIN_PAYOUT="${min_payout}" payout_candidates_service
+  PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" candidate_followup_service candidate-followup "${followup_count}" --record
+  PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" payout_candidates_service
 
   PEPEPOW_MIN_PAYOUT="${min_payout}" \
+  PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" \
   PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=true \
   PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${wallet_max_sends}" \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
