@@ -9,15 +9,66 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css">
+    <style>
+      .brand-lockup {
+        align-items: center;
+        gap: 1.1rem;
+      }
+
+      .brand-logo {
+        width: 72px;
+        height: 72px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+      }
+
+      .brand-title {
+        min-width: 0;
+      }
+
+      .brand-title h1 {
+        margin-bottom: 0;
+      }
+
+      .brand-subtitle {
+        margin: 0.65rem 0 0;
+        max-width: 620px;
+        color: rgba(235, 245, 255, 0.72);
+        font-size: clamp(0.95rem, 1.8vw, 1.12rem);
+        line-height: 1.45;
+      }
+
+      @media (max-width: 640px) {
+        .brand-lockup {
+          gap: 0.85rem;
+        }
+
+        .brand-logo {
+          width: 58px;
+          height: 58px;
+        }
+
+        .brand-subtitle {
+          font-size: 0.92rem;
+        }
+      }
+    </style>
   </head>
   <body data-page="dashboard">
     <div class="shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
-          <div>
+          <img
+            class="brand-logo"
+            src="/2025_PEPEW_Logo_HQ_128.png"
+            alt="PEPEPOW logo"
+            width="72"
+            height="72"
+          >
+          <div class="brand-title">
             <p class="eyebrow">PEPEPOW Community Pool</p>
-            <h1>Community pool status</h1>
+            <h1>Live mining pool</h1>
+            <p class="brand-subtitle">Real-time pool status, miner activity, blocks, and payments.</p>
           </div>
         </div>
         <nav class="nav">
@@ -53,9 +104,9 @@
               src="/pepepow_highres_micro_motion.html"
               title="PEPEPOW mascot animation"
               aria-label="PEPEPOW mascot animation"
+              scrolling="no"
               loading="lazy"
             ></iframe>
-            <p class="muted status-note" id="deployment-baseline-note"></p>
           </div>
         </section>
 

@@ -9,15 +9,52 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css">
+    <style>
+      .page-brand-lockup {
+        align-items: center;
+        gap: 18px;
+      }
+
+      .page-brand-logo {
+        width: 72px !important;
+        height: 72px !important;
+        flex: 0 0 72px;
+        border-radius: 50%;
+      }
+
+      .page-title {
+        min-width: 0;
+      }
+
+      .page-title h1 {
+        margin-bottom: 0;
+      }
+
+      .page-subtitle {
+        margin: 10px 0 0;
+        color: rgba(235, 245, 255, 0.72);
+        font-size: clamp(0.98rem, 2vw, 1.12rem);
+        line-height: 1.45;
+      }
+
+      @media (max-width: 640px) {
+        .page-brand-logo {
+          width: 58px !important;
+          height: 58px !important;
+          flex-basis: 58px;
+        }
+      }
+    </style>
   </head>
   <body data-page="miner">
     <div class="shell">
       <header class="topbar">
-        <div class="brand-lockup">
-          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
-          <div>
+        <div class="brand-lockup page-brand-lockup">
+          <img class="brand-logo page-brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="72" height="72">
+          <div class="page-title">
             <p class="eyebrow">PEPEPOW Community Pool</p>
-            <h1>Miner lookup</h1>
+            <h1>Miner Lookup</h1>
+            <p class="page-subtitle">Check wallet activity, accepted shares, workers, and last share time.</p>
           </div>
         </div>
         <nav class="nav">
@@ -39,16 +76,16 @@
                 id="wallet-input"
                 name="wallet"
                 type="text"
-                placeholder="輸入你的 PEPEPOW 錢包地址..."
+                placeholder="Input your PEPEPOW wallet address..."
                 value=""
               >
               <button class="button" type="submit">Lookup</button>
             </div>
           </form>
           <div id="miner-result" class="list-state empty-state">
-            <strong>輸入 PEPEPOW 錢包地址來查詢礦工狀態。</strong>
-            <p class="muted">資料會在 pool 收到 accepted shares 後出現。這裡只顯示估算 hashrate、accepted shares、active workers 和 last share。</p>
-            <a class="button" href="/connect.html">查看如何開始挖礦</a>
+            <strong>Input PEPEPOW wallet address to check miner status</strong>
+            <p class="muted">Data will appear after the pool receives accepted shares. This section only displays the estimated hashrate, accepted shares, active workers, and the last share.</p>
+            <a class="button" href="/connect.html"> How to start mining </a>
           </div>
         </section>
       </main>

@@ -198,13 +198,17 @@ pre {
 }
 
 .mascot-frame {
-  width: clamp(140px, 15vw, 220px);
-  max-width: 100%;
+  display: block;
+  width: 100%;
+  max-width: 220px;
   aspect-ratio: 1 / 1;
-  border: 1px solid rgba(129, 247, 176, 0.18);
+  overflow: hidden;
+  border: 0;
   border-radius: 16px;
   background: #05080d;
-  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.24);
+  box-shadow:
+    0 14px 28px rgba(0, 0, 0, 0.24),
+    0 0 0 1px rgba(129, 247, 176, 0.18);
 }
 
 .metric-grid {
@@ -249,6 +253,39 @@ pre {
 
 .metric-primary strong {
   font-size: clamp(1.8rem, 4vw, 3rem);
+}
+
+.miner-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.miner-metric-card {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.miner-metric-card span,
+.metric-note {
+  color: var(--muted);
+}
+
+.miner-metric-card strong {
+  font-size: clamp(1.35rem, 2.6vw, 2rem);
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+
+.metric-note {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .quick-facts {
@@ -358,6 +395,38 @@ pre {
   cursor: pointer;
   font-size: 0.72rem;
   font-weight: 700;
+}
+
+.hash-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 100%;
+}
+
+.hash-value,
+.mono-compact {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.explorer-link {
+  display: inline-grid;
+  place-items: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border: 1px solid rgba(55, 196, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(55, 196, 255, 0.08);
+  color: var(--accent-alt);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.explorer-link:hover {
+  border-color: rgba(55, 196, 255, 0.55);
+  background: rgba(55, 196, 255, 0.14);
 }
 
 .list-state,
@@ -587,6 +656,7 @@ input[type="text"] {
 
   .legend-grid,
   .chip-row,
+  .miner-summary-grid,
   .endpoint-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -611,6 +681,7 @@ input[type="text"] {
   .quick-facts,
   .legend-grid,
   .chip-row,
+  .miner-summary-grid,
   .endpoint-grid {
     grid-template-columns: 1fr;
   }

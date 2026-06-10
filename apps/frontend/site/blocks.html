@@ -9,15 +9,57 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css">
+    <style>
+      .topbar .brand-lockup {
+        align-items: center;
+        gap: 18px;
+      }
+
+      .topbar .brand-lockup .brand-logo {
+        width: 72px !important;
+        height: 72px !important;
+        min-width: 72px !important;
+        max-width: 72px !important;
+        flex: 0 0 72px;
+        object-fit: contain;
+      }
+
+      .brand-title {
+        min-width: 0;
+      }
+
+      .brand-title h1 {
+        margin: 0;
+      }
+
+      .brand-subtitle {
+        margin: 10px 0 0;
+        max-width: 680px;
+        color: rgba(235, 245, 255, 0.72);
+        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
+        line-height: 1.45;
+      }
+
+      @media (max-width: 640px) {
+        .topbar .brand-lockup .brand-logo {
+          width: 58px !important;
+          height: 58px !important;
+          min-width: 58px !important;
+          max-width: 58px !important;
+          flex-basis: 58px;
+        }
+      }
+    </style>
   </head>
   <body data-page="blocks">
     <div class="shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
-          <div>
+          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="72" height="72">
+          <div class="brand-title">
             <p class="eyebrow">PEPEPOW Community Pool</p>
-            <h1>Recent blocks</h1>
+            <h1>Blocks</h1>
+            <p class="brand-subtitle">Recent network blocks and pool candidate chain observations.</p>
           </div>
         </div>
         <nav class="nav">

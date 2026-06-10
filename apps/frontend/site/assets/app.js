@@ -145,20 +145,79 @@
     return `${value.slice(0, front)}\u2026${value.slice(-back)}`;
   }
 
+  function explorerBlockUrl(hashOrHeight) {
+    if (hashOrHeight === null || hashOrHeight === undefined || hashOrHeight === "") return "";
+    return `https://explorer.pepepow.net/block/${encodeURIComponent(String(hashOrHeight))}`;
+  }
+
+  function explorerTxUrl(txid) {
+    if (!txid) return "";
+    return `https://explorer.pepepow.net/tx/${encodeURIComponent(String(txid))}`;
+  }
+
+  function explorerAddressUrl(address) {
+    if (!address) return "";
+    return `https://explorer.pepepow.net/address/${encodeURIComponent(String(address))}`;
+  }
+
+  function isLikelyPepepowAddress(value) {
+    return typeof value === "string" && /^P[1-9A-HJ-NP-Za-km-z]{25,60}$/.test(value);
+  }
+
+  function isLikelyHash64(value) {
+    return typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value);
+  }
+
   function copyButton(value, label = "Copy") {
     if (!value) return "";
     return `<button class="copy-mini" type="button" data-copy-value="${escapeHtml(value)}">${label}</button>`;
   }
 
-  function renderHash(value) {
+  function renderExplorerLink(url, label = "Explorer") {
+    if (!url) return "";
+    return `<a class="explorer-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">\u2197</a>`;
+  }
+
+  function renderValueWithCopyAndExplorer(value, type) {
     if (!value) return "-";
-    const safeValue = escapeHtml(String(value));
-    return `<span class="hash-short" title="${safeValue}">${escapeHtml(shortenText(String(value)))}</span>${copyButton(String(value))}`;
+    const raw = String(value);
+    let url = "";
+
+    if (type === "txid" && isLikelyHash64(raw)) {
+      url = explorerTxUrl(raw);
+    } else if (type === "address" && isLikelyPepepowAddress(raw)) {
+      url = explorerAddressUrl(raw);
+    } else if (type === "block" && (isLikelyHash64(raw) || /^\d+$/.test(raw))) {
+      url = explorerBlockUrl(raw);
+    } else if (type === "auto-address" && isLikelyPepepowAddress(raw)) {
+      url = explorerAddressUrl(raw);
+    } else if (type === "auto-block" && isLikelyHash64(raw)) {
+      url = explorerBlockUrl(raw);
+    }
+
+    return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortenText(raw, 12, 10))}</span>${copyButton(raw)}${renderExplorerLink(url)}</span>`;
+  }
+
+  function renderHash(value) {
+    return renderValueWithCopyAndExplorer(value, "auto-block");
   }
 
   function renderStatusLabel(value) {
     if (!value) return "-";
     return String(value).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function renderMinerSummaryMetrics(metrics) {
+    return `<div class="miner-summary-grid">${metrics.map((metric) => {
+      const note = metric.note
+        ? `<p class="metric-note">${escapeHtml(metric.note)}</p>`
+        : "";
+      return `<article class="miner-metric-card">
+        <span>${escapeHtml(metric.label)}</span>
+        <strong>${escapeHtml(metric.value)}</strong>
+        ${note}
+      </article>`;
+    }).join("")}</div>`;
   }
 
   function setPoolStatus(status) {
@@ -289,18 +348,20 @@
     setHtml(
       "recent-blocks",
       renderCards(blocks.items.slice(0, 3), [
-        { key: "height", label: "Height", render: formatNumber },
+        { key: "height", label: "Height", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
+        { key: "hash", label: "Block hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
         { key: "status", label: "Status", render: renderStatusLabel },
-        { key: "foundAt", label: "Observed", render: formatDate }
+        { key: "foundAt", label: "Time", render: formatDate }
       ], "No network blocks tracked in this snapshot window yet.")
     );
 
     setHtml(
       "recent-payments",
       renderCards(payments.items.slice(0, 3), [
-        { key: "wallet", label: "Wallet", render: renderHash },
+        { key: "wallet", label: "Wallet", render: (val) => renderValueWithCopyAndExplorer(val, "address") },
+        { key: "txid", label: "TxID", render: (val) => renderValueWithCopyAndExplorer(val, "txid") },
         { key: "amount", label: "Amount", render: formatNumber },
-        { key: "paidAt", label: "Paid", render: formatDate }
+        { key: "paidAt", label: "Time", render: formatDate }
       ], "No manual payment records are currently available in the public snapshot.")
     );
   }
@@ -314,10 +375,10 @@
     setHtml(
       "blocks-table",
       renderTable(blocks.items, [
-        { key: "height", label: "Height", render: formatNumber },
-        { key: "hash", label: "Hash", render: renderHash },
+        { key: "height", label: "Height", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
+        { key: "hash", label: "Block hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
         { key: "status", label: "Status", render: renderStatusLabel },
-        { key: "foundAt", label: "Found", render: formatDate },
+        { key: "foundAt", label: "Time", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber }
       ], "No network blocks tracked in this snapshot window yet.", { limit: 50 })
     );
@@ -325,8 +386,8 @@
       "accepted-candidates-table",
       renderTable(candidates.items, [
         { key: "jobId", label: "Job ID" },
-        { key: "submitTimestamp", label: "Observed", render: formatDate },
-        { key: "candidateHash", label: "Candidate Hash", render: renderHash },
+        { key: "submitTimestamp", label: "Time", render: formatDate },
+        { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
         {
           key: "lifecycleStatus",
           label: "Lifecycle Status",
@@ -337,8 +398,8 @@
         },
         {
           key: "matchedHeight",
-          label: "Observed Height",
-          render: (val) => (val ? formatNumber(val) : "-")
+          label: "Height",
+          render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-")
         },
         {
           key: "confirmations",
@@ -358,11 +419,11 @@
     setHtml(
       "rounds-table",
       renderTable(rounds.items, [
-        { key: "candidateHash", label: "Candidate Hash", render: renderHash },
+        { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
         {
           key: "matchedHeight",
-          label: "Observed Height",
-          render: (val) => (val ? formatNumber(val) : "-")
+          label: "Height",
+          render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-")
         },
         {
           key: "roundStatus",
@@ -411,17 +472,16 @@
               .map(([wallet, d]) => {
                 const pct = d.sharePercent.toFixed(2);
                 const short = wallet.length > 12 ? wallet.slice(0, 6) + "\u2026" + wallet.slice(-4) : wallet;
-                return `${short}\u00a0${pct}%`;
+                return `${escapeHtml(short)}\u00a0${pct}%`;
               })
               .join(" / ");
 
             const detailLines = entries.map(([wallet, d]) => {
               const pct = d.sharePercent.toFixed(2);
               const score = typeof d.shareScore === "number" ? d.shareScore.toFixed(2) : "-";
-              const short = wallet.length > 12 ? wallet.slice(0, 6) + "\u2026" + wallet.slice(-4) : wallet;
 
               let line = `<div style="margin-bottom: 0.15rem;">
-                <span style="color: var(--text); font-weight: 500;">${short}</span>: 
+                ${renderValueWithCopyAndExplorer(wallet, "address")}:
                 <strong>${pct}%</strong> (Score: ${score})
               </div>`;
 
@@ -434,7 +494,7 @@
                   const workerLines = workersList.slice(0, 2).map(([wName, wData]) => {
                     const wPct = wData.sharePercent.toFixed(2);
                     const wWalletPct = wData.walletSharePercent.toFixed(2);
-                    return `${wName}&nbsp;(${wPct}%&nbsp;total,&nbsp;${wWalletPct}%&nbsp;of&nbsp;wallet)`;
+                    return `${escapeHtml(wName)}&nbsp;(${wPct}%&nbsp;total,&nbsp;${wWalletPct}%&nbsp;of&nbsp;wallet)`;
                   }).join(", ");
 
                   line += `<div style="padding-left: 0.75rem; font-size: 0.9em; opacity: 0.85;">
@@ -480,20 +540,20 @@
     setHtml(
       "latest-payment",
       latest
-        ? `<h3>Most recent recorded payment</h3><div class="kv-list"><div><span>Paid</span><strong>${formatDate(latest.paidAt)}</strong></div><div><span>Wallet</span><strong>${renderHash(latest.wallet)}</strong></div><div><span>Amount</span><strong>${formatNumber(latest.amount)}</strong></div><div><span>TXID</span><strong>${renderHash(latest.txid)}</strong></div></div>`
+        ? `<h3>Most recent recorded payment</h3><div class="kv-list"><div><span>Time</span><strong>${formatDate(latest.paidAt)}</strong></div><div><span>Wallet</span><strong>${renderValueWithCopyAndExplorer(latest.wallet, "address")}</strong></div><div><span>Amount</span><strong>${formatNumber(latest.amount)}</strong></div><div><span>Height</span><strong>${latest.blockHeight ? renderValueWithCopyAndExplorer(latest.blockHeight, "block") : "-"}</strong></div><div><span>TxID</span><strong>${renderValueWithCopyAndExplorer(latest.txid, "txid")}</strong></div></div>`
         : ""
     );
 
     setHtml(
       "payments-table",
       renderTable(payments.items, [
-        { key: "wallet", label: "Wallet", render: renderHash },
-        { key: "blockHeight", label: "Observed Height", render: (val) => (val ? formatNumber(val) : "-") },
-        { key: "candidateHash", label: "Candidate Hash", render: renderHash },
+        { key: "wallet", label: "Wallet", render: (val) => renderValueWithCopyAndExplorer(val, "address") },
+        { key: "blockHeight", label: "Height", render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-") },
+        { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
         { key: "amount", label: "Amount", render: formatNumber },
-        { key: "paidAt", label: "Paid", render: formatDate },
+        { key: "paidAt", label: "Time", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber },
-        { key: "txid", label: "TXID", render: renderHash }
+        { key: "txid", label: "TxID", render: (val) => renderValueWithCopyAndExplorer(val, "txid") }
       ], "No manual payment records are currently available in the public snapshot.", { limit: 50 })
     );
   }
@@ -511,30 +571,26 @@
       const summary = result.summary || {};
       const workers = Array.isArray(result.workers) ? result.workers : [];
 
-      htmlContent += renderCards(
-        [
-          {
-            label: "Active Workers",
-            value: formatNumber(summary.activeWorkers)
-          },
-          {
-            label: "Estimated hashrate",
-            value: `${formatHashrate(summary.hashrate)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">This is a pool-side estimate from accepted shares, not the miner’s exact local GPU hashrate.</small>`
-          },
-          {
-            label: "Accepted shares",
-            value: `${formatNumber(summary.acceptedShares)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">Shares accepted by the pool. This does not imply a confirmed block or recorded payment.</small>`
-          },
-          {
-            label: "Last Share",
-            value: formatDate(summary.lastShareAt)
-          }
-        ],
-        [
-          { key: "label", label: "Metric" },
-          { key: "value", label: "Value" }
-        ]
-      );
+      htmlContent += renderMinerSummaryMetrics([
+        {
+          label: "Active Workers",
+          value: formatNumber(summary.activeWorkers)
+        },
+        {
+          label: "Estimated Hashrate",
+          value: formatHashrate(summary.hashrate),
+          note: "Pool-side estimate from accepted shares, not the miner’s exact local GPU hashrate."
+        },
+        {
+          label: "Accepted Shares",
+          value: formatNumber(summary.acceptedShares),
+          note: "Shares accepted by the pool. This does not imply a confirmed block or recorded payment."
+        },
+        {
+          label: "Last Share",
+          value: formatDate(summary.lastShareAt)
+        }
+      ]);
 
       htmlContent += "<h3>Workers</h3>";
       htmlContent += renderTable(workers, [
@@ -553,10 +609,10 @@
       { key: "amount", label: "Amount", render: formatNumber },
       {
         key: "txid",
-        label: "TXID",
-        render: renderHash
+        label: "TxID",
+        render: (val) => renderValueWithCopyAndExplorer(val, "txid")
       },
-      { key: "blockHeight", label: "Observed Height", render: (val) => (val ? formatNumber(val) : "-") },
+      { key: "blockHeight", label: "Height", render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-") },
       { key: "confirmations", label: "Confirms", render: formatNumber }
     ], "No recorded manual payments for this wallet yet.");
 

@@ -9,15 +9,57 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css">
+    <style>
+      .topbar .brand-lockup {
+        align-items: center;
+        gap: 18px;
+      }
+
+      .topbar .brand-lockup .brand-logo {
+        width: 72px !important;
+        height: 72px !important;
+        min-width: 72px !important;
+        max-width: 72px !important;
+        flex: 0 0 72px;
+        object-fit: contain;
+      }
+
+      .brand-title {
+        min-width: 0;
+      }
+
+      .brand-title h1 {
+        margin: 0;
+      }
+
+      .brand-subtitle {
+        margin: 10px 0 0;
+        max-width: 680px;
+        color: rgba(235, 245, 255, 0.72);
+        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
+        line-height: 1.45;
+      }
+
+      @media (max-width: 640px) {
+        .topbar .brand-lockup .brand-logo {
+          width: 58px !important;
+          height: 58px !important;
+          min-width: 58px !important;
+          max-width: 58px !important;
+          flex-basis: 58px;
+        }
+      }
+    </style>
   </head>
   <body data-page="connect">
     <div class="shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
-          <div>
+          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="72" height="72">
+          <div class="brand-title">
             <p class="eyebrow">PEPEPOW Community Pool</p>
             <h1>How to mine</h1>
+            <p class="brand-subtitle">Pool connection settings and full PEPEPOW mining guide link.</p>
           </div>
         </div>
         <nav class="nav">
@@ -32,52 +74,97 @@
 
       <main class="page-grid">
         <section class="panel">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <p class="eyebrow">Quick start</p>
+          <h2 style="margin-top: 0;">PEPEPOW pool connection summary</h2>
+          <p class="muted">
+            This page only contains the pool-specific settings you need to connect to this community pool.
+            Miner downloads, wallet setup, HiveOS setup, GPU selection, and troubleshooting are maintained in the full PEPEPOW mining guide.
+          </p>
+          <a class="button" href="https://pepepow.org/mining/" target="_blank" rel="noopener noreferrer">
+            Open full mining guide
+          </a>
+        </section>
+
+        <section class="panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem;">
             <h3 style="margin: 0;">Connection profile</h3>
             <button class="button" id="copy-endpoint-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Endpoint</button>
           </div>
           <div class="kv-list">
             <div><span>Coin</span><strong>PEPEPOW</strong></div>
-            <div><span>Algorithm</span><strong id="connect-algorithm">hoohash-pepew / hoohashv110-pepew</strong></div>
+            <div><span>Algorithm</span><strong id="connect-algorithm">Hoohash-pepew / Hoohash V110 PEPEW</strong></div>
             <div><span>Endpoint</span><strong id="connect-endpoint">stratum+tcp://pool.pepepow.net:39333</strong></div>
-            <div><span>Identity</span><strong>Wallet address</strong></div>
+            <div><span>Required miner flag</span><strong><code>--pepepow</code></strong></div>
+            <div><span>Username</span><strong><code>YOUR_WALLET_ADDRESS</code> or <code>YOUR_WALLET_ADDRESS.worker</code></strong></div>
+            <div><span>Password</span><strong><code>x</code></strong></div>
           </div>
+        </section>
+
+        <section class="panel">
+          <h3>3-step setup</h3>
           <div class="step-list">
-            <article><span>1</span><strong>準備 PEPEPOW wallet</strong><p>Use your wallet address as the miner username.</p></article>
-            <article><span>2</span><strong>設定挖礦軟體</strong><p>Select the PEPEPOW hoohash algorithm supported by your miner.</p></article>
-            <article><span>3</span><strong>複製指令並開始挖礦</strong><p>Connect to <code>pool.pepepow.net:39333</code>.</p></article>
-            <article><span>4</span><strong>回到 Miner Lookup 查詢 shares</strong><p>Accepted shares may take up to a minute to appear.</p></article>
+            <article>
+              <span>1</span>
+              <strong>Prepare a PEPEPOW wallet address</strong>
+              <p>Use your own PEPEPOW wallet address as the miner username. A worker name can be appended after a dot.</p>
+            </article>
+            <article>
+              <span>2</span>
+              <strong>Download HTN Miner and include <code>--pepepow</code></strong>
+              <p>Use the current HTN Miner instructions from the full PEPEPOW mining guide. Avoid outdated miner examples from older algorithms.</p>
+            </article>
+            <article>
+              <span>3</span>
+              <strong>Connect and check your shares</strong>
+              <p>Start mining on this pool, then open <a href="/miner.html">Miner Lookup</a> to check accepted shares for your wallet.</p>
+            </article>
           </div>
         </section>
 
         <section class="panel">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h3 style="margin: 0;">Sample command</h3>
-            <button class="button" id="copy-command-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Command</button>
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+            <h3 style="margin: 0;">CPU example</h3>
+            <button class="button" id="copy-command-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy CPU Command</button>
           </div>
-          <pre class="code-block" id="sample-command" style="margin-top: 0;">Loading...</pre>
+          <pre class="code-block" id="sample-command" style="margin-top: 0;">./hoo_cpu -o stratum+tcp://pool.pepepow.net:39333 -u YOUR_WALLET_ADDRESS.worker1 -t 1 -p x --pepepow</pre>
           <p class="muted small-gap">
-            Beginner note: username should be <code>YOUR_WALLET</code> or <code>YOUR_WALLET.worker</code>, password can usually be <code>x</code>, and the endpoint is <code>stratum+tcp://pool.pepepow.net:39333</code>.
+            Replace <code>YOUR_WALLET_ADDRESS.worker1</code> with your own PEPEPOW wallet address and optional worker name.
           </p>
         </section>
 
         <section class="panel">
-          <h3>Notes</h3>
+          <h3>GPU example</h3>
+          <pre class="code-block" style="margin-top: 0;">export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/hoo_gpu/libs
+./hoo_gpu -o stratum+tcp://pool.pepepow.net:39333 -u YOUR_WALLET_ADDRESS.worker1 -gpu-id 0 -p x --pepepow</pre>
+          <p class="muted small-gap">
+            GPU setup details can change by driver, library path, and miner release. Use the full guide for current download and setup details.
+          </p>
+        </section>
+
+        <section class="panel">
+          <h3>What this page does not cover</h3>
           <ul class="text-list">
-            <li>Website: <a href="https://pool.pepepow.net" style="color: var(--accent-alt); text-decoration: underline;" target="_blank" rel="noopener noreferrer">https://pool.pepepow.net</a></li>
-            <li>Use your PEPEPOW wallet address as the username.</li>
-            <li>Worker names can be appended with a dot suffix (e.g. <code>YOUR_WALLET.worker01</code>).</li>
-            <li>After mining starts, use Miner Lookup to confirm accepted shares for your wallet.</li>
-            <li>This pool is a community-operated reference implementation. Accepted shares are tracked pool-side, and recorded payments are published after review or private self-test completion.</li>
-            <li>Miner software links can be added after verification.</li>
+            <li>Miner downloads and release links.</li>
+            <li>Wallet installation and wallet backup.</li>
+            <li>HiveOS Custom Miner setup.</li>
+            <li>GPU tuning, driver issues, and troubleshooting.</li>
+            <li>Other PEPEPOW mining pools or pool comparison.</li>
           </ul>
+          <p class="muted">
+            Those topics are maintained in the full PEPEPOW mining guide:
+            <a href="https://pepepow.org/mining/" style="color: var(--accent-alt); text-decoration: underline;" target="_blank" rel="noopener noreferrer">https://pepepow.org/mining/</a>
+          </p>
         </section>
 
         <section class="panel">
-          <h3>Security boundary</h3>
-          <p class="muted">
-            The public website is for miner connection help, pool snapshots, and recorded payment history. It does not expose operator admin tools.
-          </p>
+          <h3>Pool notes</h3>
+          <ul class="text-list">
+            <li>Use <code>YOUR_WALLET_ADDRESS</code> or <code>YOUR_WALLET_ADDRESS.worker</code> as the username.</li>
+            <li>Password can usually be <code>x</code>.</li>
+            <li>Accepted shares may take up to a minute to appear on <a href="/miner.html">Miner Lookup</a>.</li>
+            <li>Pool-side accepted shares are activity records, not a reward guarantee.</li>
+            <li>The public website does not expose daemon RPC, wallet RPC, submit controls, or operator admin tools.</li>
+          </ul>
         </section>
       </main>
     </div>
