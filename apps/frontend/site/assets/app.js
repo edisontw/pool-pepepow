@@ -38,6 +38,24 @@
     });
   }
 
+  function setupInlineCopyButtons() {
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-copy-value]");
+      if (!btn) return;
+
+      const text = btn.getAttribute("data-copy-value") || "";
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(() => {
+          btn.textContent = originalText;
+        }, 1600);
+      }).catch(err => {
+        console.error("Failed to copy: ", err);
+      });
+    });
+  }
+
   async function loadRuntimeConfig() {
     try {
       const response = await fetch("/runtime-config.json", { cache: "no-store" });
@@ -121,6 +139,42 @@
     }
   }
 
+  function shortenText(value, front = 10, back = 8) {
+    if (typeof value !== "string") return "";
+    if (value.length <= front + back + 1) return value;
+    return `${value.slice(0, front)}\u2026${value.slice(-back)}`;
+  }
+
+  function copyButton(value, label = "Copy") {
+    if (!value) return "";
+    return `<button class="copy-mini" type="button" data-copy-value="${escapeHtml(value)}">${label}</button>`;
+  }
+
+  function renderHash(value) {
+    if (!value) return "-";
+    const safeValue = escapeHtml(String(value));
+    return `<span class="hash-short" title="${safeValue}">${escapeHtml(shortenText(String(value)))}</span>${copyButton(String(value))}`;
+  }
+
+  function renderStatusLabel(value) {
+    if (!value) return "-";
+    return String(value).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function setPoolStatus(status) {
+    const text = status ? String(status) : "Checking API";
+    const lower = text.toLowerCase();
+    const display = (lower === "online" || lower === "ok" || lower === "healthy")
+      ? "Pool Operational"
+      : text;
+    setText("pool-status", display);
+
+    const badge = document.querySelector(".status-badge");
+    if (badge) {
+      badge.classList.toggle("status-warn", !(lower === "online" || lower === "ok" || lower === "healthy"));
+    }
+  }
+
   function setActiveNav() {
     const currentPath = window.location.pathname || "/";
     document.querySelectorAll(".nav a").forEach((link) => {
@@ -146,7 +200,10 @@
             const rawValue = typeof field.render === "function"
               ? field.render(item[field.key], item)
               : item[field.key];
-            return `<div><span>${field.label}</span> <strong>${rawValue ?? "-"}</strong></div>`;
+            const value = typeof field.render === "function"
+              ? rawValue
+              : escapeHtml(String(rawValue ?? "-"));
+            return `<div><span>${field.label}</span> <strong>${value}</strong></div>`;
           })
           .join("");
 
@@ -155,27 +212,35 @@
       .join("");
   }
 
-  function renderTable(items, columns, emptyMessage) {
+  function renderTable(items, columns, emptyMessage, options = {}) {
     if (!Array.isArray(items) || items.length === 0) {
       return `<div class="muted">${emptyMessage || "No items available."}</div>`;
     }
 
+    const limit = options.limit || 50;
+    const visibleItems = items.slice(0, limit);
     const head = columns.map((column) => `<th>${column.label}</th>`).join("");
-    const rows = items
+    const rows = visibleItems
       .map((item) => {
         const cells = columns
           .map((column) => {
             const rawValue = typeof column.render === "function"
               ? column.render(item[column.key], item)
               : item[column.key];
-            return `<td>${rawValue ?? "-"}</td>`;
+            const value = typeof column.render === "function"
+              ? rawValue
+              : escapeHtml(String(rawValue ?? "-"));
+            return `<td data-label="${escapeHtml(column.label)}">${value}</td>`;
           })
           .join("");
         return `<tr>${cells}</tr>`;
       })
       .join("");
 
-    return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    const note = items.length > limit
+      ? `<p class="muted table-note">Showing latest ${limit} of ${items.length} records.</p>`
+      : "";
+    return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>${note}</div>`;
   }
 
   async function fetchOptionalHealth(config) {
@@ -208,8 +273,7 @@
 
     const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : pool.algorithm;
     setText("algorithm", algoDisplay);
-    setText("pool-status", pool.poolStatus);
-    setText("pool-status-inline", pool.poolStatus);
+    setPoolStatus(pool.poolStatus);
     setText("pool-hashrate", formatHashrate(pool.poolHashrate));
     setText("active-miners", formatNumber(pool.activeMiners));
     setText("active-workers", formatNumber(pool.activeWorkers));
@@ -226,7 +290,7 @@
       "recent-blocks",
       renderCards(blocks.items.slice(0, 3), [
         { key: "height", label: "Height", render: formatNumber },
-        { key: "status", label: "Status" },
+        { key: "status", label: "Status", render: renderStatusLabel },
         { key: "foundAt", label: "Observed", render: formatDate }
       ], "No network blocks tracked in this snapshot window yet.")
     );
@@ -234,7 +298,7 @@
     setHtml(
       "recent-payments",
       renderCards(payments.items.slice(0, 3), [
-        { key: "wallet", label: "Wallet" },
+        { key: "wallet", label: "Wallet", render: renderHash },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Paid", render: formatDate }
       ], "No manual payment records are currently available in the public snapshot.")
@@ -251,18 +315,18 @@
       "blocks-table",
       renderTable(blocks.items, [
         { key: "height", label: "Height", render: formatNumber },
-        { key: "hash", label: "Hash" },
-        { key: "status", label: "Status" },
+        { key: "hash", label: "Hash", render: renderHash },
+        { key: "status", label: "Status", render: renderStatusLabel },
         { key: "foundAt", label: "Found", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber }
-      ], "No network blocks tracked in this snapshot window yet.")
+      ], "No network blocks tracked in this snapshot window yet.", { limit: 50 })
     );
     setHtml(
       "accepted-candidates-table",
       renderTable(candidates.items, [
         { key: "jobId", label: "Job ID" },
         { key: "submitTimestamp", label: "Observed", render: formatDate },
-        { key: "candidateHash", label: "Candidate Hash" },
+        { key: "candidateHash", label: "Candidate Hash", render: renderHash },
         {
           key: "lifecycleStatus",
           label: "Lifecycle Status",
@@ -294,7 +358,7 @@
     setHtml(
       "rounds-table",
       renderTable(rounds.items, [
-        { key: "candidateHash", label: "Candidate Hash" },
+        { key: "candidateHash", label: "Candidate Hash", render: renderHash },
         {
           key: "matchedHeight",
           label: "Observed Height",
@@ -392,30 +456,45 @@
             </div>`;
           }
         }
-      ], "No active rounds or contribution data tracked in this snapshot.")
+      ], "No active rounds or contribution data tracked in this snapshot.", { limit: 50 })
     );
   }
 
   async function renderPayments(config) {
-    const payments = await fetchJson(`${config.apiBaseUrl}/payments`);
+    const [payments, pool] = await Promise.all([
+      fetchJson(`${config.apiBaseUrl}/payments`),
+      fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({}))
+    ]);
+    const feeText = typeof pool.feePercent === "number"
+      ? `Pool fee: ${pool.feePercent}%`
+      : "Pool fee: Fee shown when configured";
+    const minText = typeof pool.minPayout === "number"
+      ? `Minimum payout: ${formatNumber(pool.minPayout)} PEPEPOW`
+      : "Minimum payout shown when configured";
+    setHtml(
+      "payment-info",
+      `<span class="info-chip">Payment mode: manual/recorded</span><span class="info-chip">${feeText}</span><span class="info-chip">${minText}</span>`
+    );
+
+    const latest = Array.isArray(payments.items) ? payments.items[0] : null;
+    setHtml(
+      "latest-payment",
+      latest
+        ? `<h3>Most recent recorded payment</h3><div class="kv-list"><div><span>Paid</span><strong>${formatDate(latest.paidAt)}</strong></div><div><span>Wallet</span><strong>${renderHash(latest.wallet)}</strong></div><div><span>Amount</span><strong>${formatNumber(latest.amount)}</strong></div><div><span>TXID</span><strong>${renderHash(latest.txid)}</strong></div></div>`
+        : ""
+    );
+
     setHtml(
       "payments-table",
       renderTable(payments.items, [
-        { key: "wallet", label: "Wallet" },
+        { key: "wallet", label: "Wallet", render: renderHash },
         { key: "blockHeight", label: "Observed Height", render: (val) => (val ? formatNumber(val) : "-") },
-        {
-          key: "candidateHash",
-          label: "Candidate Hash",
-          render: (val) => {
-            if (!val) return "-";
-            return val.length > 16 ? val.slice(0, 8) + "\u2026" + val.slice(-8) : val;
-          }
-        },
+        { key: "candidateHash", label: "Candidate Hash", render: renderHash },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Paid", render: formatDate },
         { key: "confirmations", label: "Confirms", render: formatNumber },
-        { key: "txid", label: "TXID" }
-      ], "No manual payment records are currently available in the public snapshot.")
+        { key: "txid", label: "TXID", render: renderHash }
+      ], "No manual payment records are currently available in the public snapshot.", { limit: 50 })
     );
   }
 
@@ -427,7 +506,7 @@
     let htmlContent = "";
 
     if (!result.found) {
-      htmlContent += `<div class="muted">No active miner data found for <strong>${escapeHtml(wallet)}</strong>.<br><small style="display: block; margin-top: 0.5rem; opacity: 0.8;">Note: Miner statistics are generated dynamically from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</small></div>`;
+      htmlContent += `<div class="empty-state"><strong>No active miner data found for ${escapeHtml(wallet)}.</strong><p class="muted">Miner statistics are generated from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</p><a class="button" href="/connect.html">查看如何開始挖礦</a></div>`;
     } else {
       const summary = result.summary || {};
       const workers = Array.isArray(result.workers) ? result.workers : [];
@@ -439,7 +518,7 @@
             value: formatNumber(summary.activeWorkers)
           },
           {
-            label: "Pool-side share-rate estimate",
+            label: "Estimated hashrate",
             value: `${formatHashrate(summary.hashrate)} <br><small style="font-weight: normal; font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem;">This is a pool-side estimate from accepted shares, not the miner’s exact local GPU hashrate.</small>`
           },
           {
@@ -461,7 +540,7 @@
       htmlContent += renderTable(workers, [
         { key: "name", label: "Worker" },
         { key: "acceptedShares", label: "Accepted shares", render: formatNumber },
-        { key: "hashrate", label: "Share-rate estimate", render: formatHashrate },
+        { key: "hashrate", label: "Estimated hashrate", render: formatHashrate },
         { key: "lastShareAt", label: "Last Share", render: formatDate }
       ]);
     }
@@ -475,10 +554,7 @@
       {
         key: "txid",
         label: "TXID",
-        render: (val) => {
-          if (!val) return "-";
-          return val.length > 16 ? val.slice(0, 8) + "\u2026" + val.slice(-8) : val;
-        }
+        render: renderHash
       },
       { key: "blockHeight", label: "Observed Height", render: (val) => (val ? formatNumber(val) : "-") },
       { key: "confirmations", label: "Confirms", render: formatNumber }
@@ -497,9 +573,14 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      const wallet = input.value.trim();
+      if (!wallet) {
+        setHtml("miner-result", '<div class="empty-state"><strong>輸入 PEPEPOW 錢包地址來查詢礦工狀態。</strong><p class="muted">資料會在 pool 收到 accepted shares 後出現。</p><a class="button" href="/connect.html">查看如何開始挖礦</a></div>');
+        return;
+      }
       setHtml("miner-result", '<div class="muted">Loading miner data...</div>');
       try {
-        await lookupMiner(config, input.value.trim());
+        await lookupMiner(config, wallet);
       } catch (error) {
         setHtml("miner-result", `<div class="error">${error.message}</div>`);
       }
@@ -518,11 +599,12 @@
 
     setText("connect-algorithm", "hoohash-pepew / hoohashv110-pepew");
     setText("connect-endpoint", endpoint);
-    setText("sample-command", sampleCommand);
+    setHtml("sample-command", escapeHtml(sampleCommand).replace("YOUR_WALLET", '<mark>YOUR_WALLET</mark>'));
   }
 
   async function run() {
     setActiveNav();
+    setupInlineCopyButtons();
     const page = document.body.dataset.page;
     const config = await loadRuntimeConfig();
 

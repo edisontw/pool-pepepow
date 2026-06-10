@@ -13,9 +13,12 @@
   <body data-page="api">
     <div class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">PEPEPOW Community Pool</p>
-          <h1>PEPEPOW Pool API</h1>
+        <div class="brand-lockup">
+          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
+          <div>
+            <p class="eyebrow">PEPEPOW Community Pool</p>
+            <h1>PEPEPOW Pool API</h1>
+          </div>
         </div>
         <nav class="nav">
           <a href="/">Dashboard</a>
@@ -59,7 +62,7 @@ curl -s https://pool.pepepow.net/api/status | jq</pre>
 
         <section class="panel">
           <h2>Endpoints</h2>
-          <div class="list-state">
+          <div class="endpoint-grid">
             <article class="item-card">
               <h3>GET /api/stats</h3>
               <p class="muted">Purpose: Return a NOMP-like pool stats format for MiningPoolStats and external pool listing sites.</p>
@@ -147,5 +150,6 @@ curl -s https://pool.pepepow.net/api/status | jq</pre>
         </section>
       </main>
     </div>
+    <script src="/assets/app.js"></script>
   </body>
 </html>

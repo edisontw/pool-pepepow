@@ -13,9 +13,12 @@
   <body data-page="payments">
     <div class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">PEPEPOW Community Pool</p>
-          <h1>Manual payments recorded</h1>
+        <div class="brand-lockup">
+          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
+          <div>
+            <p class="eyebrow">PEPEPOW Community Pool</p>
+            <h1>Manual payments recorded</h1>
+          </div>
         </div>
         <nav class="nav">
           <a href="/">Dashboard</a>
@@ -32,6 +35,12 @@
           <p class="muted">
             Payments shown here are recorded after operator review or private self-test completion. This page does not show pending or estimated amounts.
           </p>
+          <div id="payment-info" class="chip-row">
+            <span class="info-chip">Payment mode: manual/recorded</span>
+            <span class="info-chip">Pool fee: Fee shown when configured</span>
+            <span class="info-chip">Minimum payout shown when configured</span>
+          </div>
+          <div id="latest-payment" class="latest-card"></div>
           <div id="payments-table" class="list-state">Loading payments...</div>
         </section>
       </main>

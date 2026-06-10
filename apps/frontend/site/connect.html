@@ -13,9 +13,12 @@
   <body data-page="connect">
     <div class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">PEPEPOW Community Pool</p>
-          <h1>How to mine</h1>
+        <div class="brand-lockup">
+          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
+          <div>
+            <p class="eyebrow">PEPEPOW Community Pool</p>
+            <h1>How to mine</h1>
+          </div>
         </div>
         <nav class="nav">
           <a href="/">Dashboard</a>
@@ -39,15 +42,11 @@
             <div><span>Endpoint</span><strong id="connect-endpoint">stratum+tcp://pool.pepepow.net:39333</strong></div>
             <div><span>Identity</span><strong>Wallet address</strong></div>
           </div>
-          <div class="info-note">
-            <strong>Connection checklist</strong>
-            <ul class="compact-list">
-              <li>Use a PEPEPOW wallet address as the miner username.</li>
-              <li>Add an optional worker suffix after a dot, such as <code>YOUR_WALLET.worker01</code>.</li>
-              <li>Select the PEPEPOW hoohash algorithm supported by your miner.</li>
-              <li>Connect to <code>pool.pepepow.net:39333</code>.</li>
-              <li>Leave password as <code>x</code> unless your miner requires another placeholder.</li>
-            </ul>
+          <div class="step-list">
+            <article><span>1</span><strong>準備 PEPEPOW wallet</strong><p>Use your wallet address as the miner username.</p></article>
+            <article><span>2</span><strong>設定挖礦軟體</strong><p>Select the PEPEPOW hoohash algorithm supported by your miner.</p></article>
+            <article><span>3</span><strong>複製指令並開始挖礦</strong><p>Connect to <code>pool.pepepow.net:39333</code>.</p></article>
+            <article><span>4</span><strong>回到 Miner Lookup 查詢 shares</strong><p>Accepted shares may take up to a minute to appear.</p></article>
           </div>
         </section>
 
@@ -57,6 +56,9 @@
             <button class="button" id="copy-command-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Command</button>
           </div>
           <pre class="code-block" id="sample-command" style="margin-top: 0;">Loading...</pre>
+          <p class="muted small-gap">
+            Beginner note: username should be <code>YOUR_WALLET</code> or <code>YOUR_WALLET.worker</code>, password can usually be <code>x</code>, and the endpoint is <code>stratum+tcp://pool.pepepow.net:39333</code>.
+          </p>
         </section>
 
         <section class="panel">
@@ -67,6 +69,7 @@
             <li>Worker names can be appended with a dot suffix (e.g. <code>YOUR_WALLET.worker01</code>).</li>
             <li>After mining starts, use Miner Lookup to confirm accepted shares for your wallet.</li>
             <li>This pool is a community-operated reference implementation. Accepted shares are tracked pool-side, and recorded payments are published after review or private self-test completion.</li>
+            <li>Miner software links can be added after verification.</li>
           </ul>
         </section>
 

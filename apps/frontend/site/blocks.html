@@ -13,9 +13,12 @@
   <body data-page="blocks">
     <div class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">PEPEPOW Community Pool</p>
-          <h1>Recent blocks</h1>
+        <div class="brand-lockup">
+          <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="40" height="40">
+          <div>
+            <p class="eyebrow">PEPEPOW Community Pool</p>
+            <h1>Recent blocks</h1>
+          </div>
         </div>
         <nav class="nav">
           <a href="/">Dashboard</a>
@@ -33,6 +36,12 @@
           <p class="muted">
             Block states shown here come from public pool snapshots. Accepted shares are not the same as confirmed blocks.
           </p>
+          <div class="legend-grid" aria-label="Block status legend">
+            <div><strong>Confirmed</strong><span>Block is matched and past maturity threshold.</span></div>
+            <div><strong>Immature</strong><span>Matched but still waiting for confirmations.</span></div>
+            <div><strong>Orphan</strong><span>Not on the active chain.</span></div>
+            <div><strong>Candidate recorded</strong><span>Pool-side observation only, not a payout promise.</span></div>
+          </div>
           <div id="blocks-table" class="list-state">Loading blocks...</div>
         </section>
 
