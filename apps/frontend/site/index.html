@@ -38,6 +38,90 @@
         line-height: 1.45;
       }
 
+      .status-overview {
+        grid-column: span 12;
+      }
+
+      .status-overview-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.9rem;
+      }
+
+      .status-overview-card {
+        display: grid;
+        gap: 0.55rem;
+        align-content: start;
+        min-height: 11rem;
+        padding: 1rem;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .status-overview-card span {
+        color: var(--muted);
+        font-size: 0.82rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status-overview-card strong {
+        font-size: clamp(1.05rem, 1.8vw, 1.45rem);
+        line-height: 1.15;
+      }
+
+      .status-overview-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.42;
+      }
+
+      .status-pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        padding: 0.28rem 0.55rem;
+        border-radius: 999px;
+        border: 1px solid rgba(129, 247, 176, 0.22);
+        background: rgba(129, 247, 176, 0.08);
+        color: var(--accent);
+        font-size: 0.76rem;
+        font-weight: 800;
+      }
+
+      .status-pill.is-info {
+        border-color: rgba(55, 196, 255, 0.24);
+        background: rgba(55, 196, 255, 0.08);
+        color: var(--accent-alt);
+      }
+
+      .status-pill.is-guarded {
+        border-color: rgba(255, 212, 90, 0.28);
+        background: rgba(255, 212, 90, 0.09);
+        color: #ffd45a;
+      }
+
+      .status-card-link {
+        margin-top: auto;
+        color: var(--accent-alt);
+        font-size: 0.86rem;
+        font-weight: 700;
+      }
+
+      @media (max-width: 920px) {
+        .status-overview-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
       @media (max-width: 640px) {
         .brand-lockup {
           gap: 0.85rem;
@@ -50,6 +134,14 @@
 
         .brand-subtitle {
           font-size: 0.92rem;
+        }
+
+        .status-overview-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .status-overview-card {
+          min-height: auto;
         }
       }
     </style>
@@ -107,6 +199,56 @@
               scrolling="no"
               loading="lazy"
             ></iframe>
+          </div>
+        </section>
+
+        <section class="panel status-overview" aria-labelledby="pool-status-overview-title">
+          <p class="eyebrow">Operational status</p>
+          <h3 id="pool-status-overview-title">Pool connection, blocks, and payments</h3>
+          <div class="status-overview-grid">
+            <article class="status-overview-card">
+              <span>Mining connection</span>
+              <strong>Ready for miners</strong>
+              <div class="status-pill-row">
+                <em class="status-pill">Stratum</em>
+                <em class="status-pill is-info">hoohashv110</em>
+              </div>
+              <p>Use <code>stratum+tcp://pool.pepepow.net:39333</code> with your PEPEPOW wallet as the username.</p>
+              <a class="status-card-link" href="/connect.html">Open connection guide →</a>
+            </article>
+
+            <article class="status-overview-card">
+              <span>Public data</span>
+              <strong>API-backed snapshots</strong>
+              <div class="status-pill-row">
+                <em class="status-pill">Read-only</em>
+                <em class="status-pill is-info">Cached</em>
+              </div>
+              <p>Homepage metrics are loaded from public pool APIs and summarized snapshots, not daemon or wallet RPC.</p>
+              <a class="status-card-link" href="/api.html">View API docs →</a>
+            </article>
+
+            <article class="status-overview-card">
+              <span>Block submit</span>
+              <strong>Operator-controlled</strong>
+              <div class="status-pill-row">
+                <em class="status-pill is-guarded">Guarded</em>
+                <em class="status-pill">Candidate tracking</em>
+              </div>
+              <p>Pool candidates and chain matches are shown for observation. Public pages never expose submit controls.</p>
+              <a class="status-card-link" href="/blocks.html">Check blocks →</a>
+            </article>
+
+            <article class="status-overview-card">
+              <span>Payments</span>
+              <strong>Recorded payments</strong>
+              <div class="status-pill-row">
+                <em class="status-pill is-guarded">Reviewed</em>
+                <em class="status-pill is-info">TxID shown</em>
+              </div>
+              <p>Payments appear only after they are completed and recorded. No public balance or payout controls are exposed.</p>
+              <a class="status-card-link" href="/payments.html">View payments →</a>
+            </article>
           </div>
         </section>
 
