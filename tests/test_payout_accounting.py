@@ -965,6 +965,21 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("auto-payout-once allowed wallet must be non-empty", res.stderr)
 
+        # 7d. Test PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET=true allows empty allowed wallets
+        env_open_wallet = dict(env)
+        env_open_wallet["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
+        env_open_wallet["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS"] = ""
+        env_open_wallet["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = ""
+        env_open_wallet["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "50.5"
+        env_open_wallet["PEPEPOW_AUTO_PAYOUT_MAX_SENDS"] = "3"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_open_wallet,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0)
+
     def test_payout_candidates_harden_rules(self):
         # 1. Missing reward
         accepted_data = {
@@ -4599,6 +4614,127 @@ class AutoPayoutOnceTests(unittest.TestCase):
         self.assertEqual(sent_args[5], self.allowed_wallet)
         reasons = [item.get("reason") for item in self._read_result()["items"]]
         self.assertIn("wallet_not_allowed", reasons)
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_open_wallet_mode(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        old_any_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET")
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
+        try:
+            # 1. Allows a non-allowlisted wallet (self.other_wallet) only when confirmed, coinbase-matched, unpaid, and over threshold.
+            candidate_ok = self._candidate("candopenwallet0000000000001", wallet=self.other_wallet, amount=1500.0)
+
+            # 2. open-wallet mode still blocks already-paid candidateId+wallet
+            candidate_already_paid = self._candidate("candopenwallet0000000000002", wallet=self.other_wallet, amount=1500.0)
+            # Add to actions log to simulate already paid
+            self.actions_log.write_text(json.dumps({
+                "candidate_id": "candopenwallet0000000000002",
+                "wallet": self.other_wallet,
+                "amount": 1500.0,
+                "txid": "txidopenwalletalready0000000001",
+                "status": "sent",
+                "timestamp": "2026-06-09T00:00:00Z",
+            }) + "\n", encoding="utf-8")
+
+            # 3. open-wallet mode still blocks coinbase reward mismatch
+            candidate_coinbase_mismatch = self._candidate(
+                "candopenwallet0000000000003",
+                wallet=self.other_wallet,
+                amount=1500.0,
+                coinbaseMatchesExpectedPoolWallet=False,
+                blockedReason="blocked_coinbase_reward_mismatch"
+            )
+
+            # 4. open-wallet mode still blocks immature/orphan/unconfirmed
+            candidate_immature = self._candidate("candopenwallet0000000000004", wallet=self.other_wallet, amount=1500.0, payout_status="below_threshold_carried", lifecycleStatus="immature", blockedReason="immature_block")
+
+            self._write_candidates([
+                candidate_ok,
+                candidate_already_paid,
+                candidate_coinbase_mismatch,
+                candidate_immature
+            ])
+
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None, # no allowlist passed
+                min_payout=1000.0,
+                max_sends=5,
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(mock_send.call_count, 1) # only candidate_ok is sent
+            sent_args = mock_send.call_args[0]
+            self.assertEqual(sent_args[5], self.other_wallet)
+            self.assertEqual(sent_args[6], "1500")
+
+            result = self._read_result()
+            items_by_id = {item["candidateId"]: item for item in result["items"] if "candidateId" in item}
+            self.assertEqual(items_by_id["candopenwallet0000000000001"]["action"], "send_once")
+            self.assertEqual(items_by_id["candopenwallet0000000000002"]["reason"], "blocked_already_paid")
+            self.assertEqual(items_by_id["candopenwallet0000000000003"]["reason"], "blocked_coinbase_reward_mismatch")
+            self.assertEqual(items_by_id["candopenwallet0000000000004"]["reason"], "lifecycle_status_immature")
+        finally:
+            if old_any_wallet is None:
+                os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", None)
+            else:
+                os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = old_any_wallet
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_open_wallet_respects_max_sends(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        old_any_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET")
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
+        try:
+            self._write_candidates([
+                self._candidate(f"candopenmax{i:015d}", wallet=self.other_wallet, amount=1500.0) for i in range(5)
+            ])
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None,
+                min_payout=1000.0,
+                max_sends=2,
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(mock_send.call_count, 2)
+            result = self._read_result()
+            self.assertEqual(result["sendInvocations"], 2)
+        finally:
+            if old_any_wallet is None:
+                os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", None)
+            else:
+                os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = old_any_wallet
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_default_mode_enforces_allowlist_when_not_true(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        old_any_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET")
+        os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", None)
+        try:
+            self._write_candidates([
+                self._candidate("canddefaultallow001", wallet=self.other_wallet, amount=1500.0)
+            ])
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None,
+                min_payout=1000.0,
+                max_sends=5,
+            )
+            self.assertEqual(rc, 0)
+            mock_send.assert_not_called()
+            result = self._read_result()
+            self.assertEqual(result["items"][0]["reason"], "wallet_not_allowed")
+        finally:
+            if old_any_wallet is not None:
+                os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = old_any_wallet
 
 
 class WalletSendOnceTests(unittest.TestCase):

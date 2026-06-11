@@ -2673,7 +2673,9 @@ def auto_payout_once(
     max_sends: int = 5,
 ) -> int:
     """Select eligible self-test payouts and send each through the one-shot sender."""
-    if not allowed_wallets:
+    env = load_env_vars()
+    allow_any_wallet = env.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", "").strip().lower() == "true"
+    if not allowed_wallets and not allow_any_wallet:
         env_wallets = os.getenv("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS")
         if env_wallets:
             allowed_wallets = {w.strip() for w in env_wallets.split(",") if w.strip()}
@@ -2683,6 +2685,8 @@ def auto_payout_once(
                 allowed_wallets = {w.strip() for w in env_wallet.split(",") if w.strip()}
             else:
                 allowed_wallets = AUTO_PAYOUT_DEFAULT_ALLOWED_WALLETS
+    if allowed_wallets is None:
+        allowed_wallets = set()
     try:
         max_sends = int(max_sends)
     except (TypeError, ValueError):
@@ -2771,7 +2775,7 @@ def auto_payout_once(
 
                 wallet = str(payout.get("wallet") or "")
                 amount_raw = payout.get("amount")
-                if wallet not in allowed_wallets:
+                if not allow_any_wallet and wallet not in allowed_wallets:
                     append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
                     continue
                 if payout.get("status") != "pending_manual_payment":

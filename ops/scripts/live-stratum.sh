@@ -1148,11 +1148,12 @@ auto_payout_once_service() {
   ensure_runtime_dir
   load_launch_env_if_present
 
-  local followup_count max_sends min_payout wallet_max_sends allowed_wallets_env allowed_wallets_args
+  local followup_count max_sends min_payout wallet_max_sends allowed_wallets_env allowed_wallets_args allow_any_wallet
   followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-5}"
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
   wallet_max_sends="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-${REAL_WALLET_PAYOUT_MAX_SENDS:-10}}"
   max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-${wallet_max_sends}}"
+  allow_any_wallet="${PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET:-false}"
   allowed_wallets_env="${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS:-${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET-PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD}}"
 
   if [[ ! "${followup_count}" =~ ^[0-9]+$ ]] || [[ "${followup_count}" -lt 1 ]]; then
@@ -1171,18 +1172,22 @@ auto_payout_once_service() {
     echo "auto-payout-once min payout must be numeric and > 0" >&2
     return 1
   fi
-  if [[ -z "${allowed_wallets_env}" ]]; then
-    echo "auto-payout-once allowed wallet must be non-empty" >&2
-    return 1
+  if [[ "${allow_any_wallet}" != "true" ]]; then
+    if [[ -z "${allowed_wallets_env}" ]]; then
+      echo "auto-payout-once allowed wallet must be non-empty" >&2
+      return 1
+    fi
   fi
 
   allowed_wallets_args=()
-  IFS=',' read -ra ADDR <<< "${allowed_wallets_env}"
-  for w in "${ADDR[@]}"; do
-    if [[ -n "${w}" ]]; then
-      allowed_wallets_args+=("--allowed-wallet" "${w}")
-    fi
-  done
+  if [[ "${allow_any_wallet}" != "true" ]]; then
+    IFS=',' read -ra ADDR <<< "${allowed_wallets_env}"
+    for w in "${ADDR[@]}"; do
+      if [[ -n "${w}" ]]; then
+        allowed_wallets_args+=("--allowed-wallet" "${w}")
+      fi
+    done
+  fi
 
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" candidate_followup_service candidate-followup "${followup_count}" --record
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" payout_candidates_service
@@ -1191,6 +1196,7 @@ auto_payout_once_service() {
   PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" \
   PEPEPOW_ENABLE_REAL_WALLET_PAYOUT="${REAL_WALLET_PAYOUT_ENABLED}" \
   PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${wallet_max_sends}" \
+  PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET="${allow_any_wallet}" \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
       --candidates "${RUNTIME_DIR}/payout-candidates.json" \
       --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \
