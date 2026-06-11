@@ -50,7 +50,7 @@
 
       .status-overview-card {
         display: grid;
-        gap: 0.65rem;
+        gap: 0.75rem;
         align-content: start;
         min-height: 11rem;
         padding: 1rem;
@@ -78,47 +78,54 @@
         line-height: 1.42;
       }
 
-      .status-endpoint {
+      .status-marker {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        max-width: 100%;
+        padding: 0.42rem 0.7rem;
+        border-radius: 999px;
+        border: 1px solid rgba(238, 245, 248, 0.2);
+        background: rgba(238, 245, 248, 0.09);
+        color: var(--text);
+        font-size: 0.82rem;
+        font-weight: 800;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .status-marker.is-ok {
+        border-color: rgba(129, 247, 176, 0.4);
+        background: rgba(129, 247, 176, 0.16);
+      }
+
+      .status-marker.is-guarded {
+        border-color: rgba(255, 212, 90, 0.42);
+        background: rgba(255, 212, 90, 0.16);
+      }
+
+      .status-endpoint-box {
+        display: grid;
+        gap: 0.25rem;
+        padding: 0.68rem 0.75rem;
+        border-radius: 12px;
+        border: 1px solid rgba(55, 196, 255, 0.22);
+        background: rgba(55, 196, 255, 0.07);
+      }
+
+      .status-endpoint-box span {
+        color: var(--muted);
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status-endpoint-box code {
         display: block;
-        margin-top: 0.2rem;
         color: var(--text);
         font-size: 0.82rem;
         line-height: 1.35;
         overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-
-      .status-pill-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.45rem;
-      }
-
-      .status-pill {
-        display: inline-flex;
-        align-items: center;
-        width: fit-content;
-        padding: 0.3rem 0.62rem;
-        border-radius: 999px;
-        border: 1px solid rgba(129, 247, 176, 0.38);
-        background: rgba(129, 247, 176, 0.16);
-        color: #d7ffe4;
-        font-size: 0.78rem;
-        font-style: normal;
-        font-weight: 800;
-        letter-spacing: 0.01em;
-      }
-
-      .status-pill.is-info {
-        border-color: rgba(55, 196, 255, 0.42);
-        background: rgba(55, 196, 255, 0.16);
-        color: #d7f4ff;
-      }
-
-      .status-pill.is-guarded {
-        border-color: rgba(255, 212, 90, 0.48);
-        background: rgba(255, 212, 90, 0.16);
-        color: #fff0b5;
       }
 
       .status-card-link {
@@ -221,32 +228,27 @@
             <article class="status-overview-card">
               <span>Mining connection</span>
               <strong>Ready for miners</strong>
-              <div class="status-pill-row">
-                <em class="status-pill">Stratum</em>
-                <em class="status-pill is-info">hoohashv110</em>
+              <div class="status-marker is-ok">Online Stratum</div>
+              <div class="status-endpoint-box">
+                <span>Endpoint</span>
+                <code>pool.pepepow.net:39333</code>
               </div>
-              <p>Use <code class="status-endpoint">stratum+tcp://pool.pepepow.net:39333</code> with your PEPEPOW wallet as the username.</p>
+              <p>Use your PEPEPOW wallet as the username.</p>
               <a class="status-card-link" href="/connect.html">Open connection guide →</a>
             </article>
 
             <article class="status-overview-card">
               <span>Public data</span>
               <strong>API-backed snapshots</strong>
-              <div class="status-pill-row">
-                <em class="status-pill">Read-only</em>
-                <em class="status-pill is-info">Cached</em>
-              </div>
-              <p>Homepage metrics are loaded from public pool APIs and summarized snapshots, not daemon or wallet RPC.</p>
+              <div class="status-marker is-ok">Read-only data</div>
+              <p>Homepage metrics come from public APIs and summarized snapshots, not daemon or wallet RPC.</p>
               <a class="status-card-link" href="/api.html">View API docs →</a>
             </article>
 
             <article class="status-overview-card">
               <span>Block submit</span>
               <strong>Operator-controlled</strong>
-              <div class="status-pill-row">
-                <em class="status-pill is-guarded">Guarded</em>
-                <em class="status-pill">Candidate tracking</em>
-              </div>
+              <div class="status-marker is-guarded">Guarded submit</div>
               <p>Pool candidates and chain matches are shown for observation. Public pages never expose submit controls.</p>
               <a class="status-card-link" href="/blocks.html">Check blocks →</a>
             </article>
@@ -254,11 +256,8 @@
             <article class="status-overview-card">
               <span>Payments</span>
               <strong>Recorded payments</strong>
-              <div class="status-pill-row">
-                <em class="status-pill is-guarded">Reviewed</em>
-                <em class="status-pill is-info">TxID shown</em>
-              </div>
-              <p>Payments appear only after they are completed and recorded. No public balance or payout controls are exposed.</p>
+              <div class="status-marker is-guarded">Completed records only</div>
+              <p>Payments appear after they are completed and recorded. No public balance or payout controls are exposed.</p>
               <a class="status-card-link" href="/payments.html">View payments →</a>
             </article>
           </div>
