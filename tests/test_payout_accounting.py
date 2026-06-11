@@ -1757,6 +1757,62 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(items[0]["status"], "blocked")
         self.assertEqual(items[0]["reason"], "blocked_already_paid")
 
+    def test_payout_candidates_already_paid_from_payments_snapshot(self):
+        candidate_id = "hash_paid_from_snapshot"
+        wallet = "walletA"
+        with self.accepted_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": candidate_id,
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 601,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "reward": 5000.0,
+                    }
+                ]
+            }, f)
+        with self.rounds_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "rounds": [
+                    {
+                        "candidate_hash": candidate_id,
+                        "total_share_score": 10.0,
+                        "total_share_count": 10,
+                        "shares": {
+                            wallet: {
+                                "share_count": 10,
+                                "share_score": 10.0,
+                                "share_percent": 100.0,
+                            }
+                        },
+                    }
+                ]
+            }, f)
+        with self.snapshot_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "items": [
+                    {
+                        "candidateHash": candidate_id,
+                        "blockHash": candidate_id,
+                        "wallet": wallet,
+                        "amount": 4950.0,
+                        "txid": "txid_paid_from_snapshot_123",
+                        "paidAt": "2026-06-06T13:00:00Z",
+                        "status": "ready_for_manual_review",
+                    }
+                ]
+            }, f)
+
+        rc = payout_helper.generate_payout_candidates(
+            self.accepted_path, self.rounds_path, self.output_path
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            item = json.load(f)["items"][0]
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["reason"], "blocked_already_paid")
+
     def test_generate_payments_snapshot_includes_metadata_when_available(self):
         # Create a mock payout-candidates.json containing a candidate
         candidates_data = {

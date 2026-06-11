@@ -282,7 +282,11 @@ def action_represents_successful_payment(action: dict[str, Any]) -> bool:
     return bool(action.get("txid") and action.get("candidate_id") and action.get("wallet"))
 
 
-def load_paid_payment_pairs(actions_log_path: Path, candidates_path: Path | None = None) -> set[tuple[str, str]]:
+def load_paid_payment_pairs(
+    actions_log_path: Path,
+    candidates_path: Path | None = None,
+    payments_snapshot_path: Path | None = None,
+) -> set[tuple[str, str]]:
     """Load successful paid candidate_id + wallet pairs from the append-only actions log."""
     paid_pairs: set[tuple[str, str]] = set()
     if actions_log_path.exists():
@@ -309,6 +313,32 @@ def load_paid_payment_pairs(actions_log_path: Path, candidates_path: Path | None
                                     paid_pairs.add((str(source_id), str(wallet)))
         except Exception:
             pass
+
+    if payments_snapshot_path is not None and payments_snapshot_path.exists():
+        try:
+            with payments_snapshot_path.open("r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except Exception:
+            snapshot = None
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("items"), list):
+            for item in snapshot["items"]:
+                if not isinstance(item, dict):
+                    continue
+                status = item.get("status")
+                if isinstance(status, str) and status.strip().lower() in FAILED_PAYMENT_ACTION_STATUSES:
+                    continue
+                if not item.get("txid"):
+                    continue
+                c_id = (
+                    item.get("candidate_id")
+                    or item.get("candidateId")
+                    or item.get("candidateHash")
+                    or item.get("candidate_hash")
+                    or item.get("blockHash")
+                )
+                wallet = item.get("wallet")
+                if c_id and wallet:
+                    paid_pairs.add((str(c_id), str(wallet)))
 
     if not paid_pairs or candidates_path is None or not candidates_path.exists():
         return paid_pairs
@@ -692,7 +722,8 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         min_payout = 100000.0
 
     actions_log_path = output_path.parent / "payment-actions.jsonl"
-    paid_pairs = load_paid_payment_pairs(actions_log_path, output_path)
+    payments_snapshot_path = output_path.parent / "payments-snapshot.json"
+    paid_pairs = load_paid_payment_pairs(actions_log_path, output_path, payments_snapshot_path)
 
     wallet_carry_state: dict[str, dict[str, Any]] = {}
     for wallet, items in carry_map.items():
