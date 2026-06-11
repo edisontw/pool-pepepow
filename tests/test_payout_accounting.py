@@ -939,6 +939,32 @@ class PayoutAccountingTests(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0)
 
+        # 7b. Test valid configuration with PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS (passes validation and returns 0)
+        env_valid_wallets = dict(env)
+        env_valid_wallets["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "50.5"
+        env_valid_wallets["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS"] = "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD,PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"
+        env_valid_wallets["PEPEPOW_AUTO_PAYOUT_MAX_SENDS"] = "3"
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_valid_wallets,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0)
+
+        # 7c. Test empty PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS triggers error when PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET is also empty
+        env_empty_wallets = dict(env)
+        env_empty_wallets["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS"] = ""
+        env_empty_wallets["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = ""
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_empty_wallets,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("auto-payout-once allowed wallet must be non-empty", res.stderr)
+
     def test_payout_candidates_harden_rules(self):
         # 1. Missing reward
         accepted_data = {
@@ -4421,6 +4447,92 @@ class AutoPayoutOnceTests(unittest.TestCase):
         sent_args = mock_send.call_args[0]
         self.assertEqual(sent_args[6], "4343.625")
         self.assertEqual(self._read_result()["items"][0]["amount"], "4343.625")
+
+    def test_auto_payout_does_not_force_real_wallet_payout_enabled(self):
+        old_enabled = os.environ.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT")
+        old_max_sends = os.environ.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+        os.environ.pop("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", None)
+        os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
+        try:
+            self._write_candidates([
+                self._candidate("candautodisabledsend000000001")
+            ])
+
+            rc = self._run(max_sends=1)
+            self.assertEqual(rc, 0)
+            result = self._read_result()
+            self.assertEqual(result["sendInvocations"], 1)
+            self.assertEqual(result["sentCount"], 0)
+            self.assertEqual(result["items"][0]["sendOnceStatus"], "blocked_real_wallet_payout_disabled")
+            self.assertFalse(self.actions_log.exists())
+        finally:
+            if old_enabled is None:
+                os.environ.pop("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = old_enabled
+            if old_max_sends is None:
+                os.environ.pop("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS", None)
+            else:
+                os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = old_max_sends
+
+    def test_auto_payout_allowlist_env(self):
+        old_wallets = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS")
+        old_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET")
+        os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS", None)
+        os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET", None)
+        try:
+            self._write_candidates([
+                self._candidate("candautoallowenv000000000001", wallet="PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"),
+                self._candidate("candautoallowenv000000000002", wallet="PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"),
+                self._candidate("candautoallowenv000000000003", wallet="PEPEPOW1WalletAddressTargetOther"),
+            ])
+
+            # 1. Test PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS list
+            os.environ["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS"] = "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD,PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None,
+                min_payout=1000.0,
+                max_sends=0, # no actual sends
+            )
+            self.assertEqual(rc, 0)
+            result = self._read_result()
+            allowed = set(result["allowedWallets"])
+            self.assertEqual(allowed, {"PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD", "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"})
+
+            # Check items
+            items_by_id = {item["candidateId"]: item for item in result["items"] if "candidateId" in item}
+            self.assertEqual(items_by_id["candautoallowenv000000000001"]["reason"], "max_sends_reached") # wallet allowed, but max_sends is 0
+            self.assertEqual(items_by_id["candautoallowenv000000000002"]["reason"], "max_sends_reached") # wallet allowed
+            self.assertEqual(items_by_id["candautoallowenv000000000003"]["reason"], "wallet_not_allowed")
+
+            # 2. Test fallback to PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET
+            os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS", None)
+            os.environ["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None,
+                min_payout=1000.0,
+                max_sends=0,
+            )
+            self.assertEqual(rc, 0)
+            result = self._read_result()
+            self.assertEqual(result["allowedWallets"], ["PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"])
+        finally:
+            if old_wallets is None:
+                os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS", None)
+            else:
+                os.environ["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS"] = old_wallets
+            if old_wallet is None:
+                os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET", None)
+            else:
+                os.environ["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = old_wallet
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_once")
     def test_auto_payout_skips_already_paid(self, mock_send):

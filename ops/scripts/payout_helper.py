@@ -1000,7 +1000,17 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                                 if c_hash and (c_hash, wallet) not in paid_pairs:
                                     next_source_ids.append(c_hash)
                                 
-                                if total_amount >= min_payout:
+                                if c_hash and (c_hash, wallet) in paid_pairs:
+                                    payout_status = "blocked_already_paid"
+                                    payout_amount = base_amount
+                                    output_carry_in_amount = 0.0
+                                    output_carry_source_ids = []
+                                    output_carry_source_count = 0
+                                    wallet_carry_state[wallet] = {
+                                        "amount": carry_in_amount,
+                                        "sourceCandidateIds": carry_source_ids,
+                                    }
+                                elif total_amount >= min_payout:
                                     payout_status = "pending_manual_payment"
                                     payout_amount = total_amount
                                     output_carry_in_amount = carry_in_amount
@@ -2663,7 +2673,16 @@ def auto_payout_once(
     max_sends: int = 5,
 ) -> int:
     """Select eligible self-test payouts and send each through the one-shot sender."""
-    allowed_wallets = allowed_wallets or AUTO_PAYOUT_DEFAULT_ALLOWED_WALLETS
+    if not allowed_wallets:
+        env_wallets = os.getenv("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS")
+        if env_wallets:
+            allowed_wallets = {w.strip() for w in env_wallets.split(",") if w.strip()}
+        else:
+            env_wallet = os.getenv("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET")
+            if env_wallet:
+                allowed_wallets = {w.strip() for w in env_wallet.split(",") if w.strip()}
+            else:
+                allowed_wallets = AUTO_PAYOUT_DEFAULT_ALLOWED_WALLETS
     try:
         max_sends = int(max_sends)
     except (TypeError, ValueError):
@@ -2779,7 +2798,6 @@ def auto_payout_once(
 
                 send_invocations += 1
                 send_output = output_path.with_name(f"payout-wallet-send-once-result-{send_invocations}.json")
-                os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
                 os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
                 rc = payout_wallet_send_once(
                     candidates_path,
