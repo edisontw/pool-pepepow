@@ -5,7 +5,7 @@
     stratumHost: "stratum+tcp://pool.pepepow.net:39333"
   };
 
-  const FRONTEND_BUILD = "mining-intel-v4";
+  const FRONTEND_BUILD = "miner-reward-analysis-v5";
   console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
 
   function readPoolHashrateHps(pool) {
@@ -402,80 +402,145 @@
     }
   }
 
-  function chooseRecentAcceptedRate(pool) {
-    // SOURCE GUARD: Do not use global pool-wide rolling shares (e.g. pool.rolling['15m'])
-    // as they include low-difficulty-share noise and do not represent the actual miner accepted rate.
-    // Return null since no reliable recent accepted rate field is available in the dashboard pool summary.
+  // ---- Miner Reward Analysis helpers ----
+
+  /**
+   * Read the miner-side hashrate from the miner API response summary.
+   * Returns H/s as a number, or null if unavailable.
+   */
+  function readMinerHashrateHps(minerData) {
+    const summary = (minerData && typeof minerData === "object") ? (minerData.summary || minerData) : null;
+    if (!summary) return null;
+
+    const candidateKeys = [
+      "hashrate", "hashrateHps", "hashrate_hps",
+      "estimatedHashrate", "estimated_hashrate",
+      "shareDerivedHashrate", "share_derived_hashrate"
+    ];
+
+    for (const key of candidateKeys) {
+      const val = summary[key];
+      if (val === null || val === undefined) continue;
+      if (typeof val === "number" && isFinite(val) && val >= 0) return val;
+    }
     return null;
   }
 
-  function updateRewardIntelligence(rewardPerDay, rewardPerWeek, usdtPerDayVal, price, network, pool) {
-    const intelMessage = document.getElementById("intel-message");
-    if (!intelMessage) return;
-
+  /**
+   * Compute estimated reward per hour/day/week given miner hashrate and network/pool context.
+   * Returns { rewardPerHour, rewardPerDay, rewardPerWeek } or null if inputs are invalid.
+   */
+  function calculateRewards(hashrateHps, network) {
+    if (typeof hashrateHps !== "number" || !isFinite(hashrateHps) || hashrateHps <= 0) return null;
     const netHash = network ? network.networkHashrate : null;
-    const poolHash = pool ? readPoolHashrateHps(pool) : null;
+    if (typeof netHash !== "number" || netHash <= 0) return null;
 
-    const isNetValid = (typeof netHash === "number" && netHash > 0);
-    const isPoolValid = (typeof poolHash === "number" && isFinite(poolHash) && poolHash >= 0);
+    const BLOCK_TIME_SECONDS = 20;
+    const MINER_REWARD_RATIO = 0.65;
+    const DEFAULT_BLOCK_REWARD = 16000;
 
-    if (!isNetValid || !isPoolValid) {
-      intelMessage.innerHTML = "<p>Reward outlook is unavailable until pool and network summary data is loaded.</p>";
+    const currentBlockReward = (network && typeof network.reward === "number" && network.reward > 0)
+      ? network.reward
+      : DEFAULT_BLOCK_REWARD;
+    const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
+    const minerRewardPerBlock = currentBlockReward * MINER_REWARD_RATIO;
+
+    const rewardPerDay = (hashrateHps / netHash) * blocksPerDay * minerRewardPerBlock;
+    return {
+      rewardPerHour: rewardPerDay / 24,
+      rewardPerDay,
+      rewardPerWeek: rewardPerDay * 7
+    };
+  }
+
+  /**
+   * SOURCE GUARD: Do not compute accepted rate from lifetime rejected totals.
+   * Only return a rate if a reliable recent accepted-rate field is present in minerData.
+   * Returns a number 0-1, or null.
+   */
+  function chooseMinerAcceptedRate(minerData) {
+    const summary = (minerData && typeof minerData === "object") ? (minerData.summary || minerData) : null;
+    if (!summary) return null;
+
+    // Only use explicit recent accepted-rate fields – never compute from lifetime totals.
+    const recentFields = ["recentAcceptedRate", "recent_accepted_rate", "acceptedRate", "accepted_rate"];
+    for (const key of recentFields) {
+      const val = summary[key];
+      if (typeof val === "number" && isFinite(val) && val >= 0 && val <= 1) return val;
+    }
+    return null;
+  }
+
+  /**
+   * Render Miner Reward Analysis into #miner-reward-analysis.
+   * Only called after a successful wallet lookup.
+   */
+  function renderMinerRewardAnalysis(minerResult, wallet, pool, network, price) {
+    const container = document.getElementById("miner-reward-analysis");
+    if (!container) return;
+
+    if (!minerResult || !minerResult.found) {
+      container.innerHTML = "";
       return;
     }
 
-    const poolShare = isPoolValid ? (poolHash / netHash) : 0;
+    const summary = minerResult.summary || {};
+    const hashrateHps = readMinerHashrateHps(minerResult);
+    const rewards = calculateRewards(hashrateHps, network);
+    const acceptedRate = chooseMinerAcceptedRate(minerResult);
+    const pepewPrice = (price && typeof price.price === "number") ? price.price : null;
 
-    let baseMsg = "";
-    if (poolShare < 0.05) {
-      baseMsg = "Short-term rewards may fluctuate because pool share is small compared with total network hashrate.";
-    } else if (poolShare <= 0.15) {
-      baseMsg = "Moderate pool share provides moderate reward visibility and moderate variance in block finding frequency.";
-    } else {
-      baseMsg = "Improved pool share offers improved reward visibility and lower variance for consistent block rewards.";
-    }
+    const activeWorkers = formatNumber(summary.activeWorkers);
+    const acceptedShares = formatNumber(summary.acceptedShares);
+    const hashrateStr = hashrateHps !== null ? formatHashrate(hashrateHps) : "Unavailable";
 
-    let acceptedRateMsg = "";
-    let acceptedRatePercentStr = "";
-    let isAcceptedRateBelowThreshold = false;
+    let rows = "";
+    rows += `<div><span>Wallet</span><strong>${escapeHtml(wallet)}</strong></div>`;
+    rows += `<div><span>Estimated Hashrate</span><strong>${escapeHtml(hashrateStr)}</strong></div>`;
+    rows += `<div><span>Active Workers</span><strong>${escapeHtml(activeWorkers)}</strong></div>`;
+    rows += `<div><span>Accepted Shares</span><strong>${escapeHtml(acceptedShares)}</strong></div>`;
 
-    const acceptedRate = chooseRecentAcceptedRate(pool);
     if (acceptedRate !== null) {
-      if (acceptedRate < 0.995) {
-        isAcceptedRateBelowThreshold = true;
-        acceptedRatePercentStr = (acceptedRate * 100).toFixed(2) + "%";
-        acceptedRateMsg = ` Accepted rate is below 99.5% (currently ${acceptedRatePercentStr}), which may have a small measurable impact on estimated rewards.`;
-      }
+      const ratePct = (acceptedRate * 100).toFixed(2) + "%";
+      const rateNote = acceptedRate < 0.995
+        ? " (below 99.5% — may reduce estimated rewards slightly)"
+        : "";
+      rows += `<div><span>Accepted Rate (recent)</span><strong>${escapeHtml(ratePct + rateNote)}</strong></div>`;
+    } else {
+      rows += `<div style="grid-column: 1 / -1;"><span>Accepted Rate</span><strong style="font-weight:400; color: var(--muted); font-size:0.9em;">Accepted-rate impact is not shown because no reliable recent accepted-rate field is available.</strong></div>`;
     }
 
-    let calculatorMsg = "";
-    const hashrateInput = document.getElementById("calc-hashrate");
-    const unitSelect = document.getElementById("calc-unit");
+    if (rewards) {
+      const pepewHour = formatNumber(Math.round(rewards.rewardPerHour * 100) / 100);
+      const pepewDay  = formatNumber(Math.round(rewards.rewardPerDay  * 100) / 100);
+      const pepewWeek = formatNumber(Math.round(rewards.rewardPerWeek * 100) / 100);
+      rows += `<div><span>Estimated PEPEW / Hour</span><strong>${escapeHtml(pepewHour)}</strong></div>`;
+      rows += `<div><span>Estimated PEPEW / Day</span><strong>${escapeHtml(pepewDay)}</strong></div>`;
+      rows += `<div><span>Estimated PEPEW / Week</span><strong>${escapeHtml(pepewWeek)}</strong></div>`;
 
-    if (hashrateInput && unitSelect && rewardPerDay !== null) {
-      const hashrateVal = parseFloat(hashrateInput.value);
-      const unitVal = unitSelect.value;
-
-      if (!isNaN(hashrateVal) && hashrateVal > 0) {
-        const dailyPepewStr = formatNumber(Math.round(rewardPerDay * 100) / 100);
-        const weeklyPepewStr = formatNumber(Math.round(rewardPerWeek * 100) / 100);
-
-        calculatorMsg = `<p style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.08);">Based on your input hashrate of <strong>${hashrateVal} ${unitVal}/s</strong>:`;
-        calculatorMsg += `<br>&bull; Estimated daily PEPEW: <strong>${dailyPepewStr} PEPEW</strong>`;
-        calculatorMsg += `<br>&bull; Estimated weekly PEPEW: <strong>${weeklyPepewStr} PEPEW</strong>`;
-
-        if (usdtPerDayVal !== null) {
-          calculatorMsg += `<br>&bull; Estimated daily USDT: <strong>$${usdtPerDayVal.toFixed(2)} USDT</strong>`;
-        }
-
-        if (isAcceptedRateBelowThreshold) {
-          calculatorMsg += `<br><span style="color: var(--muted); font-size: 0.9em;">&bull; Note: The pool's recent accepted rate of ${acceptedRatePercentStr} may have a small measurable impact on this estimate.</span>`;
-        }
-        calculatorMsg += "</p>";
+      if (pepewPrice !== null) {
+        const usdtDay  = "$" + (rewards.rewardPerDay  * pepewPrice).toFixed(2);
+        const usdtWeek = "$" + (rewards.rewardPerWeek * pepewPrice).toFixed(2);
+        rows += `<div><span>Estimated USDT / Day</span><strong>${escapeHtml(usdtDay)}</strong></div>`;
+        rows += `<div><span>Estimated USDT / Week</span><strong>${escapeHtml(usdtWeek)}</strong></div>`;
       }
+    } else {
+      rows += `<div style="grid-column: 1 / -1;"><span>Estimated Rewards</span><strong style="font-weight:400; color: var(--muted); font-size:0.9em;">Reward estimates unavailable — network hashrate or miner hashrate data is missing. May fluctuate with pool luck and current network hashrate.</strong></div>`;
     }
 
-    intelMessage.innerHTML = `<p>${baseMsg}${acceptedRateMsg}</p>${calculatorMsg}`;
+    container.innerHTML = `
+      <section class="panel" style="margin-top: 1.25rem;">
+        <p class="eyebrow">Wallet-Specific</p>
+        <h3>Miner Reward Analysis</h3>
+        <div class="metric-grid">
+          ${rows}
+        </div>
+        <p class="muted small-gap" style="font-size: 0.82rem; margin-top: 1rem; line-height: 1.4;">
+          * Estimated only. Based on current activity: observed hashrate, current network hashrate, and pool settings.
+            Actual results may fluctuate with pool luck, network hashrate changes, and accepted share activity.
+            Not a guaranteed or pending payout figure.
+        </p>
+      </section>`;
   }
 
   function updateCalculator(network, pepewUsdtPrice, pool) {
@@ -536,8 +601,6 @@
 
     setText("calc-usdt-day", usdtPerDayStr);
     setText("calc-usdt-week", usdtPerWeekStr);
-
-    updateRewardIntelligence(rewardPerDay, rewardPerWeek, usdtPerDayVal, pepewUsdtPrice, network, pool);
   }
 
   async function renderDashboard(config) {
@@ -573,9 +636,6 @@
     if (unitSelect) {
       unitSelect.value = storedUnit;
     }
-
-    // Set immediate Reward Intelligence neutral fallback text
-    updateRewardIntelligence(null, null, null, null, null, null);
 
     // Bind event listeners immediately so user can interact right away
     if (hashrateInput && unitSelect) {
@@ -892,14 +952,18 @@
   }
 
   async function lookupMiner(config, wallet) {
-    const result = await fetchJson(
-      `${config.apiBaseUrl}/miner/${encodeURIComponent(wallet)}`
-    );
+    // Fetch miner data plus supporting context in parallel
+    const [result, pool, network, priceData] = await Promise.all([
+      fetchJson(`${config.apiBaseUrl}/miner/${encodeURIComponent(wallet)}`),
+      fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({})),
+      fetchJson(`${config.apiBaseUrl}/network/summary`).catch(() => ({})),
+      fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
+    ]);
 
     let htmlContent = "";
 
     if (!result.found) {
-      htmlContent += `<div class="empty-state"><strong>No active miner data found for ${escapeHtml(wallet)}.</strong><p class="muted">Miner statistics are generated from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</p><a class="button" href="/connect.html">查看如何開始挖礦</a></div>`;
+      htmlContent += `<div class="empty-state"><strong>No active miner data found for ${escapeHtml(wallet)}.</strong><p class="muted">Miner statistics are generated from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</p><a class="button" href="/connect.html">How to start mining</a></div>`;
     } else {
       const summary = result.summary || {};
       const workers = Array.isArray(result.workers) ? result.workers : [];
@@ -912,7 +976,7 @@
         {
           label: "Estimated Hashrate",
           value: formatHashrate(summary.hashrate),
-          note: "Pool-side estimate from accepted shares, not the miner’s exact local GPU hashrate."
+          note: "Pool-side estimate from accepted shares, not the miner's exact local GPU hashrate."
         },
         {
           label: "Accepted Shares",
@@ -950,6 +1014,9 @@
     ], "No recorded manual payments for this wallet yet.");
 
     setHtml("miner-result", htmlContent);
+
+    // Render wallet-specific Miner Reward Analysis (only after successful lookup)
+    renderMinerRewardAnalysis(result, wallet, pool, network, priceData);
   }
 
   async function renderMiner(config) {
@@ -964,7 +1031,7 @@
       event.preventDefault();
       const wallet = input.value.trim();
       if (!wallet) {
-        setHtml("miner-result", '<div class="empty-state"><strong>輸入 PEPEPOW 錢包地址來查詢礦工狀態。</strong><p class="muted">資料會在 pool 收到 accepted shares 後出現。</p><a class="button" href="/connect.html">查看如何開始挖礦</a></div>');
+        setHtml("miner-result", '<div class="empty-state"><strong>Enter a PEPEPOW wallet address to check miner status.</strong><p class="muted">Data will appear after the pool receives accepted shares.</p><a class="button" href="/connect.html">How to start mining</a></div>');
         return;
       }
       setHtml("miner-result", '<div class="muted">Loading miner data...</div>');
