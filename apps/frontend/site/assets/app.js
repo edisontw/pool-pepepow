@@ -5,7 +5,7 @@
     stratumHost: "stratum+tcp://pool.pepepow.net:39333"
   };
 
-  const FRONTEND_BUILD = "miner-reward-analysis-v5";
+  const FRONTEND_BUILD = "dashboard-fix-v7";
   console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
 
   function readPoolHashrateHps(pool) {
@@ -560,7 +560,7 @@
       setText("calc-pepew-week", "-");
       setText("calc-usdt-day", "Price unavailable");
       setText("calc-usdt-week", "Price unavailable");
-      updateRewardIntelligence(null, null, null, null, network, pool);
+
       return;
     }
 
@@ -1019,6 +1019,37 @@
     renderMinerRewardAnalysis(result, wallet, pool, network, priceData);
   }
 
+  // ---- Miner wallet persistence (isolated to renderMiner) ----
+
+  const MINER_LOOKUP_STORAGE_KEY = "pepepow_miner_lookup_wallet";
+
+  function safeGetLastMinerLookupWallet() {
+    try {
+      const value = localStorage.getItem(MINER_LOOKUP_STORAGE_KEY);
+      return value && isLikelyPepepowAddress(value) ? value : "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function safeSetLastMinerLookupWallet(wallet) {
+    try {
+      if (wallet && isLikelyPepepowAddress(wallet)) {
+        localStorage.setItem(MINER_LOOKUP_STORAGE_KEY, wallet);
+      }
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
+  function safeClearLastMinerLookupWallet() {
+    try {
+      localStorage.removeItem(MINER_LOOKUP_STORAGE_KEY);
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
   async function renderMiner(config) {
     const form = document.getElementById("miner-form");
     const input = document.getElementById("wallet-input");
@@ -1026,19 +1057,21 @@
     if (!form || !input) {
       return;
     }
-    const storedWallet = localStorage.getItem("miner_lookup_wallet");
-    if (!input.value.trim() && storedWallet && isLikelyPepepowAddress(storedWallet)) {
-      input.value = storedWallet;
+
+    const savedWallet = safeGetLastMinerLookupWallet();
+    if (!input.value.trim() && savedWallet) {
+      input.value = savedWallet;
     }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const wallet = input.value.trim();
       if (!wallet) {
-        localStorage.removeItem("miner_lookup_wallet");
+        safeClearLastMinerLookupWallet();
         setHtml("miner-result", '<div class="empty-state"><strong>Enter a PEPEPOW wallet address to check miner status.</strong><p class="muted">Data will appear after the pool receives accepted shares.</p><a class="button" href="/connect.html">How to start mining</a></div>');
         return;
       }
-      localStorage.setItem("miner_lookup_wallet", wallet);
+      safeSetLastMinerLookupWallet(wallet);
       setHtml("miner-result", '<div class="muted">Loading miner data...</div>');
       try {
         await lookupMiner(config, wallet);
