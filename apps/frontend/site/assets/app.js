@@ -320,14 +320,149 @@
     }
   }
 
+  function updateRewardIntelligence(rewardPerDay, rewardPerWeek, usdtPerDayVal, price, network, pool) {
+    const intelMessage = document.getElementById("intel-message");
+    if (!intelMessage) return;
+
+    const netHash = network.networkHashrate;
+    const poolHash = pool.poolHashrate;
+
+    const isNetValid = (typeof netHash === "number" && netHash > 0);
+    const isPoolValid = (typeof poolHash === "number" && poolHash >= 0);
+
+    if (!isNetValid) {
+      intelMessage.innerHTML = "<p>Current reward outlook is unavailable until network hashrate data is available.</p>";
+      return;
+    }
+
+    const poolShare = isPoolValid ? (poolHash / netHash) : 0;
+
+    let baseMsg = "";
+    if (poolShare < 0.05) {
+      baseMsg = "Short-term rewards may fluctuate because pool share is small compared with total network hashrate.";
+    } else if (poolShare <= 0.15) {
+      baseMsg = "Moderate pool share provides moderate reward visibility and moderate variance in block finding frequency.";
+    } else {
+      baseMsg = "Improved pool share offers improved reward visibility and lower variance for consistent block rewards.";
+    }
+
+    let acceptedRateMsg = "";
+    let acceptedRatePercentStr = "";
+    let isAcceptedRateBelowThreshold = false;
+
+    if (pool.rolling && pool.rolling["15m"]) {
+      const r15 = pool.rolling["15m"];
+      if (typeof r15.acceptedShares === "number" && typeof r15.shareCount === "number" && r15.shareCount > 0) {
+        const rate = r15.acceptedShares / r15.shareCount;
+        if (rate < 0.995) {
+          isAcceptedRateBelowThreshold = true;
+          acceptedRatePercentStr = (rate * 100).toFixed(2) + "%";
+          acceptedRateMsg = ` Accepted rate is below 99.5% (currently ${acceptedRatePercentStr}), which may have a small measurable impact on estimated rewards.`;
+        }
+      }
+    }
+
+    let calculatorMsg = "";
+    const hashrateInput = document.getElementById("calc-hashrate");
+    const unitSelect = document.getElementById("calc-unit");
+
+    if (hashrateInput && unitSelect && rewardPerDay !== null) {
+      const hashrateVal = parseFloat(hashrateInput.value);
+      const unitVal = unitSelect.value;
+
+      if (!isNaN(hashrateVal) && hashrateVal > 0) {
+        const dailyPepewStr = formatNumber(Math.round(rewardPerDay * 100) / 100);
+        const weeklyPepewStr = formatNumber(Math.round(rewardPerWeek * 100) / 100);
+
+        calculatorMsg = `<p style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.08);">Based on your input hashrate of <strong>${hashrateVal} ${unitVal}/s</strong>:`;
+        calculatorMsg += `<br>&bull; Estimated daily PEPEW: <strong>${dailyPepewStr} PEPEW</strong>`;
+        calculatorMsg += `<br>&bull; Estimated weekly PEPEW: <strong>${weeklyPepewStr} PEPEW</strong>`;
+
+        if (usdtPerDayVal !== null) {
+          calculatorMsg += `<br>&bull; Estimated daily USDT: <strong>$${usdtPerDayVal.toFixed(2)} USDT</strong>`;
+        }
+
+        if (isAcceptedRateBelowThreshold) {
+          calculatorMsg += `<br><span style="color: var(--muted); font-size: 0.9em;">&bull; Note: The pool's recent accepted rate of ${acceptedRatePercentStr} may have a small measurable impact on this estimate.</span>`;
+        }
+        calculatorMsg += "</p>";
+      }
+    }
+
+    intelMessage.innerHTML = `<p>${baseMsg}${acceptedRateMsg}</p>${calculatorMsg}`;
+  }
+
+  function updateCalculator(network, pepewUsdtPrice, pool) {
+    const hashrateInput = document.getElementById("calc-hashrate");
+    const unitSelect = document.getElementById("calc-unit");
+    if (!hashrateInput || !unitSelect) return;
+
+    const hashrateVal = parseFloat(hashrateInput.value);
+    const unitVal = unitSelect.value;
+
+    const netHash = network.networkHashrate;
+    const isNetValid = (typeof netHash === "number" && netHash > 0);
+
+    if (isNaN(hashrateVal) || hashrateVal < 0 || !isNetValid) {
+      setText("calc-pepew-hour", "-");
+      setText("calc-pepew-day", "-");
+      setText("calc-pepew-week", "-");
+      setText("calc-usdt-day", "Price unavailable");
+      setText("calc-usdt-week", "Price unavailable");
+      updateRewardIntelligence(null, null, null, null, network, pool);
+      return;
+    }
+
+    let userHashrateHps = hashrateVal;
+    if (unitVal === "KH") {
+      userHashrateHps = hashrateVal * 1000;
+    } else if (unitVal === "MH") {
+      userHashrateHps = hashrateVal * 1000000;
+    }
+
+    const BLOCK_TIME_SECONDS = 20;
+    const MINER_REWARD_RATIO = 0.65;
+    const DEFAULT_BLOCK_REWARD = 16000;
+
+    const currentBlockReward = (typeof network.reward === "number" && network.reward > 0) ? network.reward : DEFAULT_BLOCK_REWARD;
+    const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
+    const minerRewardPerBlock = currentBlockReward * MINER_REWARD_RATIO;
+
+    const rewardPerDay = (userHashrateHps / netHash) * blocksPerDay * minerRewardPerBlock;
+    const rewardPerHour = rewardPerDay / 24;
+    const rewardPerWeek = rewardPerDay * 7;
+
+    setText("calc-pepew-hour", formatNumber(Math.round(rewardPerHour * 100) / 100));
+    setText("calc-pepew-day", formatNumber(Math.round(rewardPerDay * 100) / 100));
+    setText("calc-pepew-week", formatNumber(Math.round(rewardPerWeek * 100) / 100));
+
+    let usdtPerDayStr = "Price unavailable";
+    let usdtPerWeekStr = "Price unavailable";
+    let usdtPerDayVal = null;
+
+    if (pepewUsdtPrice !== null) {
+      const usdtPerDay = rewardPerDay * pepewUsdtPrice;
+      const usdtPerWeek = rewardPerWeek * pepewUsdtPrice;
+      usdtPerDayStr = "$" + usdtPerDay.toFixed(2);
+      usdtPerWeekStr = "$" + usdtPerWeek.toFixed(2);
+      usdtPerDayVal = usdtPerDay;
+    }
+
+    setText("calc-usdt-day", usdtPerDayStr);
+    setText("calc-usdt-week", usdtPerWeekStr);
+
+    updateRewardIntelligence(rewardPerDay, rewardPerWeek, usdtPerDayVal, pepewUsdtPrice, network, pool);
+  }
+
   async function renderDashboard(config) {
     renderDeploymentBaselineNote(null);
     fetchOptionalHealth(config).then(renderDeploymentBaselineNote);
-    const [pool, network, blocks, payments] = await Promise.all([
+    const [pool, network, blocks, payments, priceData] = await Promise.all([
       fetchJson(`${config.apiBaseUrl}/pool/summary`),
       fetchJson(`${config.apiBaseUrl}/network/summary`),
       fetchJson(`${config.apiBaseUrl}/blocks`),
-      fetchJson(`${config.apiBaseUrl}/payments`)
+      fetchJson(`${config.apiBaseUrl}/payments`),
+      fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
     ]);
 
     const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : pool.algorithm;
@@ -344,6 +479,56 @@
 
     const stratumEndpoint = `stratum+tcp://${pool.stratum.host}:${pool.stratum.port}`;
     setText("stratum-endpoint", stratumEndpoint);
+
+    // PEPEPOW Mining Radar
+    const netHash = network.networkHashrate;
+    const poolHash = pool.poolHashrate;
+
+    const isNetValid = (typeof netHash === "number" && netHash > 0);
+    const isPoolValid = (typeof poolHash === "number" && poolHash >= 0);
+
+    setText("radar-network-hashrate", isNetValid ? formatHashrate(netHash) : "Unavailable");
+    setText("radar-pool-hashrate", isPoolValid ? formatHashrate(poolHash) : "Unavailable");
+
+    if (isNetValid && isPoolValid) {
+      const poolShare = poolHash / netHash;
+      const unseenHashrate = Math.max(netHash - poolHash, 0);
+
+      let visibility = "Unavailable";
+      let variance = "Unavailable";
+
+      if (poolShare < 0.05) {
+        visibility = "Low";
+        variance = "High";
+      } else if (poolShare < 0.15) {
+        visibility = "Medium";
+        variance = "Medium";
+      } else {
+        visibility = "Good";
+        variance = "Lower";
+      }
+
+      setText("radar-pool-share", (poolShare * 100).toFixed(2) + "%");
+      setText("radar-unseen-hashrate", formatHashrate(unseenHashrate));
+      setText("radar-visibility-signal", visibility);
+      setText("radar-reward-variance", variance);
+    } else {
+      setText("radar-pool-share", "Unavailable");
+      setText("radar-unseen-hashrate", "Unavailable");
+      setText("radar-visibility-signal", "Unavailable");
+      setText("radar-reward-variance", "Unavailable");
+    }
+
+    // Initialize calculator & Reward Intelligence
+    const pepewUsdtPrice = (priceData && typeof priceData.price === "number") ? priceData.price : null;
+    const hashrateInput = document.getElementById("calc-hashrate");
+    const unitSelect = document.getElementById("calc-unit");
+    if (hashrateInput && unitSelect) {
+      const runCalc = () => updateCalculator(network, pepewUsdtPrice, pool);
+      hashrateInput.addEventListener("input", runCalc);
+      unitSelect.addEventListener("change", runCalc);
+      runCalc(); // Run initial calculation on load
+    }
 
     setHtml(
       "recent-blocks",

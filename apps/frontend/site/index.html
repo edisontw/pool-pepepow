@@ -201,6 +201,107 @@
           min-height: auto;
         }
       }
+
+      /* Mining Intelligence styles */
+      .radar-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.9rem;
+      }
+
+      .radar-card {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 0.8rem;
+        padding: 0.95rem 1rem;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .radar-card span {
+        color: var(--muted);
+        font-size: 0.82rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .radar-card strong {
+        font-size: clamp(1.15rem, 2vw, 1.6rem);
+        line-height: 1.15;
+        overflow-wrap: anywhere;
+      }
+
+      .calc-inputs {
+        display: flex;
+        gap: 0.85rem;
+        margin-bottom: 1.25rem;
+      }
+
+      .calc-input-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .calc-input-group label {
+        font-size: 0.8rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      input[type="number"] {
+        width: 100%;
+        padding: 1rem 1.1rem;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        font-size: 1rem;
+        outline: none;
+        box-sizing: border-box;
+        transition: border-color 0.2s;
+      }
+
+      input[type="number"]:focus {
+        border-color: var(--accent);
+      }
+
+      .calc-select {
+        padding: 1rem 1.1rem;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(14, 28, 39, 0.95);
+        color: var(--text);
+        font-size: 1rem;
+        cursor: pointer;
+        outline: none;
+        transition: border-color 0.2s;
+        box-sizing: border-box;
+      }
+
+      .calc-select:focus {
+        border-color: var(--accent);
+      }
+
+      @media (max-width: 920px) {
+        .radar-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 640px) {
+        .radar-grid {
+          grid-template-columns: 1fr;
+        }
+        .calc-usdt-week-span {
+          grid-column: span 1 !important;
+        }
+      }
     </style>
   </head>
   <body data-page="dashboard">
@@ -255,6 +356,94 @@
               scrolling="no"
               loading="lazy"
             ></iframe>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="eyebrow">Mining Outlook</p>
+          <h3>PEPEPOW Mining Radar</h3>
+          <div class="radar-grid">
+            <div class="radar-card">
+              <span>Network Hashrate</span>
+              <strong id="radar-network-hashrate">-</strong>
+            </div>
+            <div class="radar-card">
+              <span>Pool Hashrate</span>
+              <strong id="radar-pool-hashrate">-</strong>
+            </div>
+            <div class="radar-card">
+              <span>Pool Share of Network</span>
+              <strong id="radar-pool-share">-</strong>
+            </div>
+            <div class="radar-card">
+              <span>Estimated Unseen Hashrate</span>
+              <strong id="radar-unseen-hashrate">-</strong>
+            </div>
+            <div class="radar-card">
+              <span>Visibility Signal</span>
+              <strong id="radar-visibility-signal">-</strong>
+            </div>
+            <div class="radar-card">
+              <span>Reward Variance</span>
+              <strong id="radar-reward-variance">-</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="eyebrow">Calculator</p>
+          <h3>Mining Reward Calculator</h3>
+
+          <div class="calc-inputs">
+            <div class="calc-input-group" style="flex: 2;">
+              <label for="calc-hashrate">Your Hashrate</label>
+              <input type="number" id="calc-hashrate" value="100" min="0" step="any" placeholder="Enter hashrate...">
+            </div>
+            <div class="calc-input-group">
+              <label for="calc-unit">Unit</label>
+              <select id="calc-unit" class="calc-select">
+                <option value="H">H/s</option>
+                <option value="KH" selected>KH/s</option>
+                <option value="MH">MH/s</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div>
+              <span>Estimated PEPEW / Hour</span>
+              <strong id="calc-pepew-hour">-</strong>
+            </div>
+            <div>
+              <span>Estimated PEPEW / Day</span>
+              <strong id="calc-pepew-day">-</strong>
+            </div>
+            <div>
+              <span>Estimated PEPEW / Week</span>
+              <strong id="calc-pepew-week">-</strong>
+            </div>
+            <div>
+              <span>Estimated USDT / Day</span>
+              <strong id="calc-usdt-day">-</strong>
+            </div>
+            <div class="calc-usdt-week-span" style="grid-column: span 2;">
+              <span>Estimated USDT / Week</span>
+              <strong id="calc-usdt-week">-</strong>
+            </div>
+          </div>
+
+          <p class="muted small-gap" style="font-size: 0.82rem; margin-top: 1rem; line-height: 1.4;">
+            * Estimate only. Actual rewards vary by pool luck, network hashrate, accepted rate, and payout rules.
+          </p>
+        </section>
+
+        <section class="panel" style="grid-column: 1 / -1 !important;">
+          <p class="eyebrow">Reward Analysis</p>
+          <h3>Reward Intelligence</h3>
+          <div class="info-note" style="margin-top: 0; background: rgba(55, 196, 255, 0.04); border: 1px solid rgba(55, 196, 255, 0.12); color: var(--text); padding: 1.2rem;">
+            <div id="intel-message" style="line-height: 1.6; font-size: 1rem;">
+              Loading reward intelligence analysis...
+            </div>
           </div>
         </section>
 
