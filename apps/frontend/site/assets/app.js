@@ -5,6 +5,9 @@
     stratumHost: "stratum+tcp://pool.pepepow.net:39333"
   };
 
+  const FRONTEND_BUILD = "mining-intel-v3";
+  console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
+
   function escapeHtml(str) {
     if (typeof str !== "string") return "";
     return str
@@ -331,14 +334,14 @@
     const intelMessage = document.getElementById("intel-message");
     if (!intelMessage) return;
 
-    const netHash = network.networkHashrate;
-    const poolHash = pool.poolHashrate;
+    const netHash = network ? network.networkHashrate : null;
+    const poolHash = pool ? pool.poolHashrate : null;
 
     const isNetValid = (typeof netHash === "number" && netHash > 0);
     const isPoolValid = (typeof poolHash === "number" && poolHash >= 0);
 
-    if (!isNetValid) {
-      intelMessage.innerHTML = "<p>Current reward outlook is unavailable until network hashrate data is available.</p>";
+    if (!isNetValid || !isPoolValid) {
+      intelMessage.innerHTML = "<p>Reward outlook is unavailable until pool and network summary data is loaded.</p>";
       return;
     }
 
@@ -404,7 +407,7 @@
     const hashrateVal = parseFloat(hashrateInput.value);
     const unitVal = unitSelect.value;
 
-    const netHash = network.networkHashrate;
+    const netHash = network ? network.networkHashrate : null;
     const isNetValid = (typeof netHash === "number" && netHash > 0);
 
     if (isNaN(hashrateVal) || hashrateVal < 0 || !isNetValid) {
@@ -428,7 +431,7 @@
     const MINER_REWARD_RATIO = 0.65;
     const DEFAULT_BLOCK_REWARD = 16000;
 
-    const currentBlockReward = (typeof network.reward === "number" && network.reward > 0) ? network.reward : DEFAULT_BLOCK_REWARD;
+    const currentBlockReward = (network && typeof network.reward === "number" && network.reward > 0) ? network.reward : DEFAULT_BLOCK_REWARD;
     const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
     const minerRewardPerBlock = currentBlockReward * MINER_REWARD_RATIO;
 
