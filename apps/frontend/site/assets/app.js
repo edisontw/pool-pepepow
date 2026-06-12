@@ -461,15 +461,85 @@
   async function renderDashboard(config) {
     renderDeploymentBaselineNote(null);
     fetchOptionalHealth(config).then(renderDeploymentBaselineNote);
-    const [pool, network, blocks, payments, priceData] = await Promise.all([
-      fetchJson(`${config.apiBaseUrl}/pool/summary`),
-      fetchJson(`${config.apiBaseUrl}/network/summary`),
-      fetchJson(`${config.apiBaseUrl}/blocks`),
-      fetchJson(`${config.apiBaseUrl}/payments`),
-      fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
-    ]);
 
-    const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : pool.algorithm;
+    // Shared object to keep track of loaded values dynamically
+    const dashboardData = {
+      network: null,
+      pool: null,
+      price: null
+    };
+
+    // Initialize DOM state immediately with neutral/fallback/default values
+    const hashrateInput = document.getElementById("calc-hashrate");
+    const unitSelect = document.getElementById("calc-unit");
+
+    // Load values defensively from localStorage
+    let storedHashrate = localStorage.getItem("calc_hashrate");
+    let storedUnit = localStorage.getItem("calc_unit");
+
+    let parsedHashrate = parseFloat(storedHashrate);
+    if (isNaN(parsedHashrate) || parsedHashrate < 0) {
+      parsedHashrate = 100;
+    }
+    if (storedUnit !== "H" && storedUnit !== "KH" && storedUnit !== "MH") {
+      storedUnit = "KH";
+    }
+
+    if (hashrateInput) {
+      hashrateInput.value = parsedHashrate;
+    }
+    if (unitSelect) {
+      unitSelect.value = storedUnit;
+    }
+
+    // Set immediate Reward Intelligence neutral fallback text
+    updateRewardIntelligence(null, null, null, null, null, null);
+
+    // Bind event listeners immediately so user can interact right away
+    if (hashrateInput && unitSelect) {
+      const runCalc = () => {
+        // Store values on change/input
+        localStorage.setItem("calc_hashrate", hashrateInput.value);
+        localStorage.setItem("calc_unit", unitSelect.value);
+        updateCalculator(dashboardData.network, dashboardData.price, dashboardData.pool);
+      };
+      hashrateInput.addEventListener("input", runCalc);
+      unitSelect.addEventListener("change", runCalc);
+    }
+
+    // Run initial calculator update (will render neutral/empty/fallback status)
+    updateCalculator(null, null, null);
+
+    // Fetch APIs in parallel, catching errors gracefully so we never crash/block
+    let pool = {};
+    let network = {};
+    let blocks = { items: [] };
+    let payments = { items: [] };
+    let priceData = null;
+
+    try {
+      const [poolRes, networkRes, blocksRes, paymentsRes, priceRes] = await Promise.all([
+        fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({})),
+        fetchJson(`${config.apiBaseUrl}/network/summary`).catch(() => ({})),
+        fetchJson(`${config.apiBaseUrl}/blocks`).catch(() => ({ items: [] })),
+        fetchJson(`${config.apiBaseUrl}/payments`).catch(() => ({ items: [] })),
+        fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
+      ]);
+      pool = poolRes;
+      network = networkRes;
+      blocks = blocksRes;
+      payments = paymentsRes;
+      priceData = priceRes;
+    } catch (_err) {
+      // Gracefully continue with defaults
+    }
+
+    // Update shared dashboardData object
+    dashboardData.network = network;
+    dashboardData.pool = pool;
+    dashboardData.price = (priceData && typeof priceData.price === "number") ? priceData.price : null;
+
+    const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : (pool.algorithm || "hoohashv110-pepew");
     setText("algorithm", algoDisplay);
     setPoolStatus(pool.poolStatus);
     setText("pool-hashrate", formatHashrate(pool.poolHashrate));
@@ -481,7 +551,7 @@
     setText("network-hashrate", formatHashrate(network.networkHashrate));
     setText("network-sync", network.synced ? "Synced" : "Syncing");
 
-    const stratumEndpoint = `stratum+tcp://${pool.stratum.host}:${pool.stratum.port}`;
+    const stratumEndpoint = pool.stratum ? `stratum+tcp://${pool.stratum.host}:${pool.stratum.port}` : "stratum+tcp://pool.pepepow.net:39333";
     setText("stratum-endpoint", stratumEndpoint);
 
     // PEPEPOW Mining Radar
@@ -523,16 +593,8 @@
       setText("radar-reward-variance", "Unavailable");
     }
 
-    // Initialize calculator & Reward Intelligence
-    const pepewUsdtPrice = (priceData && typeof priceData.price === "number") ? priceData.price : null;
-    const hashrateInput = document.getElementById("calc-hashrate");
-    const unitSelect = document.getElementById("calc-unit");
-    if (hashrateInput && unitSelect) {
-      const runCalc = () => updateCalculator(network, pepewUsdtPrice, pool);
-      hashrateInput.addEventListener("input", runCalc);
-      unitSelect.addEventListener("change", runCalc);
-      runCalc(); // Run initial calculation on load
-    }
+    // Run calculator update now that summary/network/price data is loaded
+    updateCalculator(dashboardData.network, dashboardData.price, dashboardData.pool);
 
     setHtml(
       "recent-blocks",
