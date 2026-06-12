@@ -5,8 +5,87 @@
     stratumHost: "stratum+tcp://pool.pepepow.net:39333"
   };
 
-  const FRONTEND_BUILD = "mining-intel-v3";
+  const FRONTEND_BUILD = "mining-intel-v4";
   console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
+
+  function readPoolHashrateHps(pool) {
+    if (!pool || typeof pool !== "object") {
+      return null;
+    }
+
+    const candidateKeys = [
+      "poolHashrate",
+      "pool_hashrate",
+      "hashrate",
+      "estimatedHashrate",
+      "estimated_hashrate",
+      "hashrateHps",
+      "hashrate_hps",
+      "hashRate",
+      "hash_rate",
+      "currentHashrate",
+      "current_hashrate",
+      "shareDerivedHashrate",
+      "share_derived_hashrate"
+    ];
+
+    function parseValueToHps(val) {
+      if (typeof val === "number") {
+        if (!isNaN(val) && isFinite(val)) {
+          return val;
+        }
+        return null;
+      }
+      if (typeof val === "string") {
+        const cleaned = val.trim().toLowerCase();
+        const num = parseFloat(cleaned);
+        if (isNaN(num)) {
+          return null;
+        }
+        if (cleaned.includes("mh/s") || cleaned.includes("mh")) {
+          return num * 1000000;
+        }
+        if (cleaned.includes("kh/s") || cleaned.includes("kh")) {
+          return num * 1000;
+        }
+        if (cleaned.includes("gh/s") || cleaned.includes("gh")) {
+          return num * 1000000000;
+        }
+        if (cleaned.includes("th/s") || cleaned.includes("th")) {
+          return num * 1000000000000;
+        }
+        return num;
+      }
+      return null;
+    }
+
+    for (const key of candidateKeys) {
+      if (key in pool && pool[key] !== null && pool[key] !== undefined) {
+        const hps = parseValueToHps(pool[key]);
+        if (hps !== null) {
+          return hps;
+        }
+      }
+    }
+
+    if (pool.rolling && typeof pool.rolling === "object") {
+      for (const windowKey of ["5m", "15m", "1m"]) {
+        const windowObj = pool.rolling[windowKey];
+        if (windowObj && typeof windowObj === "object") {
+          for (const key of candidateKeys) {
+            if (key in windowObj && windowObj[key] !== null && windowObj[key] !== undefined) {
+              const hps = parseValueToHps(windowObj[key]);
+              if (hps !== null) {
+                return hps;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  }
 
   function escapeHtml(str) {
     if (typeof str !== "string") return "";
@@ -335,10 +414,10 @@
     if (!intelMessage) return;
 
     const netHash = network ? network.networkHashrate : null;
-    const poolHash = pool ? pool.poolHashrate : null;
+    const poolHash = pool ? readPoolHashrateHps(pool) : null;
 
     const isNetValid = (typeof netHash === "number" && netHash > 0);
-    const isPoolValid = (typeof poolHash === "number" && poolHash >= 0);
+    const isPoolValid = (typeof poolHash === "number" && isFinite(poolHash) && poolHash >= 0);
 
     if (!isNetValid || !isPoolValid) {
       intelMessage.innerHTML = "<p>Reward outlook is unavailable until pool and network summary data is loaded.</p>";
@@ -545,7 +624,7 @@
     const algoDisplay = (pool.algorithm && pool.algorithm.includes("hoohash")) ? "hoohash-pepew / hoohashv110-pepew" : (pool.algorithm || "hoohashv110-pepew");
     setText("algorithm", algoDisplay);
     setPoolStatus(pool.poolStatus);
-    setText("pool-hashrate", formatHashrate(pool.poolHashrate));
+    setText("pool-hashrate", formatHashrate(readPoolHashrateHps(pool)));
     setText("active-miners", formatNumber(pool.activeMiners));
     setText("active-workers", formatNumber(pool.activeWorkers));
     setText("last-block-time", formatDate(pool.lastBlockFoundAt));
@@ -559,10 +638,10 @@
 
     // PEPEPOW Mining Radar
     const netHash = network.networkHashrate;
-    const poolHash = pool.poolHashrate;
+    const poolHash = readPoolHashrateHps(pool);
 
     const isNetValid = (typeof netHash === "number" && netHash > 0);
-    const isPoolValid = (typeof poolHash === "number" && poolHash >= 0);
+    const isPoolValid = (typeof poolHash === "number" && isFinite(poolHash) && poolHash >= 0);
 
     setText("radar-network-hashrate", isNetValid ? formatHashrate(netHash) : "Unavailable");
     setText("radar-pool-hashrate", isPoolValid ? formatHashrate(poolHash) : "Unavailable");
