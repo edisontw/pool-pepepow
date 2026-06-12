@@ -1121,5 +1121,45 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(payload["price"], 0.000000450)
             self.assertEqual(payload["updatedAt"], "2026-06-12T15:00:00Z")
 
+    def test_price_endpoint_defensive_shapes(self):
+        from unittest.mock import patch, MagicMock
+
+        app = create_app(make_config(FALLBACK_SNAPSHOT_PATH, FALLBACK_SNAPSHOT_PATH))
+        client = app.test_client()
+
+        shapes = [
+            # valid last string
+            (b'{"last": "0.000000330"}', 0.000000330),
+            # valid price string
+            (b'{"price": "0.000000340"}', 0.000000340),
+            # nested ticker dict
+            (b'{"ticker": {"last": "0.000000350"}}', 0.000000350),
+            # nested data dict
+            (b'{"data": {"last_price": "0.000000360"}}', 0.000000360),
+            # list shape
+            (b'[{"last": "0.000000370"}]', 0.000000370),
+            # bid/ask midpoint
+            (b'{"bid": "0.000000300", "ask": "0.000000400"}', 0.000000350),
+            # malformed shape
+            (b'{"garbage": 123}', None)
+        ]
+
+        for payload, expected_price in shapes:
+            # Force cache refresh for each mock payload
+            cache = app.config["PRICE_CACHE"]
+            cache.price = None
+            cache.last_fetch_success = 0.0
+            cache.last_fetch_attempt = 0.0
+
+            mock_response = MagicMock()
+            mock_response.read.return_value = payload
+            mock_response.__enter__.return_value = mock_response
+
+            with patch("urllib.request.urlopen", return_value=mock_response):
+                response = client.get("/api/price/pepew-usdt")
+                self.assertEqual(response.status_code, 200)
+                data = response.get_json()
+                self.assertEqual(data["price"], expected_price)
+
 if __name__ == "__main__":
     unittest.main()

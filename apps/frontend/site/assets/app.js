@@ -320,6 +320,13 @@
     }
   }
 
+  function chooseRecentAcceptedRate(pool) {
+    // SOURCE GUARD: Do not use global pool-wide rolling shares (e.g. pool.rolling['15m'])
+    // as they include low-difficulty-share noise and do not represent the actual miner accepted rate.
+    // Return null since no reliable recent accepted rate field is available in the dashboard pool summary.
+    return null;
+  }
+
   function updateRewardIntelligence(rewardPerDay, rewardPerWeek, usdtPerDayVal, price, network, pool) {
     const intelMessage = document.getElementById("intel-message");
     if (!intelMessage) return;
@@ -350,15 +357,12 @@
     let acceptedRatePercentStr = "";
     let isAcceptedRateBelowThreshold = false;
 
-    if (pool.rolling && pool.rolling["15m"]) {
-      const r15 = pool.rolling["15m"];
-      if (typeof r15.acceptedShares === "number" && typeof r15.shareCount === "number" && r15.shareCount > 0) {
-        const rate = r15.acceptedShares / r15.shareCount;
-        if (rate < 0.995) {
-          isAcceptedRateBelowThreshold = true;
-          acceptedRatePercentStr = (rate * 100).toFixed(2) + "%";
-          acceptedRateMsg = ` Accepted rate is below 99.5% (currently ${acceptedRatePercentStr}), which may have a small measurable impact on estimated rewards.`;
-        }
+    const acceptedRate = chooseRecentAcceptedRate(pool);
+    if (acceptedRate !== null) {
+      if (acceptedRate < 0.995) {
+        isAcceptedRateBelowThreshold = true;
+        acceptedRatePercentStr = (acceptedRate * 100).toFixed(2) + "%";
+        acceptedRateMsg = ` Accepted rate is below 99.5% (currently ${acceptedRatePercentStr}), which may have a small measurable impact on estimated rewards.`;
       }
     }
 

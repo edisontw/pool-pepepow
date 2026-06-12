@@ -16,6 +16,54 @@ from config import AppConfig, load_config
 from store import SnapshotRecord, SnapshotStore, SnapshotUnavailableError
 
 
+def parse_price_defensively(data: Any) -> float | None:
+    if not data:
+        return None
+    if isinstance(data, list):
+        if len(data) > 0:
+            data = data[0]
+        else:
+            return None
+    if not isinstance(data, dict):
+        return None
+
+    # Unpack nested ticker/data if present
+    if "ticker" in data and isinstance(data["ticker"], dict):
+        data = data["ticker"]
+    elif "data" in data and isinstance(data["data"], dict):
+        data = data["data"]
+
+    for key in ["last_price", "last", "price"]:
+        if key in data and data[key] is not None:
+            try:
+                return float(data[key])
+            except (ValueError, TypeError):
+                pass
+
+    # Try bid/ask midpoint
+    bid = None
+    ask = None
+    for key in ["bid", "buy"]:
+        if key in data and data[key] is not None:
+            try:
+                bid = float(data[key])
+                break
+            except (ValueError, TypeError):
+                pass
+    for key in ["ask", "sell"]:
+        if key in data and data[key] is not None:
+            try:
+                ask = float(data[key])
+                break
+            except (ValueError, TypeError):
+                pass
+
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+
+    return None
+
+
 class PriceCache:
     def __init__(self, cache_ttl_seconds: int = 120) -> None:
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -39,13 +87,15 @@ class PriceCache:
                     headers={"User-Agent": "pepepow-pool-api/0.1.0"}
                 )
                 with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-                    new_price = float(data["last_price"])
-                    new_updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                    with self.lock:
-                        self.price = new_price
-                        self.updated_at = new_updated_at
-                        self.last_fetch_success = now
+                    raw_data = response.read().decode("utf-8")
+                    data = json.loads(raw_data)
+                    new_price = parse_price_defensively(data)
+                    if new_price is not None:
+                        new_updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                        with self.lock:
+                            self.price = new_price
+                            self.updated_at = new_updated_at
+                            self.last_fetch_success = now
             except Exception as e:
                 print(f"Error fetching PEPEW price from NonKYC: {e}")
 
