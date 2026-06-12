@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PEPEPOW Community Pool</title>
+    <title>PEPEPOW Lab Pool</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -38,8 +38,44 @@
         line-height: 1.45;
       }
 
-      .page-grid > .panel.status-overview {
+      .page-grid > .panel.status-overview,
+      .page-grid > .panel.pool-about {
         grid-column: 1 / -1 !important;
+      }
+
+      .pool-about-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+        gap: 1rem;
+        align-items: start;
+      }
+
+      .resource-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+
+      .resource-card {
+        display: grid;
+        gap: 0.35rem;
+        padding: 0.85rem;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .resource-card span {
+        color: var(--muted);
+        font-size: 0.75rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .resource-card a {
+        color: var(--accent-alt);
+        font-weight: 800;
+        overflow-wrap: anywhere;
       }
 
       .status-overview-grid {
@@ -136,8 +172,10 @@
       }
 
       @media (max-width: 920px) {
-        .status-overview-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+        .status-overview-grid,
+        .resource-grid,
+        .pool-about-grid {
+          grid-template-columns: 1fr;
         }
       }
 
@@ -177,9 +215,9 @@
             height="72"
           >
           <div class="brand-title">
-            <p class="eyebrow">PEPEPOW Community Pool</p>
-            <h1>Live mining pool</h1>
-            <p class="brand-subtitle">Real-time pool status, miner activity, blocks, and payments.</p>
+            <p class="eyebrow">PEPEPOW Lab Pool</p>
+            <h1>Development-focused mining pool</h1>
+            <p class="brand-subtitle">Testing updated pool software, dashboard, API endpoints, monitoring, reward accounting, and transparency tools.</p>
           </div>
         </div>
         <nav class="nav">
@@ -199,13 +237,12 @@
             <h2 id="algorithm">Loading...</h2>
             <p class="muted">
               Public PEPEPOW mining is available through the Stratum endpoint below.
-              Accepted shares are tracked pool-side, and recorded payments are published for transparency after review.
-              This is a community-operated PEPEPOW-only pool, not a large-scale commercial operation.
+              This is an open-source, development-focused PEPEPOW pool for testing pool software, dashboards, API endpoints, monitoring, reward accounting, and transparency tools.
             </p>
             <div class="quick-facts">
               <div><span>How to mine</span><strong><a href="/connect.html">Use your PEPEPOW wallet as username</a></strong></div>
               <div><span>Stratum</span><strong>pool.pepepow.net:39333</strong></div>
-              <div><span>Payments</span><strong>Recorded payments after operator review</strong></div>
+              <div><span>Payments</span><strong>Recorded payments after review or self-test completion</strong></div>
             </div>
           </div>
           <div class="status-stack">
@@ -218,6 +255,25 @@
               scrolling="no"
               loading="lazy"
             ></iframe>
+          </div>
+        </section>
+
+        <section class="panel pool-about" aria-labelledby="pool-about-title">
+          <div class="pool-about-grid">
+            <div>
+              <p class="eyebrow">Pool positioning</p>
+              <h3 id="pool-about-title">PEPEPOW Lab Pool</h3>
+              <p class="muted">
+                Miners may choose any pool based on latency, stability, fees, payout policy, and trust.
+                Using multiple independent pools helps improve PEPEPOW network decentralization.
+              </p>
+            </div>
+            <div class="resource-grid" aria-label="PEPEPOW resources">
+              <article class="resource-card"><span>Pool GitHub</span><a href="https://github.com/edisontw/pool-pepepow" target="_blank" rel="noopener noreferrer">github.com/edisontw/pool-pepepow</a></article>
+              <article class="resource-card"><span>PEPEPOW Website</span><a href="https://pepepow.org/" target="_blank" rel="noopener noreferrer">pepepow.org</a></article>
+              <article class="resource-card"><span>Mining pools</span><a href="https://miningpoolstats.stream/pepepow" target="_blank" rel="noopener noreferrer">MiningPoolStats / PEPEPOW</a></article>
+              <article class="resource-card"><span>Discord</span><a href="https://discord.gg/sJgDVRkBcq" target="_blank" rel="noopener noreferrer">discord.gg/sJgDVRkBcq</a></article>
+            </div>
           </div>
         </section>
 
