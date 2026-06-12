@@ -1026,14 +1026,19 @@
     if (!form || !input) {
       return;
     }
-
+    const storedWallet = localStorage.getItem("miner_lookup_wallet");
+    if (!input.value.trim() && storedWallet && isLikelyPepepowAddress(storedWallet)) {
+      input.value = storedWallet;
+    }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const wallet = input.value.trim();
       if (!wallet) {
+        localStorage.removeItem("miner_lookup_wallet");
         setHtml("miner-result", '<div class="empty-state"><strong>Enter a PEPEPOW wallet address to check miner status.</strong><p class="muted">Data will appear after the pool receives accepted shares.</p><a class="button" href="/connect.html">How to start mining</a></div>');
         return;
       }
+      localStorage.setItem("miner_lookup_wallet", wallet);
       setHtml("miner-result", '<div class="muted">Loading miner data...</div>');
       try {
         await lookupMiner(config, wallet);
