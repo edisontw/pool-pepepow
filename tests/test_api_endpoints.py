@@ -1042,5 +1042,84 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(status_payload["hoohashv110"]["workers"], 0)
         self.assertEqual(status_payload["hoohashv110"]["hashrate"], 0.0)
 
+    def test_price_endpoint_success(self):
+        from unittest.mock import patch, MagicMock
+
+        app = create_app(make_config(FALLBACK_SNAPSHOT_PATH, FALLBACK_SNAPSHOT_PATH))
+        client = app.test_client()
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"ticker_id":"PEPEW_USDT","last_price":"0.000000325"}'
+        mock_response.__enter__.return_value = mock_response
+
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+            response = client.get("/api/price/pepew-usdt")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["symbol"], "PEPEW_USDT")
+            self.assertEqual(payload["price"], 0.000000325)
+            self.assertEqual(payload["source"], "nonkyc")
+            self.assertIsNotNone(payload["updatedAt"])
+            self.assertEqual(payload["cacheSeconds"], 120)
+            mock_urlopen.assert_called_once()
+
+    def test_price_endpoint_caching(self):
+        from unittest.mock import patch, MagicMock
+
+        app = create_app(make_config(FALLBACK_SNAPSHOT_PATH, FALLBACK_SNAPSHOT_PATH))
+        client = app.test_client()
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"ticker_id":"PEPEW_USDT","last_price":"0.000000325"}'
+        mock_response.__enter__.return_value = mock_response
+
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+            # First call triggers fetch
+            response1 = client.get("/api/price/pepew-usdt")
+            self.assertEqual(response1.status_code, 200)
+
+            # Second call immediately should use cache
+            response2 = client.get("/api/price/pepew-usdt")
+            self.assertEqual(response2.status_code, 200)
+
+            payload1 = response1.get_json()
+            payload2 = response2.get_json()
+            self.assertEqual(payload1["price"], 0.000000325)
+            self.assertEqual(payload2["price"], 0.000000325)
+            self.assertEqual(payload1["updatedAt"], payload2["updatedAt"])
+
+            # Should only be called once
+            mock_urlopen.assert_called_once()
+
+    def test_price_endpoint_failure_fallback(self):
+        from unittest.mock import patch, MagicMock
+        import urllib.error
+
+        app = create_app(make_config(FALLBACK_SNAPSHOT_PATH, FALLBACK_SNAPSHOT_PATH))
+        client = app.test_client()
+
+        # Case 1: Fetch fails and no price cached yet -> should return price: null
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")) as mock_urlopen:
+            response = client.get("/api/price/pepew-usdt")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["price"], None)
+            self.assertEqual(payload["updatedAt"], None)
+
+        # Case 2: Seed the cache manually, then fetch fails -> should return previously cached price
+        cache = app.config["PRICE_CACHE"]
+        cache.price = 0.000000450
+        cache.updated_at = "2026-06-12T15:00:00Z"
+        # Reset last_fetch_attempt and last_fetch_success to force a new attempt
+        cache.last_fetch_success = 0.0
+        cache.last_fetch_attempt = 0.0
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")) as mock_urlopen:
+            response = client.get("/api/price/pepew-usdt")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["price"], 0.000000450)
+            self.assertEqual(payload["updatedAt"], "2026-06-12T15:00:00Z")
+
 if __name__ == "__main__":
     unittest.main()

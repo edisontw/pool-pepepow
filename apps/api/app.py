@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.request
+import threading
+from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
 
@@ -11,6 +14,50 @@ from waitress import serve
 
 from config import AppConfig, load_config
 from store import SnapshotRecord, SnapshotStore, SnapshotUnavailableError
+
+
+class PriceCache:
+    def __init__(self, cache_ttl_seconds: int = 120) -> None:
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self.price: float | None = None
+        self.updated_at: str | None = None
+        self.last_fetch_success: float = 0.0
+        self.last_fetch_attempt: float = 0.0
+        self.lock = threading.Lock()
+
+    def get_price_info(self) -> dict[str, Any]:
+        now = time.time()
+        with self.lock:
+            should_fetch = (now - self.last_fetch_success >= self.cache_ttl_seconds) and (now - self.last_fetch_attempt >= 10.0)
+            if should_fetch:
+                self.last_fetch_attempt = now
+
+        if should_fetch:
+            try:
+                req = urllib.request.Request(
+                    "https://api.nonkyc.io/api/v2/ticker/PEPEW_USDT",
+                    headers={"User-Agent": "pepepow-pool-api/0.1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                    new_price = float(data["last_price"])
+                    new_updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    with self.lock:
+                        self.price = new_price
+                        self.updated_at = new_updated_at
+                        self.last_fetch_success = now
+            except Exception as e:
+                print(f"Error fetching PEPEW price from NonKYC: {e}")
+
+        with self.lock:
+            return {
+                "symbol": "PEPEW_USDT",
+                "price": self.price,
+                "source": "nonkyc",
+                "updatedAt": self.updated_at,
+                "cacheSeconds": self.cache_ttl_seconds
+            }
+
 
 
 LOCAL_SERVICE_BASELINE = {
@@ -33,6 +80,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
         app_config.cache_ttl_seconds,
         app_config.stale_after_seconds,
     )
+    app.config["PRICE_CACHE"] = PriceCache()
     wallet_pattern = re.compile(app_config.allowed_wallet_pattern)
 
     def json_error(status: HTTPStatus, message: str):
@@ -481,6 +529,11 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 }
             }
         )
+
+    @app.get("/api/price/pepew-usdt")
+    def pepew_usdt_price():
+        cache: PriceCache = app.config["PRICE_CACHE"]
+        return jsonify(cache.get_price_info())
 
     return app
 
