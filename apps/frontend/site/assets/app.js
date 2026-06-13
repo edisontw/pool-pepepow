@@ -430,20 +430,21 @@
    * Compute estimated reward per hour/day/week given miner hashrate and network/pool context.
    * Returns { rewardPerHour, rewardPerDay, rewardPerWeek } or null if inputs are invalid.
    */
-  function calculateRewards(hashrateHps, network) {
+  function calculateRewards(hashrateHps, network, pool) {
     if (typeof hashrateHps !== "number" || !isFinite(hashrateHps) || hashrateHps <= 0) return null;
     const netHash = network ? network.networkHashrate : null;
     if (typeof netHash !== "number" || netHash <= 0) return null;
 
     const BLOCK_TIME_SECONDS = 20;
+    const TOTAL_BLOCK_REWARD = 7000;
+    const DEVELOPER_FEE_RATIO = 0.05;
     const MINER_REWARD_RATIO = 0.65;
-    const DEFAULT_BLOCK_REWARD = 16000;
+    const poolFeeRatio = (pool && typeof pool.feePercent === "number" && isFinite(pool.feePercent) && pool.feePercent > 0)
+      ? pool.feePercent / 100
+      : 0;
 
-    const currentBlockReward = (network && typeof network.reward === "number" && network.reward > 0)
-      ? network.reward
-      : DEFAULT_BLOCK_REWARD;
     const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
-    const minerRewardPerBlock = currentBlockReward * MINER_REWARD_RATIO;
+    const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio);
 
     const rewardPerDay = (hashrateHps / netHash) * blocksPerDay * minerRewardPerBlock;
     return {
@@ -486,7 +487,7 @@
 
     const summary = minerResult.summary || {};
     const hashrateHps = readMinerHashrateHps(minerResult);
-    const rewards = calculateRewards(hashrateHps, network);
+    const rewards = calculateRewards(hashrateHps, network, pool);
     const acceptedRate = chooseMinerAcceptedRate(minerResult);
     const pepewPrice = (price && typeof price.price === "number") ? price.price : null;
 
@@ -572,12 +573,15 @@
     }
 
     const BLOCK_TIME_SECONDS = 20;
+    const TOTAL_BLOCK_REWARD = 7000;
+    const DEVELOPER_FEE_RATIO = 0.05;
     const MINER_REWARD_RATIO = 0.65;
-    const DEFAULT_BLOCK_REWARD = 16000;
+    const poolFeeRatio = (pool && typeof pool.feePercent === "number" && isFinite(pool.feePercent) && pool.feePercent > 0)
+      ? pool.feePercent / 100
+      : 0;
 
-    const currentBlockReward = (network && typeof network.reward === "number" && network.reward > 0) ? network.reward : DEFAULT_BLOCK_REWARD;
     const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
-    const minerRewardPerBlock = currentBlockReward * MINER_REWARD_RATIO;
+    const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio);
 
     const rewardPerDay = (userHashrateHps / netHash) * blocksPerDay * minerRewardPerBlock;
     const rewardPerHour = rewardPerDay / 24;
