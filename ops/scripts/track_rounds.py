@@ -88,6 +88,7 @@ def main() -> int:
         help="Minimum difficulty floor for shares",
     )
     args = parser.parse_args()
+    output_path = Path(args.output)
 
     # Load accepted candidates
     cand_path = Path(args.accepted_candidates)
@@ -102,6 +103,21 @@ def main() -> int:
     except Exception as exc:
         print(f"Error loading candidates: {exc}", file=sys.stderr)
         return 1
+
+    existing_rounds_by_hash: dict[str, dict[str, Any]] = {}
+    if output_path.exists():
+        try:
+            with output_path.open("r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+            if isinstance(existing_data, dict) and isinstance(existing_data.get("rounds"), list):
+                for item in existing_data["rounds"]:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate_hash = item.get("candidate_hash") or item.get("round_id")
+                    if candidate_hash:
+                        existing_rounds_by_hash[str(candidate_hash)] = item
+        except Exception:
+            existing_rounds_by_hash = {}
 
     # Load activity snapshot to find assumed share difficulty if not passed
     min_diff = args.min_share_difficulty
@@ -272,6 +288,8 @@ def main() -> int:
                 previous_ts = boundary_ts
         return previous_ts
 
+    preserved_now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
     # Compute rounds and attribute shares
     rounds_list = []
     for i, c in enumerate(round_cands):
@@ -367,6 +385,37 @@ def main() -> int:
             "attribution_reason": attribution_reason,
         }
 
+        existing_round = existing_rounds_by_hash.get(str(c.get("candidate_hash")))
+        if (
+            total_round_shares == 0
+            and attribution_reason == "share_log_tail_too_short"
+            and isinstance(existing_round, dict)
+        ):
+            try:
+                existing_share_count = int(existing_round.get("total_share_count") or 0)
+            except (TypeError, ValueError):
+                existing_share_count = 0
+            existing_shares = existing_round.get("shares")
+            if existing_share_count > 0 and isinstance(existing_shares, dict):
+                round_item["shares"] = existing_shares
+                round_item["total_share_count"] = existing_share_count
+                try:
+                    round_item["total_share_score"] = float(existing_round.get("total_share_score") or 0.0)
+                except (TypeError, ValueError):
+                    round_item["total_share_score"] = 0.0
+                try:
+                    round_item["wallet_count"] = int(existing_round.get("wallet_count") or len(existing_shares))
+                except (TypeError, ValueError):
+                    round_item["wallet_count"] = len(existing_shares)
+                try:
+                    round_item["worker_count"] = int(existing_round.get("worker_count") or 0)
+                except (TypeError, ValueError):
+                    round_item["worker_count"] = 0
+                round_item["attribution_status"] = "preserved"
+                round_item["attribution_reason"] = "preserved_existing_attribution_after_tail_short"
+                round_item["attribution_preserved"] = True
+                round_item["attribution_preserved_at"] = preserved_now
+
         # Immature / orphan / chain_match_found safety
         if status in {"immature", "orphan", "chain_match_found"}:
             round_item["payable"] = False
@@ -375,10 +424,20 @@ def main() -> int:
 
         rounds_list.append(round_item)
 
+    preserved_round_attribution_count = sum(
+        1
+        for item in rounds_list
+        if item.get("attribution_preserved") is True
+    )
+    incomplete_confirmed_round_count = sum(
+        1
+        for item in rounds_list
+        if item.get("status") == "confirmed" and item.get("attribution_status") == "incomplete"
+    )
     empty_confirmed_round_count = sum(
         1
         for item in rounds_list
-        if item.get("status") == "confirmed" and item.get("total_share_count") == 0
+        if item.get("status") == "confirmed" and item.get("attribution_status") == "empty"
     )
     output_data = {
         "updated_at": datetime.now(timezone.utc)
@@ -397,13 +456,14 @@ def main() -> int:
             else None
         ),
         "roundBoundaryCount": len(boundary_cands),
+        "preservedRoundAttributionCount": preserved_round_attribution_count,
+        "incompleteConfirmedRoundCount": incomplete_confirmed_round_count,
         "emptyConfirmedRoundCount": empty_confirmed_round_count,
         "maxShareLines": max_share_lines,
         "rounds": rounds_list,
     }
 
     try:
-        output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, sort_keys=True)

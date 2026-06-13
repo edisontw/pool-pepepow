@@ -389,7 +389,15 @@ class TrackRoundsTests(unittest.TestCase):
 class TestRoundSharePercent(unittest.TestCase):
     """Focused tests for share percent correctness."""
 
-    def _run_track(self, candidates_data, shares, act_data=None, min_diff=None, max_share_lines=None):
+    def _run_track(
+        self,
+        candidates_data,
+        shares,
+        act_data=None,
+        min_diff=None,
+        max_share_lines=None,
+        existing_output=None,
+    ):
         with tempfile.TemporaryDirectory() as tmpdir:
             cand_path = Path(tmpdir) / "accepted-candidates.json"
             share_log = Path(tmpdir) / "share-events.jsonl"
@@ -404,6 +412,9 @@ class TestRoundSharePercent(unittest.TestCase):
             act_payload = act_data or {"meta": {"assumedShareDifficulty": 0.001}}
             with act_path.open("w", encoding="utf-8") as f:
                 json.dump(act_payload, f)
+            if existing_output is not None:
+                with out_path.open("w", encoding="utf-8") as f:
+                    json.dump(existing_output, f)
 
             argv = [
                 "track_rounds.py",
@@ -742,7 +753,9 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertEqual(data["parsedAcceptedShares"], 1)
         self.assertEqual(data["earliestShareTimestamp"], "2026-06-05T18:01:00Z")
         self.assertEqual(data["latestShareTimestamp"], "2026-06-05T18:01:00Z")
-        self.assertEqual(data["emptyConfirmedRoundCount"], 1)
+        self.assertEqual(data["incompleteConfirmedRoundCount"], 1)
+        self.assertEqual(data["emptyConfirmedRoundCount"], 0)
+        self.assertEqual(data["preservedRoundAttributionCount"], 0)
         self.assertEqual(data["maxShareLines"], 100000)
 
     def test_orphan_does_not_split_next_confirmed_payout_round(self):
@@ -787,3 +800,148 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertIn("walletAfterOrphan", confirmed_round["shares"])
         self.assertEqual(confirmed_round["total_share_count"], 2)
 
+    def test_preserves_existing_non_empty_attribution_when_tail_too_short(self):
+        existing_output = {
+            "rounds": [{
+                "candidate_hash": "hash-preserve",
+                "shares": {
+                    "walletOld": {
+                        "share_count": 2,
+                        "share_score": 4.0,
+                        "share_percent": 100.0,
+                        "workers": {
+                            "rig1": {
+                                "share_count": 2,
+                                "share_score": 4.0,
+                                "share_percent": 100.0,
+                                "wallet_share_percent": 100.0,
+                            }
+                        },
+                    }
+                },
+                "total_share_count": 2,
+                "total_share_score": 4.0,
+                "wallet_count": 1,
+                "worker_count": 1,
+            }]
+        }
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-preserve",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1500,
+                    "submit_timestamp": "2026-06-05T18:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[{
+                "wallet": "walletLater",
+                "timestamp": "2026-06-05T18:05:00Z",
+                "accepted": True,
+                "submit": {"difficulty": 1.0},
+            }],
+            existing_output=existing_output,
+        )
+        round_item = data["rounds"][0]
+        self.assertEqual(round_item["attribution_status"], "preserved")
+        self.assertEqual(round_item["attribution_reason"], "preserved_existing_attribution_after_tail_short")
+        self.assertTrue(round_item["attribution_preserved"])
+        self.assertIn("attribution_preserved_at", round_item)
+        self.assertEqual(round_item["shares"], existing_output["rounds"][0]["shares"])
+        self.assertEqual(round_item["total_share_count"], 2)
+        self.assertEqual(round_item["total_share_score"], 4.0)
+        self.assertEqual(round_item["wallet_count"], 1)
+        self.assertEqual(round_item["worker_count"], 1)
+        self.assertEqual(data["preservedRoundAttributionCount"], 1)
+        self.assertEqual(data["incompleteConfirmedRoundCount"], 0)
+
+    def test_existing_empty_attribution_is_not_preserved(self):
+        existing_output = {
+            "rounds": [{
+                "candidate_hash": "hash-empty-existing",
+                "shares": {},
+                "total_share_count": 0,
+                "total_share_score": 0.0,
+                "wallet_count": 0,
+                "worker_count": 0,
+            }]
+        }
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-empty-existing",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1501,
+                    "submit_timestamp": "2026-06-05T18:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[{
+                "wallet": "walletLater",
+                "timestamp": "2026-06-05T18:05:00Z",
+                "accepted": True,
+                "submit": {"difficulty": 1.0},
+            }],
+            existing_output=existing_output,
+        )
+        round_item = data["rounds"][0]
+        self.assertEqual(round_item["total_share_count"], 0)
+        self.assertEqual(round_item["attribution_status"], "incomplete")
+        self.assertEqual(round_item["attribution_reason"], "share_log_tail_too_short")
+        self.assertNotIn("attribution_preserved", round_item)
+        self.assertEqual(data["preservedRoundAttributionCount"], 0)
+        self.assertEqual(data["incompleteConfirmedRoundCount"], 1)
+
+    def test_new_non_empty_attribution_replaces_existing_preserved_data(self):
+        existing_output = {
+            "rounds": [{
+                "candidate_hash": "hash-replace",
+                "shares": {
+                    "walletOld": {
+                        "share_count": 1,
+                        "share_score": 1.0,
+                        "share_percent": 100.0,
+                        "workers": {
+                            "default": {
+                                "share_count": 1,
+                                "share_score": 1.0,
+                                "share_percent": 100.0,
+                                "wallet_share_percent": 100.0,
+                            }
+                        },
+                    }
+                },
+                "total_share_count": 1,
+                "total_share_score": 1.0,
+                "wallet_count": 1,
+                "worker_count": 1,
+                "attribution_status": "preserved",
+            }]
+        }
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-replace",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1502,
+                    "submit_timestamp": "2026-06-05T18:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[{
+                "wallet": "walletNew",
+                "timestamp": "2026-06-05T17:59:00Z",
+                "accepted": True,
+                "submit": {"difficulty": 3.0},
+            }],
+            existing_output=existing_output,
+        )
+        round_item = data["rounds"][0]
+        self.assertEqual(round_item["attribution_status"], "ok")
+        self.assertIsNone(round_item["attribution_reason"])
+        self.assertNotIn("walletOld", round_item["shares"])
+        self.assertEqual(round_item["shares"]["walletNew"]["share_count"], 1)
+        self.assertEqual(round_item["total_share_count"], 1)
+        self.assertEqual(round_item["total_share_score"], 3.0)
+        self.assertEqual(data["preservedRoundAttributionCount"], 0)
