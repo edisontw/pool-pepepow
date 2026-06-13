@@ -1329,7 +1329,7 @@ auto_payout_once_service() {
   load_launch_env_if_present
 
   local followup_count max_sends min_payout one_shot_wallet_max_sends allowed_wallets_env allowed_wallets_args allow_any_wallet
-  followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-5}"
+  followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-100}"
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
   one_shot_wallet_max_sends="1"
   max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-5}"
@@ -1366,6 +1366,7 @@ auto_payout_once_service() {
     done
   fi
 
+  echo "auto_payout_followup_count: ${followup_count}"
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" candidate_followup_service candidate-followup "${followup_count}" --record
   accepted_candidates_service
   track_rounds_service

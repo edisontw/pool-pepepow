@@ -1042,6 +1042,31 @@ class PayoutAccountingTests(unittest.TestCase):
         for forbidden_text in forbidden:
             self.assertNotIn(forbidden_text, service_body)
 
+    def test_live_stratum_sh_auto_payout_followup_default_is_bounded_100(self):
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+        script = sh_path.read_text(encoding="utf-8")
+        start = script.index("auto_payout_once_service() {")
+        end = script.index("\nrecord_payment_service() {", start)
+        service_body = script[start:end]
+
+        self.assertIn('followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-100}"', service_body)
+        self.assertIn('echo "auto_payout_followup_count: ${followup_count}"', service_body)
+        self.assertIn('candidate_followup_service candidate-followup "${followup_count}" --record', service_body)
+
+        expected_order = [
+            'echo "auto_payout_followup_count: ${followup_count}"',
+            'candidate_followup_service candidate-followup "${followup_count}" --record',
+            "accepted_candidates_service",
+            "track_rounds_service",
+            "payout_carry_service",
+            "payout_candidates_service",
+        ]
+        cursor = -1
+        for expected in expected_order:
+            next_pos = service_body.find(expected, cursor + 1)
+            self.assertNotEqual(next_pos, -1, expected)
+            cursor = next_pos
+
     def test_payout_candidates_harden_rules(self):
         # 1. Missing reward
         accepted_data = {
