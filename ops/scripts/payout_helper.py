@@ -693,6 +693,11 @@ def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | N
     return None, None
 
 def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_path: Path, carry_path: Path | None = None) -> int:
+    env = load_env_vars()
+    backfill_enabled = env.get("PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "").strip().lower() == "true"
+    backfill_wallet = env.get("PEPEPOW_OPERATOR_BACKFILL_WALLET", "").strip()
+    backfill_reason = env.get("PEPEPOW_OPERATOR_BACKFILL_REASON", "operator_approved_unattributed_confirmed_rewards").strip()
+
     carry_map = {}
     if carry_path and carry_path.exists():
         try:
@@ -906,31 +911,47 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 gross_reward = miner_gross_reward
 
             if not reason:
+                pool_fee_pct = float(os.getenv("PEPEPOW_POOL_FEE_PERCENT", "1.0"))
+                pool_fee_percent = pool_fee_pct
+                pool_fee_amount = miner_gross_reward * pool_fee_pct / 100.0
+                net_reward = miner_gross_reward - pool_fee_amount
+
+                try:
+                    min_conf_env = int(os.getenv("PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "101"))
+                except (ValueError, TypeError):
+                    min_conf_env = 101
+
+                candidate_confirmations = daemon_confirmations if daemon_confirmations is not None else c.get("confirmations")
+
+                conf_ok = True
+                if candidate_confirmations is not None:
+                    try:
+                        conf_ok = int(candidate_confirmations) >= min_conf_env
+                    except (ValueError, TypeError):
+                        pass
+
+                apply_backfill = (
+                    backfill_enabled
+                    and bool(backfill_wallet)
+                    and l_status == "confirmed"
+                    and coinbase_matches_expected_pool_wallet is True
+                    and not is_already_paid
+                    and conf_ok
+                    and miner_gross_reward > 0
+                )
+
                 # 2. Candidate hash validation
                 if not c_hash:
                     status = "blocked"
                     reason = "missing_candidate_hash"
                 # 3. Round validation
                 elif c_hash not in rounds_map:
-                    try:
-                        min_conf_env = int(os.getenv("PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "101"))
-                    except (ValueError, TypeError):
-                        min_conf_env = 101
-                    
-                    candidate_confirmations = daemon_confirmations if daemon_confirmations is not None else c.get("confirmations")
-                    
                     fallback_wallet = c.get("wallet") or c.get("miner_wallet")
                     # Check for duplicate candidates with same hash but different wallets
                     same_hash_wallets = {str(cand.get("wallet") or cand.get("miner_wallet") or "").strip() for cand in candidates if cand.get("candidate_hash") == c_hash}
                     same_hash_wallets.discard("")
                     
                     is_ambiguous = len(same_hash_wallets) > 1
-                    
-                    pool_fee_pct = float(os.getenv("PEPEPOW_POOL_FEE_PERCENT", "1.0"))
-                    pool_fee_percent = pool_fee_pct
-                    pool_fee_amount = miner_gross_reward * pool_fee_pct / 100.0
-                    net_reward = miner_gross_reward - pool_fee_amount
-                    
                     is_wallet_valid = isinstance(fallback_wallet, str) and bool(re.match(r"^[A-Za-z0-9]{26,128}$", fallback_wallet))
                     
                     if (
@@ -960,6 +981,23 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                             "fallbackReason": "missing_round",
                             "fallbackWarning": True,
                         }]
+                    elif apply_backfill:
+                        status = "ready_for_manual_review"
+                        reason = None
+                        weight_mode = "operator_unattributed_confirmed_backfill"
+                        round_share_total = 1.0
+                        payouts = [{
+                            "wallet": backfill_wallet,
+                            "weight": 1.0,
+                            "amount": net_reward,
+                            "baseAmount": net_reward,
+                            "carryInAmount": 0.0,
+                            "status": "pending_manual_payment",
+                            "carrySourceCount": 0,
+                            "carrySourceCandidateIds": [],
+                            "fallbackReason": backfill_reason,
+                            "fallbackWarning": True,
+                        }]
                     else:
                         status = "blocked"
                         reason = "blocked_missing_round"
@@ -968,8 +1006,26 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                     shares = r_data.get("shares")
                     # 4. Wallet weights / shares validation
                     if not isinstance(shares, dict) or not shares:
-                        status = "blocked"
-                        reason = "missing_share_data"
+                        if apply_backfill:
+                            status = "ready_for_manual_review"
+                            reason = None
+                            weight_mode = "operator_unattributed_confirmed_backfill"
+                            round_share_total = 1.0
+                            payouts = [{
+                                "wallet": backfill_wallet,
+                                "weight": 1.0,
+                                "amount": net_reward,
+                                "baseAmount": net_reward,
+                                "carryInAmount": 0.0,
+                                "status": "pending_manual_payment",
+                                "carrySourceCount": 0,
+                                "carrySourceCandidateIds": [],
+                                "fallbackReason": backfill_reason,
+                                "fallbackWarning": True,
+                            }]
+                        else:
+                            status = "blocked"
+                            reason = "missing_share_data"
                     else:
                         # 5. Round weight validation
                         try:

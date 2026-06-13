@@ -5784,6 +5784,503 @@ class FallbackPayoutTests(unittest.TestCase):
             os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", None)
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
 
+    def test_operator_backfill_blocked_missing_round(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1.0"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_approved_unattributed_confirmed_rewards"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillmissinground00000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 301,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            self.assertEqual(rc, 0)
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "ready_for_manual_review")
+            self.assertIsNone(item["reason"])
+            self.assertEqual(item["weightMode"], "operator_unattributed_confirmed_backfill")
+            self.assertEqual(len(item["payouts"]), 1)
+            payout = item["payouts"][0]
+            self.assertEqual(payout["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
+            self.assertEqual(payout["status"], "pending_manual_payment")
+            self.assertEqual(payout["fallbackReason"], "operator_approved_unattributed_confirmed_rewards")
+            self.assertTrue(payout["fallbackWarning"])
+            self.assertAlmostEqual(payout["amount"], 4387.5 * 0.99)
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
+                      "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_missing_share_data(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1.0"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillmissingshare00000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 302,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{"candidate_hash": "hashbackfillmissingshare00000001", "shares": {}}]}, f)
+
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            self.assertEqual(rc, 0)
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "ready_for_manual_review")
+            self.assertIsNone(item["reason"])
+            self.assertEqual(item["weightMode"], "operator_unattributed_confirmed_backfill")
+            payout = item["payouts"][0]
+            self.assertEqual(payout["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
+                      "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_disabled_by_default(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfilldisabled000000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 303,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            self.assertEqual(rc, 0)
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_missing_round")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_POOL_CORE_REWARD_ADDRESS"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_blocks_non_confirmed(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillimmature000000000001",
+                        "lifecycle_status": "immature",
+                        "matched_height": 304,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    },
+                    {
+                        "candidate_hash": "hashbackfillorphan00000000000001",
+                        "lifecycle_status": "orphan",
+                        "matched_height": 305,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item_map = {item["candidate_hash"]: item for item in res["items"]}
+            self.assertEqual(item_map["hashbackfillimmature000000000001"]["status"], "blocked")
+            self.assertEqual(item_map["hashbackfillimmature000000000001"]["reason"], "immature_block")
+            self.assertEqual(item_map["hashbackfillorphan00000000000001"]["status"], "blocked")
+            self.assertEqual(item_map["hashbackfillorphan00000000000001"]["reason"], "orphan_block")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
+                      "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_blocks_coinbase_mismatch(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillmismatch000000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 306,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PLigcFyT6QcrDfzbAMFdYvAnhuTp8RDpUq"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_coinbase_reward_mismatch")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
+                      "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_blocks_already_paid(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillpaid0000000000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 307,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            self.actions_log.write_text(json.dumps({
+                "candidate_id": "hashbackfillpaid0000000000000001",
+                "wallet": "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd",
+                "amount": 4387.5 * 0.99,
+                "txid": "txidbackfillpaid000000000000001",
+                "timestamp": "2026-06-07T00:00:00Z"
+            }) + "\n", encoding="utf-8")
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_already_paid")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
+                      "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_requires_override_wallet(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillnowallet000000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 308,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_missing_round")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
+                      "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"]:
+                os.environ.pop(k, None)
+
+    @unittest.mock.patch('payout_helper.payout_wallet_send_once')
+    def test_auto_payout_can_send_operator_backfill_payout_and_records_txid(self, mock_send):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        mock_send.return_value = 0
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillautosend000000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 309,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+
+            auto_payout_result = self.tmp_path / "auto-payout-result.json"
+            rc = payout_helper.auto_payout_once(
+                self.output_path,
+                self.actions_log,
+                self.snapshot_path,
+                auto_payout_result,
+                min_payout=10.0,
+                max_sends=5
+            )
+            self.assertEqual(rc, 0)
+
+            with auto_payout_result.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            self.assertEqual(res["sendInvocations"], 1)
+            self.assertEqual(res["items"][0]["action"], "send_once")
+            self.assertEqual(res["items"][0]["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
+                      "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                os.environ.pop(k, None)
+
+    def test_duplicate_candidate_wallet_remains_blocked(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillduplicate00000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 310,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": []}, f)
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+
+            payout_helper.record_payment(
+                self.actions_log,
+                self.snapshot_path,
+                "hashbackfillduplicate00000000001",
+                "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd",
+                4387.5 * 0.99,
+                "txidbackfillduplicate000000000001"
+            )
+
+            payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_already_paid")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
+                      "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                os.environ.pop(k, None)
+
 
 if __name__ == "__main__":
     unittest.main()
