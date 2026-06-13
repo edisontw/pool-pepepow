@@ -880,7 +880,9 @@ class ApiEndpointTests(unittest.TestCase):
                         "amount": 1200.0,
                         "confirmations": 10,
                         "txid": "txid_match_1",
+                        "timestamp": "2026-06-13T06:00:00Z",
                         "blockHeight": 4500000,
+                        "blockHash": "block_hash_1",
                         "status": "ready_for_manual_review"
                     },
                     {
@@ -888,7 +890,10 @@ class ApiEndpointTests(unittest.TestCase):
                         "amount": 800.5,
                         "confirmations": 5,
                         "txid": "txid_match_2",
+                        "paidAt": "2026-06-13T07:00:00Z",
+                        "candidate_id": "candidate_hash_match_2",
                         "blockHeight": 4500100,
+                        "note": "manual backfill",
                         "status": "ready_for_manual_review"
                     },
                     {
@@ -920,9 +925,54 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertIn("recentPayments", payload)
             self.assertIn("totalPaidManual", payload)
             self.assertEqual(len(payload["recentPayments"]), 2)
-            self.assertEqual(payload["recentPayments"][0]["txid"], "txid_match_1")
-            self.assertEqual(payload["recentPayments"][1]["txid"], "txid_match_2")
+            self.assertEqual(payload["recentPayments"][0]["txid"], "txid_match_2")
+            self.assertEqual(payload["recentPayments"][0]["candidateId"], "candidate_hash_match_2")
+            self.assertEqual(payload["recentPayments"][0]["timestamp"], "2026-06-13T07:00:00Z")
+            self.assertEqual(payload["recentPayments"][1]["txid"], "txid_match_1")
+            self.assertEqual(payload["recentPayments"][1]["paidAt"], "2026-06-13T06:00:00Z")
+            self.assertEqual(payload["recentPayments"][1]["timestamp"], "2026-06-13T06:00:00Z")
             self.assertAlmostEqual(payload["totalPaidManual"], 2000.5)
+
+    def test_miner_endpoint_limits_recent_payments_after_sorting(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            payments_path = Path(tmp_dir) / "payments-snapshot.json"
+            payments_payload = {
+                "items": [
+                    {
+                        "wallet": "PEPEPOW1KnownWalletAddress000000",
+                        "amount": 1.0,
+                        "txid": f"txid_match_{i:02d}",
+                        "timestamp": f"2026-06-13T00:{i:02d}:00Z",
+                    }
+                    for i in range(55)
+                ]
+            }
+            payments_path.write_text(
+                json.dumps(payments_payload), encoding="utf-8"
+            )
+
+            config = make_config(
+                runtime_path,
+                FALLBACK_SNAPSHOT_PATH,
+                activity_snapshot_path=payments_path
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            response = client.get("/api/miner/PEPEPOW1KnownWalletAddress000000")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+
+            self.assertEqual(len(payload["recentPayments"]), 50)
+            self.assertEqual(payload["recentPayments"][0]["txid"], "txid_match_54")
+            self.assertEqual(payload["recentPayments"][-1]["txid"], "txid_match_05")
+            self.assertAlmostEqual(payload["totalPaidManual"], 55.0)
 
     def test_miner_endpoint_payments_fallback_safe(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

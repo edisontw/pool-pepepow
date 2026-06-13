@@ -450,6 +450,26 @@ def create_app(config: AppConfig | None = None) -> Flask:
         if not wallet_pattern.fullmatch(wallet):
             return json_error(HTTPStatus.BAD_REQUEST, "Wallet format is invalid")
 
+        def payment_sort_key(item: dict[str, Any]) -> str:
+            return str(item.get("paidAt") or item.get("timestamp") or "")
+
+        def normalize_payment_item(item: dict[str, Any]) -> dict[str, Any]:
+            paid_at = item.get("paidAt") or item.get("timestamp")
+            timestamp = item.get("timestamp") or item.get("paidAt")
+            return {
+                "paidAt": paid_at,
+                "timestamp": timestamp,
+                "amount": item.get("amount"),
+                "txid": item.get("txid"),
+                "wallet": item.get("wallet"),
+                "candidateId": item.get("candidateId") or item.get("candidate_id"),
+                "blockHeight": item.get("blockHeight"),
+                "blockHash": item.get("blockHash"),
+                "status": item.get("status"),
+                "confirmations": item.get("confirmations"),
+                "note": item.get("note"),
+            }
+
         # Load recorded manual payments from payments-snapshot.json
         recent_payments = []
         total_paid_manual = 0.0
@@ -466,13 +486,15 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 if isinstance(payments_data, dict) and isinstance(payments_data.get("items"), list):
                     for item in payments_data["items"]:
                         if isinstance(item, dict) and item.get("wallet") == wallet:
-                            recent_payments.append(item)
+                            recent_payments.append(normalize_payment_item(item))
                             try:
                                 total_paid_manual += float(item.get("amount", 0.0))
                             except (ValueError, TypeError):
                                 pass
             except Exception:
                 pass
+        recent_payments.sort(key=payment_sort_key, reverse=True)
+        recent_payments = recent_payments[:50]
 
         record = get_snapshot_record()
         if not bool(record.meta.get("minerLookupImplemented", False)):

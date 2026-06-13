@@ -1002,7 +1002,7 @@
 
     htmlContent += "<h3>Recorded payments</h3>";
     htmlContent += renderTable(recentPayments, [
-      { key: "paidAt", label: "Paid", render: formatDate },
+      { key: "paidAt", label: "Paid", render: (_val, item) => formatDate(item.paidAt || item.timestamp) },
       { key: "amount", label: "Amount", render: formatNumber },
       {
         key: "txid",
