@@ -1329,7 +1329,7 @@ auto_payout_once_service() {
   load_launch_env_if_present
 
   local followup_count max_sends min_payout one_shot_wallet_max_sends allowed_wallets_env allowed_wallets_args allow_any_wallet
-  followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-100}"
+  followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-300}"
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
   one_shot_wallet_max_sends="1"
   max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-5}"
