@@ -4401,18 +4401,21 @@ class AutoPayoutOnceTests(unittest.TestCase):
             os.environ["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = self.old_runtime_dir
         self.tmp_dir.cleanup()
 
-    def _candidate(self, candidate_id, *, wallet=None, amount=1000.0, payout_status="pending_manual_payment", **extra):
+    def _candidate(self, candidate_id, *, wallet=None, amount=1000.0, payout_status="pending_manual_payment", payout_extra=None, **extra):
+        payout = {
+            "wallet": wallet or self.allowed_wallet,
+            "amount": amount,
+            "status": payout_status,
+        }
+        if isinstance(payout_extra, dict):
+            payout.update(payout_extra)
         candidate = {
             "candidateId": candidate_id,
             "candidate_hash": candidate_id,
             "lifecycleStatus": "confirmed",
             "status": "ready_for_manual_review",
             "coinbaseMatchesExpectedPoolWallet": True,
-            "payouts": [{
-                "wallet": wallet or self.allowed_wallet,
-                "amount": amount,
-                "status": payout_status,
-            }],
+            "payouts": [payout],
         }
         candidate.update(extra)
         return candidate
@@ -4440,7 +4443,7 @@ class AutoPayoutOnceTests(unittest.TestCase):
         with self.output_path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_respects_max_sends_limit(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         self._write_candidates([
@@ -4449,14 +4452,14 @@ class AutoPayoutOnceTests(unittest.TestCase):
 
         rc = self._run(max_sends=10)
         self.assertEqual(rc, 0)
-        self.assertEqual(mock_send.call_count, 10)
+        self.assertEqual(mock_send.call_count, 1)
         result = self._read_result()
         self.assertEqual(result["maxSends"], 10)
-        self.assertEqual(result["sendInvocations"], 10)
-        self.assertEqual(result["sentCount"], 10)
-        self.assertIn("max_sends_reached", [item.get("reason") for item in result["items"]])
+        self.assertEqual(result["sendInvocations"], 1)
+        self.assertEqual(result["sentCount"], 1)
+        self.assertEqual(result["items"][0]["sourceCount"], 11)
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_sends_normalized_amount_without_float_tail(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         self._write_candidates([
@@ -4470,8 +4473,8 @@ class AutoPayoutOnceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(mock_send.call_count, 1)
         sent_args = mock_send.call_args[0]
-        self.assertEqual(sent_args[6], "4343.625")
-        self.assertEqual(self._read_result()["items"][0]["amount"], "4343.625")
+        self.assertEqual(sent_args[5], "4343.625")
+        self.assertEqual(self._read_result()["items"][0]["totalAmount"], "4343.625")
 
     def test_auto_payout_does_not_force_real_wallet_payout_enabled(self):
         old_enabled = os.environ.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT")
@@ -4530,9 +4533,10 @@ class AutoPayoutOnceTests(unittest.TestCase):
 
             # Check items
             items_by_id = {item["candidateId"]: item for item in result["items"] if "candidateId" in item}
-            self.assertEqual(items_by_id["candautoallowenv000000000001"]["reason"], "max_sends_reached") # wallet allowed, but max_sends is 0
-            self.assertEqual(items_by_id["candautoallowenv000000000002"]["reason"], "max_sends_reached") # wallet allowed
             self.assertEqual(items_by_id["candautoallowenv000000000003"]["reason"], "wallet_not_allowed")
+            wallet_skips = {item["wallet"]: item for item in result["items"] if item.get("reason") == "max_sends_reached"}
+            self.assertEqual(wallet_skips["PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"]["sourceCandidateIds"], ["candautoallowenv000000000001"])
+            self.assertEqual(wallet_skips["PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"]["sourceCandidateIds"], ["candautoallowenv000000000002"])
 
             # 2. Test fallback to PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET
             os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS", None)
@@ -4559,7 +4563,7 @@ class AutoPayoutOnceTests(unittest.TestCase):
             else:
                 os.environ["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = old_wallet
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_skips_already_paid(self, mock_send):
         candidate_id = "candautoalreadypaid000000000001"
         self._write_candidates([self._candidate(candidate_id)])
@@ -4577,7 +4581,7 @@ class AutoPayoutOnceTests(unittest.TestCase):
         mock_send.assert_not_called()
         self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_already_paid")
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_skips_coinbase_mismatch(self, mock_send):
         self._write_candidates([
             self._candidate(
@@ -4592,7 +4596,7 @@ class AutoPayoutOnceTests(unittest.TestCase):
         mock_send.assert_not_called()
         self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_coinbase_reward_mismatch")
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_skips_below_threshold(self, mock_send):
         self._write_candidates([
             self._candidate(
@@ -4606,7 +4610,7 @@ class AutoPayoutOnceTests(unittest.TestCase):
         mock_send.assert_not_called()
         self.assertEqual(self._read_result()["items"][0]["reason"], "below_threshold")
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_skips_wallet_preview_rows(self, mock_send):
         self._write_candidates([
             self._candidate(
@@ -4623,7 +4627,110 @@ class AutoPayoutOnceTests(unittest.TestCase):
             "payout_status_ready_for_wallet_send_preview",
         )
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_same_wallet_sends_one_summed_transaction(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        self._write_candidates([
+            self._candidate("candautoaggone000000000001", amount=1200.125),
+            self._candidate("candautoaggtwo000000000001", amount=2300.875),
+        ])
+
+        rc = self._run(max_sends=5)
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 1)
+        sent_args = mock_send.call_args[0]
+        self.assertEqual(sent_args[4], self.allowed_wallet)
+        self.assertEqual(sent_args[5], "3501")
+        self.assertEqual(sent_args[6], ["candautoaggone000000000001", "candautoaggtwo000000000001"])
+        result_item = self._read_result()["items"][0]
+        self.assertEqual(result_item["totalAmount"], "3501")
+        self.assertEqual(result_item["sourceCount"], 2)
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_different_wallets_send_one_each_up_to_max_sends(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        wallet_b = "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"
+        self._write_candidates([
+            self._candidate("candautowalleta00000000001", amount=1200.0),
+            self._candidate("candautowalletb00000000001", wallet=wallet_b, amount=1300.0),
+        ])
+
+        rc = payout_helper.auto_payout_once(
+            self.candidates_path,
+            self.actions_log,
+            self.payments_snapshot,
+            self.output_path,
+            allowed_wallets={self.allowed_wallet, wallet_b},
+            min_payout=1000.0,
+            max_sends=2,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 2)
+        sent_wallets = [call.args[4] for call in mock_send.call_args_list]
+        self.assertEqual(sent_wallets, [self.allowed_wallet, wallet_b])
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_max_sends_limits_wallets_not_rows(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        wallet_b = "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"
+        self._write_candidates([
+            self._candidate("candautomaxwalleta000000001", amount=1200.0),
+            self._candidate("candautomaxwalleta000000002", amount=1300.0),
+            self._candidate("candautomaxwalletb000000001", wallet=wallet_b, amount=1400.0),
+        ])
+
+        rc = payout_helper.auto_payout_once(
+            self.candidates_path,
+            self.actions_log,
+            self.payments_snapshot,
+            self.output_path,
+            allowed_wallets={self.allowed_wallet, wallet_b},
+            min_payout=1000.0,
+            max_sends=1,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 1)
+        result = self._read_result()
+        self.assertEqual(result["sendInvocations"], 1)
+        sent_item = [item for item in result["items"] if item.get("action") == "aggregate_send_once"][0]
+        self.assertEqual(sent_item["sourceCount"], 2)
+        self.assertIn("max_sends_reached", [item.get("reason") for item in result["items"]])
+
+    def test_aggregate_action_source_candidate_ids_are_paid_pairs(self):
+        wallet = self.allowed_wallet
+        source_ids = ["candaggpaidone000000000001", "candaggpaidtwo000000000001"]
+        self.actions_log.write_text(json.dumps({
+            "candidate_id": f"aggregate:{wallet}:2026-06-13T00:00:00Z",
+            "wallet": wallet,
+            "amount": 2500.0,
+            "txid": "txidaggregatepaid000000000001",
+            "status": "sent",
+            "sourceCandidateIds": source_ids,
+            "sourceCount": 2,
+            "timestamp": "2026-06-13T00:00:00Z",
+        }) + "\n", encoding="utf-8")
+
+        paid_pairs = payout_helper.load_paid_payment_pairs(self.actions_log)
+        self.assertIn((source_ids[0], wallet), paid_pairs)
+        self.assertIn((source_ids[1], wallet), paid_pairs)
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, source_ids[0], wallet))
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_wallet_aggregate_below_min_payout(self, mock_send):
+        self._write_candidates([
+            self._candidate("candautobelowagg000000001", amount=400.0),
+            self._candidate("candautobelowagg000000002", amount=500.0),
+        ])
+
+        rc = self._run(max_sends=5)
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        item = self._read_result()["items"][0]
+        self.assertEqual(item["reason"], "below_threshold")
+        self.assertEqual(item["totalAmount"], "900")
+        self.assertEqual(item["sourceCount"], 2)
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_pays_only_expected_wallet(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         self._write_candidates([
@@ -4638,11 +4745,11 @@ class AutoPayoutOnceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(mock_send.call_count, 1)
         sent_args = mock_send.call_args[0]
-        self.assertEqual(sent_args[5], self.allowed_wallet)
+        self.assertEqual(sent_args[4], self.allowed_wallet)
         reasons = [item.get("reason") for item in self._read_result()["items"]]
         self.assertIn("wallet_not_allowed", reasons)
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_open_wallet_mode(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         old_any_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET")
@@ -4694,12 +4801,13 @@ class AutoPayoutOnceTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(mock_send.call_count, 1) # only candidate_ok is sent
             sent_args = mock_send.call_args[0]
-            self.assertEqual(sent_args[5], self.other_wallet)
-            self.assertEqual(sent_args[6], "1500")
+            self.assertEqual(sent_args[4], self.other_wallet)
+            self.assertEqual(sent_args[5], "1500")
 
             result = self._read_result()
+            sent_items = [item for item in result["items"] if item.get("action") == "aggregate_send_once"]
+            self.assertEqual(sent_items[0]["sourceCandidateIds"], ["candopenwallet0000000000001"])
             items_by_id = {item["candidateId"]: item for item in result["items"] if "candidateId" in item}
-            self.assertEqual(items_by_id["candopenwallet0000000000001"]["action"], "send_once")
             self.assertEqual(items_by_id["candopenwallet0000000000002"]["reason"], "blocked_already_paid")
             self.assertEqual(items_by_id["candopenwallet0000000000003"]["reason"], "blocked_coinbase_reward_mismatch")
             self.assertEqual(items_by_id["candopenwallet0000000000004"]["reason"], "lifecycle_status_immature")
@@ -4709,7 +4817,7 @@ class AutoPayoutOnceTests(unittest.TestCase):
             else:
                 os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = old_any_wallet
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_open_wallet_respects_max_sends(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         old_any_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET")
@@ -4728,16 +4836,17 @@ class AutoPayoutOnceTests(unittest.TestCase):
                 max_sends=2,
             )
             self.assertEqual(rc, 0)
-            self.assertEqual(mock_send.call_count, 2)
+            self.assertEqual(mock_send.call_count, 1)
             result = self._read_result()
-            self.assertEqual(result["sendInvocations"], 2)
+            self.assertEqual(result["sendInvocations"], 1)
+            self.assertEqual(result["items"][0]["sourceCount"], 5)
         finally:
             if old_any_wallet is None:
                 os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", None)
             else:
                 os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = old_any_wallet
 
-    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_default_mode_enforces_allowlist_when_not_true(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         old_any_wallet = os.environ.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET")
@@ -5088,6 +5197,60 @@ class WalletSendOnceTests(unittest.TestCase):
         sent_actions = [action for action in actions if action.get("status") == "sent"]
         self.assertEqual(len(sent_actions), 1)
         self.assertEqual(sent_actions[0]["txid"], txid)
+
+    @unittest.mock.patch('payout_helper.wallet_readonly_call')
+    @unittest.mock.patch('payout_helper.subprocess.run')
+    def test_aggregate_send_records_sources_and_blocks_replay(self, mock_run, mock_wallet):
+        self._enable_real_once()
+        cli_path = self._install_noop_cli()
+        source_ids = [
+            "candaggsource000000000000001",
+            "candaggsource000000000000002",
+        ]
+        with self.candidates_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "items": [
+                    {
+                        "candidateId": source_ids[0],
+                        "status": "ready_for_manual_review",
+                        "payouts": [{"wallet": self.wallet, "amount": 40.0, "status": "pending_manual_payment"}],
+                    },
+                    {
+                        "candidateId": source_ids[1],
+                        "status": "ready_for_manual_review",
+                        "payouts": [{"wallet": self.wallet, "amount": 60.0, "status": "pending_manual_payment"}],
+                    },
+                ]
+            }, f)
+        txid = "txidaggregatesend00000000001"
+        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
+
+        rc = payout_helper.payout_wallet_send_aggregated_once(
+            self.candidates_path,
+            self.actions_log,
+            self.payments_snapshot,
+            self.output_path,
+            self.wallet,
+            "100",
+            source_ids,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._read_result()["status"], "sent_recorded")
+        mock_run.assert_called_once_with(
+            [str(cli_path), "sendtoaddress", self.wallet, "100"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        with self.actions_log.open("r", encoding="utf-8") as f:
+            actions = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(actions[0]["sourceCandidateIds"], source_ids)
+        self.assertEqual(actions[0]["sourceCount"], 2)
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, source_ids[0], self.wallet))
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, source_ids[1], self.wallet))
 
     @unittest.mock.patch('payout_helper.wallet_readonly_call')
     @unittest.mock.patch('payout_helper.subprocess.run')
@@ -5772,7 +5935,7 @@ class FallbackPayoutTests(unittest.TestCase):
             os.environ.pop("PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", None)
             os.environ.pop("PEPEPOW_POOL_CORE_REWARD_ADDRESS", None)
 
-    @unittest.mock.patch('payout_helper.payout_wallet_send_once')
+    @unittest.mock.patch('payout_helper.payout_wallet_send_aggregated_once')
     def test_auto_payout_fallback_send(self, mock_send):
         os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
         os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
@@ -5826,7 +5989,7 @@ class FallbackPayoutTests(unittest.TestCase):
                 res = json.load(f)
             
             self.assertEqual(res["sendInvocations"], 1)
-            self.assertEqual(res["items"][0]["action"], "send_once")
+            self.assertEqual(res["items"][0]["action"], "aggregate_send_once")
             self.assertEqual(res["items"][0]["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
         finally:
             os.environ.pop("PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", None)
@@ -6207,7 +6370,7 @@ class FallbackPayoutTests(unittest.TestCase):
                       "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"]:
                 os.environ.pop(k, None)
 
-    @unittest.mock.patch('payout_helper.payout_wallet_send_once')
+    @unittest.mock.patch('payout_helper.payout_wallet_send_aggregated_once')
     def test_auto_payout_can_send_operator_backfill_payout_and_records_txid(self, mock_send):
         os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
         os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
@@ -6262,7 +6425,7 @@ class FallbackPayoutTests(unittest.TestCase):
                 res = json.load(f)
 
             self.assertEqual(res["sendInvocations"], 1)
-            self.assertEqual(res["items"][0]["action"], "send_once")
+            self.assertEqual(res["items"][0]["action"], "aggregate_send_once")
             self.assertEqual(res["items"][0]["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
