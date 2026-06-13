@@ -2942,7 +2942,7 @@ def payout_wallet_send_aggregated_once(
         for payout in payouts:
             if not isinstance(payout, dict) or payout.get("wallet") != wallet:
                 continue
-            if payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send"}:
+            if payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send", "below_threshold", "below_threshold_carried"}:
                 continue
             try:
                 amount = Decimal(str(payout.get("amount")))
@@ -3136,9 +3136,18 @@ def auto_payout_once(
     except (TypeError, ValueError):
         max_sends = 5
     max_sends = max(0, max_sends)
+    try:
+        real_send_budget = int(env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS", max_sends))
+    except (TypeError, ValueError):
+        real_send_budget = max_sends
+    real_send_budget = max(0, real_send_budget)
+    effective_max_sends = min(max_sends, real_send_budget)
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     items: list[dict[str, Any]] = []
     wallet_groups: dict[str, dict[str, Any]] = {}
+    selected_wallets: list[str] = []
+    skipped_wallets: list[dict[str, Any]] = []
+    per_wallet_aggregates: list[dict[str, Any]] = []
     send_invocations = 0
     sent_count = 0
     skipped_count = 0
@@ -3156,12 +3165,16 @@ def auto_payout_once(
             "status": "blocked_candidates_unreadable",
             "error": str(exc),
             "maxSends": max_sends,
+            "effectiveMaxSends": effective_max_sends,
             "minPayout": min_payout,
             "allowedWallets": sorted(allowed_wallets),
             "items": [],
             "sendInvocations": 0,
             "sentCount": 0,
             "skippedCount": 0,
+            "selectedWallets": [],
+            "skippedWallets": [],
+            "perWalletAggregates": [],
         }
         atomic_write_json(output_path, result)
         return 0
@@ -3180,6 +3193,13 @@ def auto_payout_once(
     def append_wallet_skip(wallet: str, total_amount: Any, source_ids: list[str], reason: str) -> None:
         nonlocal skipped_count
         skipped_count += 1
+        skipped_wallets.append({
+            "wallet": wallet,
+            "totalAmount": total_amount,
+            "sourceCandidateIds": source_ids,
+            "sourceCount": len(source_ids),
+            "reason": reason,
+        })
         items.append({
             "wallet": wallet,
             "totalAmount": total_amount,
@@ -3208,13 +3228,10 @@ def auto_payout_once(
                 blocked_reason = candidate.get("reason")
             lifecycle_status = _candidate_lifecycle_status(candidate)
 
-            if candidate_status != "ready_for_manual_review":
-                append_skip(c_id, "", None, f"candidate_status_{candidate_status or 'missing'}")
-                continue
             if lifecycle_status != "confirmed":
                 append_skip(c_id, "", None, f"lifecycle_status_{lifecycle_status or 'missing'}")
                 continue
-            if blocked_reason:
+            if blocked_reason and str(blocked_reason) != "blocked_already_paid":
                 append_skip(c_id, "", None, str(blocked_reason))
                 continue
             if candidate.get("coinbaseMatchesExpectedPoolWallet") is not True:
@@ -3224,6 +3241,9 @@ def auto_payout_once(
             payouts = candidate.get("payouts")
             if not isinstance(payouts, list):
                 append_skip(c_id, "", None, "missing_payouts")
+                continue
+            if candidate_status not in {"ready_for_manual_review", "blocked"}:
+                append_skip(c_id, "", None, f"candidate_status_{candidate_status or 'missing'}")
                 continue
 
             for payout in payouts:
@@ -3236,8 +3256,14 @@ def auto_payout_once(
                 if not allow_any_wallet and allowed_wallets and wallet not in allowed_wallets:
                     append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
                     continue
-                payout_status = payout.get("status")
-                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send"}:
+                payout_status = str(payout.get("status") or "")
+                if payout_status == "blocked_already_paid":
+                    append_skip(c_id, wallet, amount_raw, "blocked_already_paid")
+                    continue
+                if payout_status in {"ready_for_wallet_send_preview"}:
+                    append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status}")
+                    continue
+                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send", "below_threshold", "below_threshold_carried"}:
                     append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status or 'missing'}")
                     continue
                 try:
@@ -3257,9 +3283,32 @@ def auto_payout_once(
                     "amount": Decimal("0"),
                     "sourceCandidateIds": [],
                     "carrySourceCandidateIds": [],
+                    "firstTimestamp": "",
+                    "firstHeight": None,
                 })
                 group["amount"] += amount_decimal
                 group["sourceCandidateIds"].append(c_id)
+                candidate_timestamp = (
+                    payout.get("timestamp")
+                    or payout.get("paidAt")
+                    or candidate.get("timestamp")
+                    or candidate.get("submitTimestamp")
+                    or candidate.get("submit_timestamp")
+                    or ""
+                )
+                if candidate_timestamp and (
+                    not group["firstTimestamp"]
+                    or str(candidate_timestamp) < str(group["firstTimestamp"])
+                ):
+                    group["firstTimestamp"] = str(candidate_timestamp)
+                for height_key in ("height", "blockHeight", "matched_height", "matchedHeight"):
+                    try:
+                        height_value = int(candidate.get(height_key))
+                    except (TypeError, ValueError):
+                        continue
+                    if group["firstHeight"] is None or height_value < group["firstHeight"]:
+                        group["firstHeight"] = height_value
+                    break
                 for metadata_key in ("carrySourceCandidateIds", "sourceCandidateIds"):
                     metadata_ids = payout.get(metadata_key)
                     if isinstance(metadata_ids, list):
@@ -3267,7 +3316,16 @@ def auto_payout_once(
                             if source_id:
                                 group["carrySourceCandidateIds"].append(str(source_id))
 
-        for wallet, group in wallet_groups.items():
+        sorted_wallet_groups = sorted(
+            wallet_groups.items(),
+            key=lambda item: (
+                item[1].get("firstTimestamp") or "",
+                item[1].get("firstHeight") if item[1].get("firstHeight") is not None else 10**18,
+                item[0],
+            ),
+        )
+
+        for wallet, group in sorted_wallet_groups:
             source_ids = _dedupe_preserve_order(group["sourceCandidateIds"])
             carry_source_ids = _dedupe_preserve_order(group["carrySourceCandidateIds"])
             total_amount_decimal = group["amount"]
@@ -3279,18 +3337,59 @@ def auto_payout_once(
 
             if send_amount is None:
                 append_wallet_skip(wallet, str(total_amount_decimal), source_ids, "amount_invalid")
+                per_wallet_aggregates.append({
+                    "wallet": wallet,
+                    "totalAmount": str(total_amount_decimal),
+                    "sourceCandidateIds": source_ids,
+                    "sourceCount": len(source_ids),
+                    "carrySourceCandidateIds": carry_source_ids,
+                    "carrySourceCount": len(carry_source_ids),
+                    "action": "skipped",
+                    "reason": "amount_invalid",
+                })
                 continue
             if total_amount_float < min_payout:
                 append_wallet_skip(wallet, send_amount, source_ids, "below_threshold")
+                per_wallet_aggregates.append({
+                    "wallet": wallet,
+                    "totalAmount": send_amount,
+                    "sourceCandidateIds": source_ids,
+                    "sourceCount": len(source_ids),
+                    "carrySourceCandidateIds": carry_source_ids,
+                    "carrySourceCount": len(carry_source_ids),
+                    "action": "skipped",
+                    "reason": "below_threshold",
+                })
                 continue
-            if send_invocations >= max_sends:
+            if send_invocations >= effective_max_sends:
                 append_wallet_skip(wallet, send_amount, source_ids, "max_sends_reached")
+                per_wallet_aggregates.append({
+                    "wallet": wallet,
+                    "totalAmount": send_amount,
+                    "sourceCandidateIds": source_ids,
+                    "sourceCount": len(source_ids),
+                    "carrySourceCandidateIds": carry_source_ids,
+                    "carrySourceCount": len(carry_source_ids),
+                    "action": "skipped",
+                    "reason": "max_sends_reached",
+                })
                 continue
 
             if any(payment_already_recorded(actions_log_path, source_id, wallet) for source_id in source_ids):
                 append_wallet_skip(wallet, send_amount, source_ids, "blocked_already_paid")
+                per_wallet_aggregates.append({
+                    "wallet": wallet,
+                    "totalAmount": send_amount,
+                    "sourceCandidateIds": source_ids,
+                    "sourceCount": len(source_ids),
+                    "carrySourceCandidateIds": carry_source_ids,
+                    "carrySourceCount": len(carry_source_ids),
+                    "action": "skipped",
+                    "reason": "blocked_already_paid",
+                })
                 continue
 
+            selected_wallets.append(wallet)
             send_invocations += 1
             send_output = output_path.with_name(f"payout-wallet-aggregate-send-once-result-{send_invocations}.json")
             os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
@@ -3320,6 +3419,21 @@ def auto_payout_once(
                 "totalAmount": send_amount,
                 "sourceCandidateIds": source_ids,
                 "sourceCount": len(source_ids),
+                "carrySourceCandidateIds": carry_source_ids,
+                "carrySourceCount": len(carry_source_ids),
+                "action": "aggregate_send_once",
+                "aggregateSendRc": rc,
+                "aggregateSendStatus": send_status,
+                "sendOnceStatus": send_status,
+                "sendOnceOutput": str(send_output),
+            })
+            per_wallet_aggregates.append({
+                "wallet": wallet,
+                "totalAmount": send_amount,
+                "sourceCandidateIds": source_ids,
+                "sourceCount": len(source_ids),
+                "carrySourceCandidateIds": carry_source_ids,
+                "carrySourceCount": len(carry_source_ids),
                 "action": "aggregate_send_once",
                 "aggregateSendRc": rc,
                 "aggregateSendStatus": send_status,
@@ -3339,12 +3453,16 @@ def auto_payout_once(
         "mode": "auto_payout_once",
         "status": result_status,
         "maxSends": max_sends,
+        "effectiveMaxSends": effective_max_sends,
         "minPayout": min_payout,
         "allowedWallets": sorted(allowed_wallets),
         "items": items,
         "sendInvocations": send_invocations,
         "sentCount": sent_count,
         "skippedCount": skipped_count,
+        "selectedWallets": selected_wallets,
+        "skippedWallets": skipped_wallets,
+        "perWalletAggregates": per_wallet_aggregates,
     }
     atomic_write_json(output_path, result)
     print("Auto Payout Once Summary")

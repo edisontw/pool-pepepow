@@ -4730,6 +4730,98 @@ class AutoPayoutOnceTests(unittest.TestCase):
         self.assertEqual(sent_wallets, [self.allowed_wallet, wallet_b])
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_aggregates_wallets_before_threshold_and_paid_row_skips(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        wallet_b = "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"
+        wallet_small = "PEPEPOW1WalletAddressSmall00001"
+        mixed_candidate_id = "candautomixedpaidrow00000001"
+        self._write_candidates([
+            self._candidate(
+                "candautocarrybig00000000001",
+                amount=600.0,
+                payout_status="below_threshold_carried",
+                payout_extra={"sourceCandidateIds": ["carrysourcebig000000000001"]},
+                height=10,
+            ),
+            self._candidate(
+                "candautoreadybig0000000001",
+                amount=500.0,
+                height=11,
+            ),
+            self._candidate(
+                "candautowalletbready00000001",
+                wallet=wallet_b,
+                amount=1300.0,
+                height=12,
+            ),
+            {
+                "candidateId": mixed_candidate_id,
+                "candidate_hash": mixed_candidate_id,
+                "lifecycleStatus": "confirmed",
+                "status": "blocked",
+                "blockedReason": "blocked_already_paid",
+                "coinbaseMatchesExpectedPoolWallet": True,
+                "height": 13,
+                "payouts": [
+                    {
+                        "wallet": self.allowed_wallet,
+                        "amount": 1200.0,
+                        "status": "blocked_already_paid",
+                    },
+                    {
+                        "wallet": wallet_b,
+                        "amount": 1100.0,
+                        "status": "pending_manual_payment",
+                    },
+                ],
+            },
+            self._candidate(
+                "candautocarrysmall000000001",
+                wallet=wallet_small,
+                amount=900.0,
+                payout_status="below_threshold_carried",
+                height=30,
+            ),
+        ])
+
+        rc = payout_helper.auto_payout_once(
+            self.candidates_path,
+            self.actions_log,
+            self.payments_snapshot,
+            self.output_path,
+            allowed_wallets={self.allowed_wallet, wallet_b, wallet_small},
+            min_payout=1000.0,
+            max_sends=20,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 2)
+        sent_wallets = [call.args[4] for call in mock_send.call_args_list]
+        self.assertEqual(sent_wallets, [self.allowed_wallet, wallet_b])
+        self.assertEqual(mock_send.call_args_list[0].args[5], "1100")
+        self.assertEqual(
+            mock_send.call_args_list[0].args[6],
+            ["candautocarrybig00000000001", "candautoreadybig0000000001"],
+        )
+        self.assertEqual(mock_send.call_args_list[0].args[7], ["carrysourcebig000000000001"])
+        self.assertEqual(mock_send.call_args_list[1].args[5], "2400")
+        self.assertEqual(
+            mock_send.call_args_list[1].args[6],
+            ["candautowalletbready00000001", mixed_candidate_id],
+        )
+
+        result = self._read_result()
+        self.assertEqual(result["selectedWallets"], [self.allowed_wallet, wallet_b])
+        self.assertEqual(result["sendInvocations"], 2)
+        self.assertEqual(result["sentCount"], 2)
+        self.assertEqual(len(result["perWalletAggregates"]), 3)
+        skipped = {item["wallet"]: item for item in result["skippedWallets"]}
+        self.assertEqual(skipped[wallet_small]["reason"], "below_threshold")
+        self.assertEqual(skipped[wallet_small]["totalAmount"], "900")
+        row_reasons = [item.get("reason") for item in result["items"] if item.get("candidateId") == mixed_candidate_id]
+        self.assertIn("blocked_already_paid", row_reasons)
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_max_sends_limits_wallets_not_rows(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         wallet_b = "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"

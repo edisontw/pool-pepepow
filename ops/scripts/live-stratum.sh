@@ -1376,7 +1376,7 @@ auto_payout_once_service() {
   PEPEPOW_MIN_PAYOUT="${min_payout}" \
   PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" \
   PEPEPOW_ENABLE_REAL_WALLET_PAYOUT="${REAL_WALLET_PAYOUT_ENABLED}" \
-  PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${one_shot_wallet_max_sends}" \
+  PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${REAL_WALLET_PAYOUT_MAX_SENDS}" \
   PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET="${allow_any_wallet}" \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
       --candidates "${RUNTIME_DIR}/payout-candidates.json" \
