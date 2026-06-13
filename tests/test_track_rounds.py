@@ -168,15 +168,14 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r1["status"], "chain_match_found")
             self.assertEqual(r1["payable"], False)
             self.assertNotIn("balance", r1)
-            # walletB had a 1.0 difficulty share, a rejected 10.0 share (ignored), and a 0.05 low-difficulty share (ignored)
+            # Orphans do not split non-orphan attribution windows, so walletA's pre-orphan share remains observable here.
+            self.assertEqual(r1["shares"]["walletA"]["share_count"], 1)
             self.assertEqual(r1["shares"]["walletB"]["share_count"], 1)
             self.assertEqual(r1["shares"]["walletB"]["share_score"], 1.0)
-            self.assertEqual(r1["shares"]["walletB"]["share_percent"], 100.0)
-            self.assertEqual(r1["total_share_count"], 1)
-            self.assertEqual(r1["total_share_score"], 1.0)
-            self.assertEqual(r1["wallet_count"], 1)
-            self.assertEqual(r1["worker_count"], 1)
-            self.assertNotIn("walletA", r1["shares"])
+            self.assertEqual(r1["total_share_count"], 2)
+            self.assertEqual(r1["total_share_score"], 1.5)
+            self.assertEqual(r1["wallet_count"], 2)
+            self.assertEqual(r1["worker_count"], 2)
 
             # Immature round checks
             r2 = rounds[2]
@@ -205,6 +204,13 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r3["shares"]["walletC"]["share_percent"], 100.0)
             self.assertEqual(r3["total_share_count"], 1)
             self.assertEqual(r3["total_share_score"], 3.0)
+            self.assertEqual(r3["attribution_status"], "ok")
+            self.assertIsNone(r3["attribution_reason"])
+            self.assertEqual(data["shareLogLinesRead"], len(shares))
+            self.assertEqual(data["parsedAcceptedShares"], 4)
+            self.assertEqual(data["earliestShareTimestamp"], "2026-06-05T11:59:00Z")
+            self.assertEqual(data["latestShareTimestamp"], "2026-06-05T12:12:00Z")
+            self.assertEqual(data["emptyConfirmedRoundCount"], 0)
 
     def test_boundary_conditions_and_idempotency(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -383,7 +389,7 @@ class TrackRoundsTests(unittest.TestCase):
 class TestRoundSharePercent(unittest.TestCase):
     """Focused tests for share percent correctness."""
 
-    def _run_track(self, candidates_data, shares, act_data=None, min_diff=None):
+    def _run_track(self, candidates_data, shares, act_data=None, min_diff=None, max_share_lines=None):
         with tempfile.TemporaryDirectory() as tmpdir:
             cand_path = Path(tmpdir) / "accepted-candidates.json"
             share_log = Path(tmpdir) / "share-events.jsonl"
@@ -408,6 +414,8 @@ class TestRoundSharePercent(unittest.TestCase):
             ]
             if min_diff is not None:
                 argv += ["--min-share-difficulty", str(min_diff)]
+            if max_share_lines is not None:
+                argv += ["--max-share-lines", str(max_share_lines)]
 
             orig_argv = sys.argv
             sys.argv = argv
@@ -585,4 +593,197 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertNotIn("walletBad", r["shares"])
         self.assertEqual(r["shares"]["walletGood"]["share_percent"], 100.0)
 
+    def test_confirmed_round_receives_shares_in_window(self):
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash-prev",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 999,
+                        "submit_timestamp": "2026-06-05T17:55:00Z",
+                        "confirmations": 151,
+                    },
+                    {
+                        "candidate_hash": "hash-window",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 1000,
+                        "submit_timestamp": "2026-06-05T18:00:00Z",
+                        "confirmations": 150,
+                    },
+                ]
+            },
+            shares=[
+                {
+                    "wallet": "walletWindow",
+                    "timestamp": "2026-06-05T17:56:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 2.5},
+                }
+            ],
+        )
+        round_item = data["rounds"][1]
+        self.assertEqual(round_item["candidate_hash"], "hash-window")
+        self.assertEqual(round_item["total_share_count"], 1)
+        self.assertEqual(round_item["shares"]["walletWindow"]["share_score"], 2.5)
+        self.assertEqual(round_item["attribution_status"], "ok")
+        self.assertIsNone(round_item["attribution_reason"])
+
+    def test_empty_confirmed_round_old_timestamp_marks_tail_too_short(self):
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-tail-short",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1100,
+                    "submit_timestamp": "2026-06-05T18:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[
+                {
+                    "wallet": "walletLater",
+                    "timestamp": "2026-06-05T18:05:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                }
+            ],
+        )
+        round_item = data["rounds"][0]
+        self.assertEqual(round_item["total_share_count"], 0)
+        self.assertEqual(round_item["attribution_status"], "incomplete")
+        self.assertEqual(round_item["attribution_reason"], "share_log_tail_too_short")
+
+    def test_empty_confirmed_round_with_covered_window_marks_no_shares(self):
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-empty-covered",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1200,
+                    "submit_timestamp": "2026-06-05T18:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[
+                {
+                    "wallet": "walletEarlier",
+                    "timestamp": "2026-06-05T17:55:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                }
+            ],
+        )
+        round_item = data["rounds"][0]
+        self.assertEqual(round_item["total_share_count"], 1)
+        self.assertEqual(round_item["attribution_status"], "ok")
+
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash-boundary",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 1200,
+                        "submit_timestamp": "2026-06-05T17:56:00Z",
+                        "confirmations": 151,
+                    },
+                    {
+                        "candidate_hash": "hash-empty-covered",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 1201,
+                        "submit_timestamp": "2026-06-05T18:00:00Z",
+                        "confirmations": 150,
+                    },
+                ]
+            },
+            shares=[
+                {
+                    "wallet": "walletBoundary",
+                    "timestamp": "2026-06-05T17:55:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                }
+            ],
+        )
+        round_item = data["rounds"][1]
+        self.assertEqual(round_item["total_share_count"], 0)
+        self.assertEqual(round_item["attribution_status"], "empty")
+        self.assertEqual(round_item["attribution_reason"], "no_shares_in_round_window")
+
+    def test_metadata_includes_share_tail_and_empty_counts(self):
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [{
+                    "candidate_hash": "hash-meta-empty",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1300,
+                    "submit_timestamp": "2026-06-05T18:00:00Z",
+                    "confirmations": 150,
+                }]
+            },
+            shares=[
+                {
+                    "wallet": "walletMeta",
+                    "timestamp": "2026-06-05T18:01:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                },
+                {
+                    "wallet": "walletMeta",
+                    "timestamp": "2026-06-05T18:02:00Z",
+                    "accepted": False,
+                    "submit": {"difficulty": 1.0},
+                },
+            ],
+            max_share_lines=100000,
+        )
+        self.assertEqual(data["shareLogLinesRead"], 2)
+        self.assertEqual(data["parsedAcceptedShares"], 1)
+        self.assertEqual(data["earliestShareTimestamp"], "2026-06-05T18:01:00Z")
+        self.assertEqual(data["latestShareTimestamp"], "2026-06-05T18:01:00Z")
+        self.assertEqual(data["emptyConfirmedRoundCount"], 1)
+        self.assertEqual(data["maxShareLines"], 100000)
+
+    def test_orphan_does_not_split_next_confirmed_payout_round(self):
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash-orphan-boundary",
+                        "lifecycle_status": "orphan",
+                        "matched_height": None,
+                        "submit_timestamp": "2026-06-05T18:00:00Z",
+                        "confirmations": None,
+                    },
+                    {
+                        "candidate_hash": "hash-confirmed-after-orphan",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 1400,
+                        "submit_timestamp": "2026-06-05T18:05:00Z",
+                        "confirmations": 150,
+                    },
+                ]
+            },
+            shares=[
+                {
+                    "wallet": "walletBeforeOrphan",
+                    "timestamp": "2026-06-05T17:59:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                },
+                {
+                    "wallet": "walletAfterOrphan",
+                    "timestamp": "2026-06-05T18:02:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 2.0},
+                },
+            ],
+        )
+        orphan_round = data["rounds"][0]
+        confirmed_round = data["rounds"][1]
+        self.assertIn("walletBeforeOrphan", orphan_round["shares"])
+        self.assertIn("walletBeforeOrphan", confirmed_round["shares"])
+        self.assertIn("walletAfterOrphan", confirmed_round["shares"])
+        self.assertEqual(confirmed_round["total_share_count"], 2)
 

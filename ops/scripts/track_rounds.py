@@ -78,7 +78,7 @@ def main() -> int:
     parser.add_argument(
         "--max-share-lines",
         type=int,
-        default=10000,
+        default=100000,
         help="Max lines of share events to process from tail",
     )
     parser.add_argument(
@@ -120,12 +120,15 @@ def main() -> int:
     if min_diff is None:
         min_diff = 0.00000001
 
+    max_share_lines = max(0, int(args.max_share_lines))
+
     # Read and parse shares from tail of share-events.jsonl
     shares: list[dict[str, Any]] = []
+    tail_lines: list[str] = []
     if args.share_log:
         share_log_path = Path(args.share_log)
         if share_log_path.exists():
-            tail_lines = tail_file(share_log_path, args.max_share_lines)
+            tail_lines = tail_file(share_log_path, max_share_lines)
             for line in tail_lines:
                 line = line.strip()
                 if not line:
@@ -218,12 +221,21 @@ def main() -> int:
                     }
                 )
 
+    share_timestamps = [s["timestamp"] for s in shares]
+    earliest_share_ts = min(share_timestamps) if share_timestamps else None
+    latest_share_ts = max(share_timestamps) if share_timestamps else None
+
     # Filter candidates to only those matched on-chain (rounds)
     round_statuses = {"chain_match_found", "immature", "confirmed", "orphan"}
     round_cands = [
         c
         for c in candidates
         if c.get("lifecycle_status") in round_statuses
+    ]
+    boundary_cands = [
+        c
+        for c in round_cands
+        if c.get("lifecycle_status") != "orphan"
     ]
 
     # Sort rounds chronologically by submit timestamp
@@ -232,16 +244,47 @@ def main() -> int:
 
     round_cands.sort(key=cand_key)
 
+    def attribution_for(
+        status: str | None,
+        total_shares: int,
+        candidate_ts: datetime,
+    ) -> tuple[str, str | None]:
+        if total_shares > 0:
+            return "ok", None
+        if not tail_lines:
+            return "incomplete", "no_share_log_loaded"
+        if (
+            status == "confirmed"
+            and earliest_share_ts is not None
+            and candidate_ts < earliest_share_ts
+        ):
+            return "incomplete", "share_log_tail_too_short"
+        return "empty", "no_shares_in_round_window"
+
+    def previous_boundary_timestamp(candidate: dict[str, Any]) -> datetime:
+        candidate_ts = parse_timestamp(candidate.get("submit_timestamp"))
+        previous_ts = datetime.min.replace(tzinfo=timezone.utc)
+        for boundary in boundary_cands:
+            boundary_ts = parse_timestamp(boundary.get("submit_timestamp"))
+            if boundary is candidate:
+                break
+            if boundary_ts <= candidate_ts:
+                previous_ts = boundary_ts
+        return previous_ts
+
     # Compute rounds and attribute shares
     rounds_list = []
     for i, c in enumerate(round_cands):
         c_ts = parse_timestamp(c.get("submit_timestamp"))
-        if i == 0:
-            start_ts = datetime.min.replace(tzinfo=timezone.utc)
+        if c.get("lifecycle_status") == "orphan":
+            if i == 0:
+                start_ts = datetime.min.replace(tzinfo=timezone.utc)
+            else:
+                start_ts = parse_timestamp(
+                    round_cands[i - 1].get("submit_timestamp")
+                )
         else:
-            start_ts = parse_timestamp(
-                round_cands[i - 1].get("submit_timestamp")
-            )
+            start_ts = previous_boundary_timestamp(c)
 
         # Attribute shares in range (start_ts, c_ts]
         attributed_shares: dict[str, Any] = {}
@@ -303,6 +346,11 @@ def main() -> int:
                 )
 
         status = c.get("lifecycle_status")
+        attribution_status, attribution_reason = attribution_for(
+            status,
+            total_round_shares,
+            c_ts,
+        )
         round_item = {
             "round_id": c.get("candidate_hash"),
             "candidate_hash": c.get("candidate_hash"),
@@ -315,6 +363,8 @@ def main() -> int:
             "total_share_score": total_round_score,
             "wallet_count": len(attributed_shares),
             "worker_count": len(unique_workers_in_round),
+            "attribution_status": attribution_status,
+            "attribution_reason": attribution_reason,
         }
 
         # Immature / orphan / chain_match_found safety
@@ -325,10 +375,30 @@ def main() -> int:
 
         rounds_list.append(round_item)
 
+    empty_confirmed_round_count = sum(
+        1
+        for item in rounds_list
+        if item.get("status") == "confirmed" and item.get("total_share_count") == 0
+    )
     output_data = {
         "updated_at": datetime.now(timezone.utc)
         .isoformat()
         .replace("+00:00", "Z"),
+        "shareLogLinesRead": len(tail_lines),
+        "parsedAcceptedShares": len(shares),
+        "earliestShareTimestamp": (
+            earliest_share_ts.isoformat().replace("+00:00", "Z")
+            if earliest_share_ts is not None
+            else None
+        ),
+        "latestShareTimestamp": (
+            latest_share_ts.isoformat().replace("+00:00", "Z")
+            if latest_share_ts is not None
+            else None
+        ),
+        "roundBoundaryCount": len(boundary_cands),
+        "emptyConfirmedRoundCount": empty_confirmed_round_count,
+        "maxShareLines": max_share_lines,
         "rounds": rounds_list,
     }
 

@@ -1092,14 +1092,16 @@ accepted_candidates_service() {
 
 track_rounds_service() {
   ensure_runtime_dir
-  local input_candidates output_rounds
+  local input_candidates output_rounds max_share_lines
   input_candidates="${RUNTIME_DIR}/accepted-candidates.json"
   output_rounds="${RUNTIME_DIR}/rounds-snapshot.json"
+  max_share_lines="${PEPEPOW_TRACK_ROUNDS_MAX_SHARE_LINES:-100000}"
   python3 "${SCRIPT_DIR}/track_rounds.py" \
     --accepted-candidates "${input_candidates}" \
     --share-log "${SHARE_LOG}" \
     --activity-snapshot "${ACTIVITY_SNAPSHOT}" \
-    --output "${output_rounds}"
+    --output "${output_rounds}" \
+    --max-share-lines "${max_share_lines}"
 }
 
 payout_candidates_service() {
