@@ -2884,7 +2884,7 @@ def auto_payout_once(
                     append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
                     continue
                 payout_status = payout.get("status")
-                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send", "ready_for_wallet_send_preview"}:
+                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send"}:
                     append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status or 'missing'}")
                     continue
                 try:

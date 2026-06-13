@@ -1157,20 +1157,16 @@ auto_payout_once_service() {
   ensure_runtime_dir
   load_launch_env_if_present
 
-  local followup_count max_sends min_payout wallet_max_sends allowed_wallets_env allowed_wallets_args allow_any_wallet
+  local followup_count max_sends min_payout one_shot_wallet_max_sends allowed_wallets_env allowed_wallets_args allow_any_wallet
   followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-5}"
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
-  wallet_max_sends="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-${REAL_WALLET_PAYOUT_MAX_SENDS:-10}}"
-  max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-${wallet_max_sends}}"
+  one_shot_wallet_max_sends="1"
+  max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-5}"
   allow_any_wallet="${PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET:-true}"
   allowed_wallets_env="${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS:-${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET-}}"
 
   if [[ ! "${followup_count}" =~ ^[0-9]+$ ]] || [[ "${followup_count}" -lt 1 ]]; then
     echo "auto-payout-once followup count must be a positive integer" >&2
-    return 1
-  fi
-  if [[ ! "${wallet_max_sends}" =~ ^[0-9]+$ ]] || [[ "${wallet_max_sends}" -lt 1 ]]; then
-    echo "auto-payout-once wallet max sends must be a positive integer" >&2
     return 1
   fi
   if [[ ! "${max_sends}" =~ ^[0-9]+$ ]] || [[ "${max_sends}" -lt 1 ]]; then
@@ -1200,12 +1196,16 @@ auto_payout_once_service() {
   fi
 
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" candidate_followup_service candidate-followup "${followup_count}" --record
+  accepted_candidates_service
+  track_rounds_service
+  payout_carry_service
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" payout_candidates_service
 
+  local auto_payout_rc
   PEPEPOW_MIN_PAYOUT="${min_payout}" \
   PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" \
   PEPEPOW_ENABLE_REAL_WALLET_PAYOUT="${REAL_WALLET_PAYOUT_ENABLED}" \
-  PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${wallet_max_sends}" \
+  PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${one_shot_wallet_max_sends}" \
   PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET="${allow_any_wallet}" \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
       --candidates "${RUNTIME_DIR}/payout-candidates.json" \
@@ -1215,6 +1215,10 @@ auto_payout_once_service() {
       --max-sends "${max_sends}" \
       --min-payout "${min_payout}" \
       "${allowed_wallets_args[@]}"
+  auto_payout_rc=$?
+  payout_carry_service
+  payout_review_check_service || true
+  return "${auto_payout_rc}"
 }
 
 record_payment_service() {

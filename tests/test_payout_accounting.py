@@ -4607,6 +4607,23 @@ class AutoPayoutOnceTests(unittest.TestCase):
         self.assertEqual(self._read_result()["items"][0]["reason"], "below_threshold")
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_once")
+    def test_auto_payout_skips_wallet_preview_rows(self, mock_send):
+        self._write_candidates([
+            self._candidate(
+                "candautopreviewrow00000000001",
+                payout_status="ready_for_wallet_send_preview",
+            )
+        ])
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(
+            self._read_result()["items"][0]["reason"],
+            "payout_status_ready_for_wallet_send_preview",
+        )
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_once")
     def test_auto_payout_pays_only_expected_wallet(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         self._write_candidates([
@@ -5089,6 +5106,36 @@ class WalletSendOnceTests(unittest.TestCase):
             "baseAmount": 20.0,
             "sourceCandidateIds": source_ids[:2],
         })
+        carry_path = self.tmp_path / "payout-carry-snapshot.json"
+        with carry_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "items": [
+                    {
+                        "wallet": self.wallet,
+                        "amount": 40.0,
+                        "sourceCandidateId": source_ids[0],
+                        "sourceBlockHeight": 498,
+                        "sourceBlockHash": source_ids[0],
+                        "status": "below_threshold_carried",
+                    },
+                    {
+                        "wallet": self.wallet,
+                        "amount": 40.0,
+                        "sourceCandidateId": source_ids[1],
+                        "sourceBlockHeight": 499,
+                        "sourceBlockHash": source_ids[1],
+                        "status": "below_threshold_carried",
+                    },
+                    {
+                        "wallet": self.wallet,
+                        "amount": 5.0,
+                        "sourceCandidateId": "candunrelatedcarry000000000001",
+                        "sourceBlockHeight": 497,
+                        "sourceBlockHash": "candunrelatedcarry000000000001",
+                        "status": "below_threshold_carried",
+                    },
+                ]
+            }, f)
         txid = "txidcarrymeta000000000000001"
         mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
@@ -5107,6 +5154,9 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertAlmostEqual(action["carryInAmount"], 80.0)
         self.assertAlmostEqual(action["baseAmount"], 20.0)
         self.assertEqual(action["sourceCandidateIds"], source_ids[:2])
+        with carry_path.open("r", encoding="utf-8") as f:
+            carry_items = json.load(f)["items"]
+        self.assertEqual([item["sourceCandidateId"] for item in carry_items], ["candunrelatedcarry000000000001"])
 
     @unittest.mock.patch('payout_helper.wallet_readonly_call')
     @unittest.mock.patch('payout_helper.subprocess.run')
