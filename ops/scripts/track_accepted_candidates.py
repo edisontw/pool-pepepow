@@ -231,6 +231,7 @@ def main() -> int:
             "lifecycle_status": lifecycle_status,
             "confirmations": confirmations,
             "maturity_label": maturity_label,
+            "wallet": row.get("wallet"),
         }
         accepted_list.append(record)
 

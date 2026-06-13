@@ -912,8 +912,57 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                     reason = "missing_candidate_hash"
                 # 3. Round validation
                 elif c_hash not in rounds_map:
-                    status = "blocked"
-                    reason = "blocked_missing_round"
+                    try:
+                        min_conf_env = int(os.getenv("PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "101"))
+                    except (ValueError, TypeError):
+                        min_conf_env = 101
+                    
+                    candidate_confirmations = daemon_confirmations if daemon_confirmations is not None else c.get("confirmations")
+                    
+                    fallback_wallet = c.get("wallet") or c.get("miner_wallet")
+                    # Check for duplicate candidates with same hash but different wallets
+                    same_hash_wallets = {str(cand.get("wallet") or cand.get("miner_wallet") or "").strip() for cand in candidates if cand.get("candidate_hash") == c_hash}
+                    same_hash_wallets.discard("")
+                    
+                    is_ambiguous = len(same_hash_wallets) > 1
+                    
+                    pool_fee_pct = float(os.getenv("PEPEPOW_POOL_FEE_PERCENT", "1.0"))
+                    pool_fee_percent = pool_fee_pct
+                    pool_fee_amount = miner_gross_reward * pool_fee_pct / 100.0
+                    net_reward = miner_gross_reward - pool_fee_amount
+                    
+                    is_wallet_valid = isinstance(fallback_wallet, str) and bool(re.match(r"^[A-Za-z0-9]{26,128}$", fallback_wallet))
+                    
+                    if (
+                        candidate_confirmations is not None
+                        and candidate_confirmations >= min_conf_env
+                        and coinbase_matches_expected_pool_wallet is True
+                        and not is_already_paid
+                        and fallback_wallet
+                        and is_wallet_valid
+                        and miner_gross_reward > 0
+                        and net_reward >= min_payout
+                        and not is_ambiguous
+                    ):
+                        status = "ready_for_manual_review"
+                        reason = None
+                        weight_mode = "missing_round_candidate_wallet_fallback"
+                        round_share_total = 1.0
+                        payouts = [{
+                            "wallet": fallback_wallet,
+                            "weight": 1.0,
+                            "amount": net_reward,
+                            "baseAmount": net_reward,
+                            "carryInAmount": 0.0,
+                            "status": "pending_manual_payment",
+                            "carrySourceCount": 0,
+                            "carrySourceCandidateIds": [],
+                            "fallbackReason": "missing_round",
+                            "fallbackWarning": True,
+                        }]
+                    else:
+                        status = "blocked"
+                        reason = "blocked_missing_round"
                 else:
                     r_data = rounds_map[c_hash]
                     shares = r_data.get("shares")
@@ -2775,11 +2824,12 @@ def auto_payout_once(
 
                 wallet = str(payout.get("wallet") or "")
                 amount_raw = payout.get("amount")
-                if not allow_any_wallet and wallet not in allowed_wallets:
+                if not allow_any_wallet and allowed_wallets and wallet not in allowed_wallets:
                     append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
                     continue
-                if payout.get("status") != "pending_manual_payment":
-                    append_skip(c_id, wallet, amount_raw, f"payout_status_{payout.get('status') or 'missing'}")
+                payout_status = payout.get("status")
+                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send", "ready_for_wallet_send_preview"}:
+                    append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status or 'missing'}")
                     continue
                 try:
                     amount = float(amount_raw)

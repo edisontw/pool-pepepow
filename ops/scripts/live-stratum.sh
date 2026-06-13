@@ -197,6 +197,7 @@ load_launch_env_if_present() {
   local loaded_pool_reward_address
   local loaded_min_payout
   local loaded_pool_fee_percent
+  local loaded_real_wallet_payout_enabled loaded_real_wallet_payout_max_sends
   local loaded_rpc_host loaded_rpc_port loaded_rpc_url
   local loaded_rpc_user loaded_rpc_password loaded_rpc_timeout
   local loaded_wallet_cli
@@ -228,6 +229,8 @@ load_launch_env_if_present() {
   loaded_template_job_cache_size="$(launch_env_value PEPEPOW_POOL_CORE_TEMPLATE_JOB_CACHE_SIZE)"
   loaded_real_submitblock_enabled="$(launch_env_value PEPEPOW_ENABLE_REAL_SUBMITBLOCK)"
   loaded_real_submitblock_max_sends="$(launch_env_value PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS)"
+  loaded_real_wallet_payout_enabled="$(launch_env_value PEPEPOW_ENABLE_REAL_WALLET_PAYOUT)"
+  loaded_real_wallet_payout_max_sends="$(launch_env_value PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS)"
   loaded_pool_reward_address="$(launch_env_value PEPEPOW_POOL_CORE_REWARD_ADDRESS)"
   loaded_min_payout="$(launch_env_value PEPEPOW_MIN_PAYOUT)"
   loaded_pool_fee_percent="$(launch_env_value PEPEPOW_POOL_FEE_PERCENT)"
@@ -292,6 +295,12 @@ load_launch_env_if_present() {
   fi
   if [[ -z "${PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS+x}" && -n "${loaded_real_submitblock_max_sends}" ]]; then
     REAL_SUBMITBLOCK_MAX_SENDS="${loaded_real_submitblock_max_sends}"
+  fi
+  if [[ -z "${PEPEPOW_ENABLE_REAL_WALLET_PAYOUT+x}" && -n "${loaded_real_wallet_payout_enabled}" ]]; then
+    REAL_WALLET_PAYOUT_ENABLED="${loaded_real_wallet_payout_enabled}"
+  fi
+  if [[ -z "${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS+x}" && -n "${loaded_real_wallet_payout_max_sends}" ]]; then
+    REAL_WALLET_PAYOUT_MAX_SENDS="${loaded_real_wallet_payout_max_sends}"
   fi
   if [[ -z "${PEPEPOW_POOL_CORE_REWARD_ADDRESS+x}" && -n "${loaded_pool_reward_address}" ]]; then
     POOL_REWARD_ADDRESS="${loaded_pool_reward_address}"
@@ -1153,8 +1162,8 @@ auto_payout_once_service() {
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
   wallet_max_sends="${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS:-${REAL_WALLET_PAYOUT_MAX_SENDS:-10}}"
   max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-${wallet_max_sends}}"
-  allow_any_wallet="${PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET:-false}"
-  allowed_wallets_env="${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS:-${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET-PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD}}"
+  allow_any_wallet="${PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET:-true}"
+  allowed_wallets_env="${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS:-${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET-}}"
 
   if [[ ! "${followup_count}" =~ ^[0-9]+$ ]] || [[ "${followup_count}" -lt 1 ]]; then
     echo "auto-payout-once followup count must be a positive integer" >&2
@@ -1180,11 +1189,12 @@ auto_payout_once_service() {
   fi
 
   allowed_wallets_args=()
-  if [[ "${allow_any_wallet}" != "true" ]]; then
+  if [[ -n "${allowed_wallets_env}" ]]; then
     IFS=',' read -ra ADDR <<< "${allowed_wallets_env}"
-    for w in "${ADDR[@]}"; do
-      if [[ -n "${w}" ]]; then
-        allowed_wallets_args+=("--allowed-wallet" "${w}")
+    for i in "${ADDR[@]}"; do
+      trimmed=$(echo "${i}" | xargs)
+      if [[ -n "${trimmed}" ]]; then
+        allowed_wallets_args+=("--allowed-wallet" "${trimmed}")
       fi
     done
   fi
