@@ -1154,6 +1154,175 @@ payout_review_check_service() {
     --payments-snapshot "${payments_file}"
 }
 
+payout_refresh_service() {
+  ensure_runtime_dir
+  candidate_followup_service candidate-followup --record
+  accepted_candidates_service
+  track_rounds_service
+  payout_carry_service
+  payout_candidates_service
+  payout_carry_service
+  payout_review_check_service
+}
+
+require_backfill_env() {
+  local missing=0
+  for name in \
+    PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED \
+    PEPEPOW_OPERATOR_BACKFILL_WALLET \
+    PEPEPOW_OPERATOR_BACKFILL_REASON \
+    PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT \
+    PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT
+  do
+    if [[ -z "${!name:-}" ]]; then
+      echo "missing required backfill env: ${name}" >&2
+      missing=1
+    fi
+  done
+  if [[ "${PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED:-}" != "true" ]]; then
+    echo "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED must be true" >&2
+    missing=1
+  fi
+  if [[ ! "${PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT:-}" =~ ^[0-9]+$ || ! "${PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT:-}" =~ ^[0-9]+$ ]]; then
+    echo "backfill min/max height must be numeric" >&2
+    missing=1
+  fi
+  if [[ "${missing}" -ne 0 ]]; then
+    return 1
+  fi
+}
+
+payout_backfill_summary_service() {
+  ensure_runtime_dir
+  local payout_file="${RUNTIME_DIR}/payout-candidates.json"
+  local output_file="${RUNTIME_DIR}/payout-backfill-preview.json"
+  python3 - "${payout_file}" "${output_file}" "${PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT:-}" "${PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT:-}" "${PEPEPOW_OPERATOR_BACKFILL_WALLET:-}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payout_file = Path(sys.argv[1])
+output_file = Path(sys.argv[2])
+min_height = sys.argv[3]
+max_height = sys.argv[4]
+wallet = sys.argv[5]
+items = []
+if payout_file.exists():
+    data = json.loads(payout_file.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        items = data["items"]
+
+ready = []
+for item in items:
+    if not isinstance(item, dict) or item.get("status") != "ready_for_manual_review":
+        continue
+    payouts = item.get("payouts")
+    if not isinstance(payouts, list):
+        continue
+    for payout in payouts:
+        if not isinstance(payout, dict) or payout.get("operatorApprovedBackfill") is not True:
+            continue
+        if payout.get("wallet") != wallet or payout.get("status") != "pending_manual_payment":
+            continue
+        try:
+            amount = float(payout.get("amount") or 0.0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount <= 0:
+            continue
+        ready.append({
+            "candidateId": item.get("candidateId") or item.get("candidate_hash"),
+            "height": item.get("height"),
+            "wallet": payout.get("wallet"),
+            "amount": amount,
+        })
+
+wallets = sorted({row["wallet"] for row in ready if row.get("wallet")})
+summary = {
+    "backfillReadyCount": len(ready),
+    "backfillWalletCount": len(wallets),
+    "backfillTotalAmount": round(sum(row["amount"] for row in ready), 12),
+    "minHeight": min_height,
+    "maxHeight": max_height,
+    "wallet": wallet,
+    "sourceCandidateIds": [row["candidateId"] for row in ready],
+    "artifactPath": str(output_file),
+}
+output_file.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+for key in ("backfillReadyCount", "backfillWalletCount", "backfillTotalAmount", "minHeight", "maxHeight", "wallet", "artifactPath"):
+    print(f"{key}: {summary[key]}")
+PY
+}
+
+payout_backfill_preview_service() {
+  require_backfill_env
+  payout_candidates_service
+  payout_review_check_service || true
+  payout_backfill_summary_service
+}
+
+payout_backfill_send_once_service() {
+  require_backfill_env
+  payout_backfill_preview_service
+  python3 - "${RUNTIME_DIR}/payout-backfill-preview.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if int(data.get("backfillWalletCount") or 0) != 1:
+    raise SystemExit("backfill send requires exactly one wallet group")
+if int(data.get("backfillReadyCount") or 0) <= 0:
+    raise SystemExit("backfill send requires at least one ready row")
+if float(data.get("backfillTotalAmount") or 0.0) <= 0:
+    raise SystemExit("backfill send requires a positive total amount")
+PY
+
+  PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=true \
+  PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=1 \
+  PEPEPOW_AUTO_PAYOUT_MAX_SENDS=1 \
+  PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT=1 \
+  PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET=false \
+  PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET="${PEPEPOW_OPERATOR_BACKFILL_WALLET}" \
+    python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
+      --candidates "${RUNTIME_DIR}/payout-candidates.json" \
+      --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \
+      --payments-snapshot "${RUNTIME_DIR}/payments-snapshot.json" \
+      --output "${RUNTIME_DIR}/auto-payout-once-result.json" \
+      --max-sends 1 \
+      --min-payout 1 \
+      --allowed-wallet "${PEPEPOW_OPERATOR_BACKFILL_WALLET}"
+
+  python3 "${SCRIPT_DIR}/payout_helper.py" rebuild-payments-snapshot \
+    --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \
+    --snapshot "${RUNTIME_DIR}/payments-snapshot.json"
+  payout_candidates_service
+  payout_review_check_service || true
+  python3 - "${RUNTIME_DIR}/auto-payout-once-result.json" "${RUNTIME_DIR}/payments-snapshot.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+auto_path = Path(sys.argv[1])
+payments_path = Path(sys.argv[2])
+data = json.loads(auto_path.read_text(encoding="utf-8"))
+txid = None
+for item in data.get("items", []):
+    send_output = item.get("sendOnceOutput")
+    if not send_output:
+        continue
+    path = Path(send_output)
+    if path.exists():
+        send_data = json.loads(path.read_text(encoding="utf-8"))
+        txid = send_data.get("txid") or txid
+print(f"sendInvocations: {data.get('sendInvocations')}")
+print(f"sentCount: {data.get('sentCount')}")
+print(f"txid: {txid or ''}")
+print(f"autoPayoutArtifact: {auto_path}")
+print(f"paymentsSnapshotUpdated: {str(payments_path.exists()).lower()}")
+PY
+}
+
 auto_payout_once_service() {
   set_effective_defaults
   ensure_runtime_dir
@@ -3946,6 +4115,15 @@ case "${SUBCOMMAND}" in
   payout-review-check)
     payout_review_check_service
     ;;
+  payout-refresh)
+    payout_refresh_service
+    ;;
+  payout-backfill-preview)
+    payout_backfill_preview_service
+    ;;
+  payout-backfill-send-once)
+    payout_backfill_send_once_service
+    ;;
   auto-payout-once)
     auto_payout_once_service
     ;;
@@ -4017,7 +4195,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payout-wallet-dry-run|payout-wallet-send-once --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-wallet-send-preflight --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-review|payout-review-check|auto-payout-once|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payout-wallet-dry-run|payout-wallet-send-once --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-wallet-send-preflight --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-review|payout-review-check|payout-refresh|payout-backfill-preview|payout-backfill-send-once|auto-payout-once|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
     exit 1
     ;;
 esac

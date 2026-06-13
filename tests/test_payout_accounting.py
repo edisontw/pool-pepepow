@@ -982,6 +982,66 @@ class PayoutAccountingTests(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0)
 
+    def test_live_stratum_sh_payout_refresh_is_read_only_refresh_path(self):
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+        script = sh_path.read_text(encoding="utf-8")
+        start = script.index("payout_refresh_service() {")
+        end = script.index("\nrequire_backfill_env() {", start)
+        service_body = script[start:end]
+
+        expected_order = [
+            "candidate_followup_service candidate-followup --record",
+            "accepted_candidates_service",
+            "track_rounds_service",
+            "payout_carry_service",
+            "payout_candidates_service",
+            "payout_carry_service",
+            "payout_review_check_service",
+        ]
+        cursor = -1
+        for expected in expected_order:
+            next_pos = service_body.find(expected, cursor + 1)
+            self.assertNotEqual(next_pos, -1, expected)
+            cursor = next_pos
+
+        forbidden = [
+            "auto_payout_once_service",
+            "auto-payout-once",
+            "payout_wallet_send_once_service",
+            "payout-wallet-send-once",
+            "payout_wallet_send_aggregated_once",
+            "sendtoaddress",
+        ]
+        for forbidden_text in forbidden:
+            self.assertNotIn(forbidden_text, service_body)
+
+        self.assertIn("payout-refresh)", script)
+        self.assertIn("payout_refresh_service", script)
+
+    def test_live_stratum_sh_backfill_send_uses_aggregate_auto_payout_once(self):
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+        script = sh_path.read_text(encoding="utf-8")
+        start = script.index("payout_backfill_send_once_service() {")
+        end = script.index("\nauto_payout_once_service() {", start)
+        service_body = script[start:end]
+
+        self.assertIn('python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once', service_body)
+        self.assertIn('PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=1', service_body)
+        self.assertIn('PEPEPOW_AUTO_PAYOUT_MAX_SENDS=1', service_body)
+        self.assertIn('--max-sends 1', service_body)
+        self.assertIn('--min-payout 1', service_body)
+        self.assertIn('--allowed-wallet "${PEPEPOW_OPERATOR_BACKFILL_WALLET}"', service_body)
+        self.assertIn("payout-backfill-preview)", script)
+        self.assertIn("payout-backfill-send-once)", script)
+
+        forbidden = [
+            "payout-wallet-send-once",
+            "payout_wallet_send_once_service",
+            "sendtoaddress",
+        ]
+        for forbidden_text in forbidden:
+            self.assertNotIn(forbidden_text, service_body)
+
     def test_payout_candidates_harden_rules(self):
         # 1. Missing reward
         accepted_data = {
@@ -6041,16 +6101,8 @@ class FallbackPayoutTests(unittest.TestCase):
                 res = json.load(f)
 
             item = res["items"][0]
-            self.assertEqual(item["status"], "ready_for_manual_review")
-            self.assertIsNone(item["reason"])
-            self.assertEqual(item["weightMode"], "operator_unattributed_confirmed_backfill")
-            self.assertEqual(len(item["payouts"]), 1)
-            payout = item["payouts"][0]
-            self.assertEqual(payout["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
-            self.assertEqual(payout["status"], "pending_manual_payment")
-            self.assertEqual(payout["fallbackReason"], "operator_approved_unattributed_confirmed_rewards")
-            self.assertTrue(payout["fallbackWarning"])
-            self.assertAlmostEqual(payout["amount"], 4387.5 * 0.99)
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "blocked_missing_round")
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
                       "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
@@ -6064,6 +6116,9 @@ class FallbackPayoutTests(unittest.TestCase):
         os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_confirmed_single_miner_share_log_tail_short_2026-06-13"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT"] = "300"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"] = "310"
         try:
             accepted_data = {
                 "accepted_candidates": [
@@ -6089,7 +6144,12 @@ class FallbackPayoutTests(unittest.TestCase):
             with self.accepted_path.open("w", encoding="utf-8") as f:
                 json.dump(accepted_data, f)
             with self.rounds_path.open("w", encoding="utf-8") as f:
-                json.dump({"rounds": [{"candidate_hash": "hashbackfillmissingshare00000001", "shares": {}}]}, f)
+                json.dump({"rounds": [{
+                    "candidate_hash": "hashbackfillmissingshare00000001",
+                    "shares": {},
+                    "attribution_status": "incomplete",
+                    "attribution_reason": "share_log_tail_too_short"
+                }]}, f)
 
             rc = payout_helper.generate_payout_candidates(
                 self.accepted_path, self.rounds_path, self.output_path
@@ -6102,13 +6162,114 @@ class FallbackPayoutTests(unittest.TestCase):
             item = res["items"][0]
             self.assertEqual(item["status"], "ready_for_manual_review")
             self.assertIsNone(item["reason"])
-            self.assertEqual(item["weightMode"], "operator_unattributed_confirmed_backfill")
+            self.assertEqual(item["weightMode"], "operator_single_miner_backfill")
+            self.assertEqual(item["roundShareTotal"], 1.0)
             payout = item["payouts"][0]
             self.assertEqual(payout["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
+            self.assertEqual(payout["status"], "pending_manual_payment")
+            self.assertEqual(payout["fallbackReason"], "operator_confirmed_single_miner_share_log_tail_short_2026-06-13")
+            self.assertTrue(payout["fallbackWarning"])
+            self.assertTrue(payout["operatorApprovedBackfill"])
+            self.assertEqual(payout["weight"], 1.0)
+            self.assertAlmostEqual(payout["amount"], 4387.5 * 0.99)
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
                       "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
-                      "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON",
+                      "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_requires_height_window(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1.0"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_confirmed_single_miner_share_log_tail_short_2026-06-13"
+        try:
+            accepted_data = {
+                "accepted_candidates": [{
+                    "candidate_hash": "hashbackfillnoheightwindow000001",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 312,
+                    "coinbase_outputs": [
+                        {
+                            "value": 4387.5,
+                            "scriptPubKey": {"addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"], "type": "pubkeyhash"}
+                        },
+                        {"value": 2362.5},
+                        {"value": 250.0}
+                    ]
+                }]
+            }
+            self.accepted_path.write_text(json.dumps(accepted_data), encoding="utf-8")
+            self.rounds_path.write_text(json.dumps({"rounds": [{
+                "candidate_hash": "hashbackfillnoheightwindow000001",
+                "shares": {},
+                "attribution_status": "incomplete",
+                "attribution_reason": "share_log_tail_too_short"
+            }]}), encoding="utf-8")
+
+            payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "missing_share_data")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
+                      "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON"]:
+                os.environ.pop(k, None)
+
+    def test_operator_backfill_requires_tail_short_attribution_reason(self):
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1.0"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_confirmed_single_miner_share_log_tail_short_2026-06-13"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT"] = "300"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"] = "320"
+        try:
+            accepted_data = {
+                "accepted_candidates": [{
+                    "candidate_hash": "hashbackfillwrongreason00000001",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 313,
+                    "coinbase_outputs": [
+                        {
+                            "value": 4387.5,
+                            "scriptPubKey": {"addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"], "type": "pubkeyhash"}
+                        },
+                        {"value": 2362.5},
+                        {"value": 250.0}
+                    ]
+                }]
+            }
+            self.accepted_path.write_text(json.dumps(accepted_data), encoding="utf-8")
+            self.rounds_path.write_text(json.dumps({"rounds": [{
+                "candidate_hash": "hashbackfillwrongreason00000001",
+                "shares": {},
+                "attribution_status": "empty",
+                "attribution_reason": "no_shares_in_round_window"
+            }]}), encoding="utf-8")
+
+            payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["reason"], "missing_share_data")
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
+                      "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON",
+                      "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
                 os.environ.pop(k, None)
 
     def test_operator_backfill_disabled_by_default(self):
@@ -6378,6 +6539,9 @@ class FallbackPayoutTests(unittest.TestCase):
         os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_confirmed_single_miner_share_log_tail_short_2026-06-13"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT"] = "300"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"] = "320"
         mock_send.return_value = 0
         try:
             accepted_data = {
@@ -6404,7 +6568,12 @@ class FallbackPayoutTests(unittest.TestCase):
             with self.accepted_path.open("w", encoding="utf-8") as f:
                 json.dump(accepted_data, f)
             with self.rounds_path.open("w", encoding="utf-8") as f:
-                json.dump({"rounds": []}, f)
+                json.dump({"rounds": [{
+                    "candidate_hash": "hashbackfillautosend000000000001",
+                    "shares": {},
+                    "attribution_status": "incomplete",
+                    "attribution_reason": "share_log_tail_too_short"
+                }]}, f)
 
             payout_helper.generate_payout_candidates(
                 self.accepted_path, self.rounds_path, self.output_path
@@ -6427,10 +6596,12 @@ class FallbackPayoutTests(unittest.TestCase):
             self.assertEqual(res["sendInvocations"], 1)
             self.assertEqual(res["items"][0]["action"], "aggregate_send_once")
             self.assertEqual(res["items"][0]["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
+            self.assertEqual(res["items"][0]["sourceCandidateIds"], ["hashbackfillautosend000000000001"])
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
                       "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
-                      "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON",
+                      "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
                 os.environ.pop(k, None)
 
     def test_duplicate_candidate_wallet_remains_blocked(self):
