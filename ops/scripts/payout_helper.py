@@ -1286,6 +1286,43 @@ def generate_payments_snapshot(
     pool_snap = load_pool_snapshot()
     current_height = pool_snap.get("network", {}).get("height") if isinstance(pool_snap, dict) else None
 
+    def _numeric_confirmations(value):
+        try:
+            if value is None:
+                return None
+            n = int(value)
+            return n if n >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _candidate_height(candidate):
+        return (
+            candidate.get("height")
+            or candidate.get("blockHeight")
+            or candidate.get("matchedHeight")
+            or candidate.get("block_height")
+        )
+
+    def _candidate_confirmations(candidate):
+        return _numeric_confirmations(candidate.get("confirmations") or candidate.get("confirms"))
+
+    def _has_payment_block_context(item):
+        if not isinstance(item, dict):
+            return False
+        return any(
+            item.get(key) is not None
+            for key in (
+                "blockHeight",
+                "height",
+                "matchedHeight",
+                "block_height",
+                "blockHeights",
+                "blockHeightRange",
+                "sourceCandidateIds",
+                "source_candidate_ids",
+            )
+        )
+
     # Load payout-candidates.json to enrich payment items with metadata if available
     candidates_map = {}
     candidates_file = snapshot_path.parent / "payout-candidates.json"
@@ -1297,7 +1334,7 @@ def generate_payments_snapshot(
                 for item in cand_data["items"]:
                     c_id = item.get("candidate_hash") or item.get("candidateId")
                     if c_id:
-                        candidates_map[c_id] = item
+                        candidates_map[str(c_id)] = item
         except Exception:
             pass
 
@@ -1325,23 +1362,41 @@ def generate_payments_snapshot(
         w = act.get("wallet")
         c_id = act.get("candidate_id")
 
-        # Initial default confirmations
-        confirmations = 1
-
         # Locate existing item if available
         existing_item = existing_snapshot_items.get((txid, w)) if (txid and w) else None
-        if existing_item:
-            confirmations = existing_item.get("confirmations", 1)
+        existing_confirmations = _numeric_confirmations(existing_item.get("confirmations")) if existing_item else None
+        confirmations = None
 
         item = {
             "wallet": w,
             "amount": act.get("amount"),
             "paidAt": act.get("timestamp"),
-            "confirmations": confirmations,
             "txid": txid
         }
 
-        cand_meta = candidates_map.get(c_id) if c_id else None
+        source_candidate_ids = []
+        if isinstance(act.get("sourceCandidateIds"), list):
+            source_candidate_ids = [str(x) for x in act["sourceCandidateIds"] if x]
+        elif c_id:
+            source_candidate_ids = [str(c_id)]
+
+        source_candidates = [candidates_map[x] for x in source_candidate_ids if x in candidates_map]
+        heights = []
+        confirmations_list = []
+        for cand in source_candidates:
+            h = _candidate_height(cand)
+            if h is not None:
+                try:
+                    heights.append(int(h))
+                except (TypeError, ValueError):
+                    pass
+            cnf = _candidate_confirmations(cand)
+            if cnf is not None:
+                confirmations_list.append(cnf)
+
+        unique_heights = sorted(set(heights))
+
+        cand_meta = candidates_map.get(str(c_id)) if c_id else None
 
         # Determine block height, candidate hash, block hash, status
         candidate_hash = None
@@ -1352,7 +1407,7 @@ def generate_payments_snapshot(
         if cand_meta:
             candidate_hash = cand_meta.get("candidate_hash") or cand_meta.get("candidateId")
             block_hash = cand_meta.get("blockHash")
-            block_height = cand_meta.get("height")
+            block_height = _candidate_height(cand_meta)
             status = cand_meta.get("status")
         elif existing_item:
             candidate_hash = existing_item.get("candidateHash")
@@ -1369,14 +1424,35 @@ def generate_payments_snapshot(
             item["blockHeight"] = block_height
         if status is not None:
             item["status"] = status
+        if len(unique_heights) == 1:
+            item["blockHeight"] = unique_heights[0]
+        elif len(unique_heights) > 1:
+            item["blockHeights"] = unique_heights
+            item["blockCount"] = len(unique_heights)
+            item["blockHeightRange"] = f"{unique_heights[0]}-{unique_heights[-1]}"
+        if isinstance(act.get("sourceCandidateIds"), list):
+            item["sourceCandidateIds"] = source_candidate_ids
+            item["sourceCount"] = len(source_candidate_ids)
 
-        # Recompute confirmations if blockHeight and currentHeight are available
-        if current_height is not None and block_height is not None:
+        # Recompute confirmations if block metadata and currentHeight are available.
+        if current_height is not None and unique_heights:
             try:
-                h_val = int(block_height)
-                item["confirmations"] = max(0, int(current_height) - h_val + 1)
+                current_h = int(current_height)
+                confirmations = min(max(0, current_h - h + 1) for h in unique_heights)
             except (ValueError, TypeError):
                 pass
+        elif current_height is not None and block_height is not None:
+            try:
+                h_val = int(block_height)
+                confirmations = max(0, int(current_height) - h_val + 1)
+            except (ValueError, TypeError):
+                pass
+        elif confirmations_list:
+            confirmations = min(confirmations_list)
+        elif existing_confirmations is not None and _has_payment_block_context(existing_item):
+            confirmations = existing_confirmations
+        if confirmations is not None:
+            item["confirmations"] = confirmations
 
         if txid and w:
             items_by_payment_key[(str(txid), str(w))] = item

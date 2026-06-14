@@ -284,6 +284,26 @@
     return renderValueWithCopyAndExplorer(value, "auto-block");
   }
 
+  function renderPaymentBlocks(_val, item) {
+    if (item.blockHeightRange) {
+      return escapeHtml(String(item.blockHeightRange));
+    }
+    if (Array.isArray(item.blockHeights) && item.blockHeights.length > 0) {
+      const sorted = item.blockHeights
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v))
+        .sort((a, b) => a - b);
+      if (sorted.length === 1) return renderValueWithCopyAndExplorer(sorted[0], "block");
+      if (sorted.length > 1) return `${escapeHtml(String(sorted[0]))}&ndash;${escapeHtml(String(sorted[sorted.length - 1]))}`;
+    }
+    const h = item.blockHeight ?? item.height ?? item.matchedHeight ?? item.block_height;
+    return h !== null && h !== undefined && h !== "" ? renderValueWithCopyAndExplorer(h, "block") : "-";
+  }
+
+  function renderOptionalNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? formatNumber(value) : "-";
+  }
+
   function renderStatusLabel(value) {
     if (!value) return "-";
     return String(value).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
@@ -937,7 +957,7 @@
     setHtml(
       "latest-payment",
       latest
-        ? `<h3>Most recent recorded payment</h3><div class="kv-list"><div><span>Time</span><strong>${formatDate(latest.paidAt)}</strong></div><div><span>Wallet</span><strong>${renderValueWithCopyAndExplorer(latest.wallet, "address")}</strong></div><div><span>Amount</span><strong>${formatNumber(latest.amount)}</strong></div><div><span>Height</span><strong>${latest.blockHeight ? renderValueWithCopyAndExplorer(latest.blockHeight, "block") : "-"}</strong></div><div><span>TxID</span><strong>${renderValueWithCopyAndExplorer(latest.txid, "txid")}</strong></div></div>`
+        ? `<h3>Most recent recorded payment</h3><div class="kv-list"><div><span>Time</span><strong>${formatDate(latest.paidAt)}</strong></div><div><span>Wallet</span><strong>${renderValueWithCopyAndExplorer(latest.wallet, "address")}</strong></div><div><span>Amount</span><strong>${formatNumber(latest.amount)}</strong></div><div><span>Blocks</span><strong>${renderPaymentBlocks(null, latest)}</strong></div><div><span>TxID</span><strong>${renderValueWithCopyAndExplorer(latest.txid, "txid")}</strong></div></div>`
         : ""
     );
 
@@ -945,11 +965,11 @@
       "payments-table",
       renderTable(payments.items, [
         { key: "wallet", label: "Wallet", render: (val) => renderValueWithCopyAndExplorer(val, "address") },
-        { key: "blockHeight", label: "Height", render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-") },
+        { key: "blockHeight", label: "Blocks", render: renderPaymentBlocks },
         { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
         { key: "amount", label: "Amount", render: formatNumber },
         { key: "paidAt", label: "Time", render: formatDate },
-        { key: "confirmations", label: "Confirms", render: formatNumber },
+        { key: "confirmations", label: "Confirms", render: renderOptionalNumber },
         { key: "txid", label: "TxID", render: (val) => renderValueWithCopyAndExplorer(val, "txid") }
       ], "No manual payment records are currently available in the public snapshot.", { limit: 50 })
     );
@@ -1013,8 +1033,8 @@
         label: "TxID",
         render: (val) => renderValueWithCopyAndExplorer(val, "txid")
       },
-      { key: "blockHeight", label: "Height", render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-") },
-      { key: "confirmations", label: "Confirms", render: formatNumber }
+      { key: "blockHeight", label: "Blocks", render: renderPaymentBlocks },
+      { key: "confirmations", label: "Confirms", render: renderOptionalNumber }
     ], "No recorded manual payments for this wallet yet.");
 
     setHtml("miner-result", htmlContent);

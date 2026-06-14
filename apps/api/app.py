@@ -453,6 +453,13 @@ def create_app(config: AppConfig | None = None) -> Flask:
         def payment_sort_key(item: dict[str, Any]) -> str:
             return str(item.get("paidAt") or item.get("timestamp") or "")
 
+        def first_present(item: dict[str, Any], *keys: str) -> Any:
+            for key in keys:
+                value = item.get(key)
+                if value is not None:
+                    return value
+            return None
+
         def normalize_payment_item(item: dict[str, Any]) -> dict[str, Any]:
             paid_at = item.get("paidAt") or item.get("timestamp")
             timestamp = item.get("timestamp") or item.get("paidAt")
@@ -463,10 +470,14 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "txid": item.get("txid"),
                 "wallet": item.get("wallet"),
                 "candidateId": item.get("candidateId") or item.get("candidate_id"),
-                "blockHeight": item.get("blockHeight"),
+                "blockHeight": first_present(item, "blockHeight", "height", "matchedHeight", "block_height"),
+                "blockHeights": item.get("blockHeights") or item.get("block_heights"),
+                "blockHeightRange": item.get("blockHeightRange") or item.get("block_height_range"),
+                "blockCount": item.get("blockCount") or item.get("sourceCount") or item.get("source_count"),
+                "sourceCandidateIds": item.get("sourceCandidateIds") or item.get("source_candidate_ids"),
                 "blockHash": item.get("blockHash"),
                 "status": item.get("status"),
-                "confirmations": item.get("confirmations"),
+                "confirmations": first_present(item, "confirmations", "confirms", "txConfirmations", "candidateConfirmations"),
                 "note": item.get("note"),
             }
 
