@@ -146,6 +146,37 @@
     table.parentElement.appendChild(note);
   }
 
+  function syncRewardAnalysisAcceptedRate(result) {
+    const summary = result && typeof result.summary === "object" && result.summary ? result.summary : {};
+    const container = document.getElementById("miner-reward-analysis");
+    if (!container || !result || !result.found) return;
+
+    const rows = Array.from(container.querySelectorAll(".metric-grid > div"));
+    const row = rows.find((node) => {
+      const label = node.querySelector("span");
+      return label && (label.textContent || "").trim().toLowerCase() === "accepted rate";
+    });
+    if (!row) return;
+
+    const label = row.querySelector("span");
+    const value = row.querySelector("strong");
+    if (label) label.textContent = "Pool Accepted Rate";
+    if (value) {
+      value.innerHTML = renderRate(summary);
+      value.style.fontWeight = "700";
+      value.style.color = "";
+      value.style.fontSize = "";
+    }
+
+    let note = row.querySelector(".metric-note");
+    if (!note) {
+      note = document.createElement("p");
+      note.className = "metric-note";
+      row.appendChild(note);
+    }
+    note.textContent = renderPoolAcceptedRateNote(summary);
+  }
+
   async function loadMinerExtras(wallet) {
     if (!wallet) return;
     try {
@@ -154,6 +185,7 @@
       const result = await response.json();
       insertPendingCards(result);
       addWorkerAcceptedRateColumn(result);
+      syncRewardAnalysisAcceptedRate(result);
     } catch (_error) {
       // Optional frontend enhancement only.
     }
