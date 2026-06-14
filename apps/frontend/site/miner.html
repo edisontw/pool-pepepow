@@ -9,7 +9,7 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css?v=6">
-    <link rel="stylesheet" href="/assets/site-polish.css?v=1">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=2">
     <style>
       .page-brand-lockup { align-items: center; gap: 18px; }
       .page-brand-logo { width: 72px !important; height: 72px !important; flex: 0 0 72px; border-radius: 50%; }
@@ -54,11 +54,17 @@
             <p class="muted">Accepted shares usually appear within about one minute after mining starts.</p>
             <a class="button" href="/connect.html">How to mine</a>
           </div>
+          <section class="panel compact-panel miner-hashrate-panel">
+            <div id="miner-hashrate-chart" class="miner-hashrate-chart">
+              <div class="empty-state"><strong>Miner hashrate trend</strong><p class="muted">Lookup a wallet and keep this page open to collect one-minute samples.</p></div>
+            </div>
+          </section>
           <div id="miner-reward-analysis"></div>
         </section>
       </main>
     </div>
 
     <script src="/assets/app.js?v=9"></script>
+    <script src="/assets/miner-hashrate.js?v=1"></script>
   </body>
 </html>
