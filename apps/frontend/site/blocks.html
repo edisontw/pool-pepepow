@@ -30,7 +30,7 @@
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Blocks</h1>
-            <p class="brand-subtitle">Pool-found blocks first, with network snapshot data available as secondary context.</p>
+            <p class="brand-subtitle">Network snapshot context with pool-found block observations below.</p>
           </div>
         </div>
         <nav class="nav">
@@ -47,6 +47,21 @@
         <section class="panel">
           <div class="section-head">
             <div>
+              <p class="eyebrow">Network context</p>
+              <h2>Recent network blocks</h2>
+              <p>General chain snapshot data for reference. This is not the primary pool-found block list.</p>
+            </div>
+          </div>
+          <details id="network-blocks-details" class="secondary-block-context">
+            <summary>Show recent network blocks</summary>
+            <p class="muted">Use this only as chain context. Pool-found blocks are shown below.</p>
+            <div id="blocks-table" class="list-state small-gap">Loading network blocks...</div>
+          </details>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
               <p class="eyebrow">Pool found blocks</p>
               <h2>Pool block observations</h2>
               <p>Blocks and candidates observed by this pool, matched against public chain data when available. Recent observations are shown first.</p>
@@ -58,21 +73,6 @@
             <div><span>Candidate</span><strong>Pool observation only</strong></div>
           </div>
           <div id="accepted-candidates-table" class="list-state">Loading pool block observations...</div>
-        </section>
-
-        <section class="panel">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Network context</p>
-              <h2>Recent network blocks</h2>
-              <p>General chain snapshot data for reference. This is not the primary pool-found block list.</p>
-            </div>
-          </div>
-          <details id="network-blocks-details" class="secondary-block-context">
-            <summary>Show recent network blocks</summary>
-            <p class="muted">Use this only as chain context. Pool-found blocks are shown above.</p>
-            <div id="blocks-table" class="list-state small-gap">Loading network blocks...</div>
-          </details>
         </section>
 
         <section class="panel">
