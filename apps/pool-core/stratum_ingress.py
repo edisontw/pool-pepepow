@@ -80,6 +80,7 @@ STRATUM_DIFF1_TARGET = STRATUM_DIFF1_TARGET_PEPEPOW_POOL
 MAX_UINT256_TARGET = (1 << 256) - 1
 MANUAL_SHARE_DIFFICULTY_MIN = 0.0000015
 MANUAL_SHARE_DIFFICULTY_MAX = 1_000_000.0
+MANUAL_SHARE_DIFFICULTY_WIRE_SCALE = 65536.0
 
 
 def utc_now() -> datetime:
@@ -3807,11 +3808,12 @@ def _manual_share_difficulty_from_password(password: str | None) -> float | None
         if not raw_value:
             return None
         try:
-            difficulty = float(raw_value)
+            miner_wire_difficulty = float(raw_value)
         except ValueError:
             return None
-        if not math.isfinite(difficulty) or difficulty <= 0:
+        if not math.isfinite(miner_wire_difficulty) or miner_wire_difficulty <= 0:
             return None
+        difficulty = miner_wire_difficulty / MANUAL_SHARE_DIFFICULTY_WIRE_SCALE
         return min(
             MANUAL_SHARE_DIFFICULTY_MAX,
             max(MANUAL_SHARE_DIFFICULTY_MIN, difficulty),

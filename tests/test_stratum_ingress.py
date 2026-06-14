@@ -350,15 +350,17 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(f"{target:064x}", expected_target)
 
     def test_manual_share_difficulty_password_parser_accepts_supported_token_forms(self):
+        sd_200_effective = 200.0 / 65536.0
         cases = {
-            "sd=200": 200.0,
-            "x,sd=200": 200.0,
-            "workerpass sd=200": 200.0,
+            "sd=200": sd_200_effective,
+            "x,sd=200": sd_200_effective,
+            "workerpass sd=200": sd_200_effective,
+            "sd=262.144": 0.004,
         }
 
         for password, expected in cases.items():
             with self.subTest(password=password):
-                self.assertEqual(
+                self.assertAlmostEqual(
                     stratum_ingress._manual_share_difficulty_from_password(password),
                     expected,
                 )
@@ -376,7 +378,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             stratum_ingress.MANUAL_SHARE_DIFFICULTY_MIN,
         )
         self.assertEqual(
-            stratum_ingress._manual_share_difficulty_from_password("sd=1000000000"),
+            stratum_ingress._manual_share_difficulty_from_password("sd=1000000000000"),
             stratum_ingress.MANUAL_SHARE_DIFFICULTY_MAX,
         )
 
@@ -1164,10 +1166,13 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertTrue(authorize_response["result"])
                 self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
-                self.assertEqual(difficulty_message["params"], [13_107_200.0])
+                self.assertEqual(difficulty_message["params"], [200.0])
                 issued_job = service._job_manager.get_job(notify_message["params"][0])
                 self.assertIsNotNone(issued_job)
-                self.assertEqual(issued_job.assigned_difficulty, 200.0)
+                self.assertAlmostEqual(
+                    issued_job.assigned_difficulty,
+                    200.0 / 65536.0,
+                )
 
                 submit_response = await self._rpc_call(
                     reader,
@@ -1194,7 +1199,7 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     share_event["wallet"], "PEPEPOW1KnownWalletAddress000000"
                 )
                 self.assertEqual(share_event["worker"], "rig01")
-                self.assertEqual(share_event["difficulty"], 200.0)
+                self.assertAlmostEqual(share_event["difficulty"], 200.0 / 65536.0)
 
             finally:
                 if writer is not None:
