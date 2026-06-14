@@ -57,16 +57,19 @@
         if (!value) return;
         const card = value.closest(".radar-card");
         const label = card ? card.querySelector("span") : null;
-        const text = "External data unavailable";
+        const labelText = "Unseen / solo / unlisted";
+        const valueText = "External data unavailable";
         const note = "Requires cached external known-pool data. Not estimated as network minus this pool.";
         const apply = () => {
-          if (label) label.textContent = "Unseen / solo / unlisted";
-          value.textContent = text;
-          value.title = note;
-          if (card) card.title = note;
+          if (label && label.textContent !== labelText) label.textContent = labelText;
+          if (value.textContent !== valueText) value.textContent = valueText;
+          if (value.title !== note) value.title = note;
+          if (card && card.title !== note) card.title = note;
         };
         apply();
-        new MutationObserver(apply).observe(value, { childList: true, subtree: true, characterData: true });
+        new MutationObserver(() => {
+          if (value.textContent !== valueText || (label && label.textContent !== labelText)) apply();
+        }).observe(value, { childList: true, subtree: true, characterData: true });
       });
     </script>
     <script src="/assets/pool-leaderboards.js?v=3"></script>
