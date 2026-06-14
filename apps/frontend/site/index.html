@@ -9,7 +9,7 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="stylesheet" href="/assets/styles.css?v=6">
-    <link rel="stylesheet" href="/assets/site-polish.css?v=2">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=3">
     <style>
       .brand-lockup { align-items: center; gap: 1.1rem; }
       .brand-logo { width: 72px; height: 72px; flex: 0 0 auto; border-radius: 50%; }
@@ -119,91 +119,34 @@
               <p class="eyebrow">Calculator</p>
               <h3>Mining Reward Calculator</h3>
               <div class="calc-inputs">
-                <div class="calc-input-group" style="flex: 2;">
-                  <label for="calc-hashrate">Your Hashrate</label>
-                  <input type="number" id="calc-hashrate" value="100" min="0" step="any" placeholder="Enter hashrate...">
-                </div>
-                <div class="calc-input-group">
-                  <label for="calc-unit">Unit</label>
-                  <select id="calc-unit" class="calc-select">
-                    <option value="H">H/s</option>
-                    <option value="KH" selected>KH/s</option>
-                    <option value="MH">MH/s</option>
-                  </select>
-                </div>
+                <div class="calc-input-group" style="flex: 2;"><label for="calc-hashrate">Your Hashrate</label><input type="number" id="calc-hashrate" value="100" min="0" step="any" placeholder="Enter hashrate..."></div>
+                <div class="calc-input-group"><label for="calc-unit">Unit</label><select id="calc-unit" class="calc-select"><option value="H">H/s</option><option value="KH" selected>KH/s</option><option value="MH">MH/s</option></select></div>
               </div>
               <div class="calc-results">
-                <div class="calc-pepew-stack">
-                  <div><span>PEPEW / Hour</span><strong id="calc-pepew-hour">-</strong></div>
-                  <div><span>PEPEW / Day</span><strong id="calc-pepew-day">-</strong></div>
-                  <div><span>PEPEW / Week</span><strong id="calc-pepew-week">-</strong></div>
-                </div>
-                <div class="calc-usdt-row">
-                  <div><span>USDT / Day</span><strong id="calc-usdt-day">-</strong></div>
-                  <div><span>USDT / Week</span><strong id="calc-usdt-week">-</strong></div>
-                </div>
+                <div class="calc-pepew-stack"><div><span>PEPEW / Hour</span><strong id="calc-pepew-hour">-</strong></div><div><span>PEPEW / Day</span><strong id="calc-pepew-day">-</strong></div><div><span>PEPEW / Week</span><strong id="calc-pepew-week">-</strong></div></div>
+                <div class="calc-usdt-row"><div><span>USDT / Day</span><strong id="calc-usdt-day">-</strong></div><div><span>USDT / Week</span><strong id="calc-usdt-week">-</strong></div></div>
               </div>
               <p class="muted small-gap" style="font-size: 0.8rem; margin-top: 0.9rem; line-height: 1.35;">Estimate only. Actual rewards vary by pool luck and network hashrate.</p>
             </section>
 
             <section class="panel pool-about" aria-labelledby="pool-about-title">
-              <p class="eyebrow">Pool positioning</p>
-              <h3 id="pool-about-title">PEPEPOW Lab Pool</h3>
-              <p class="muted">A lightweight community pool for PEPEPOW mining tests and public pool software development.</p>
-              <div class="resource-grid" aria-label="PEPEPOW resources">
-                <article class="resource-card"><span>GitHub</span><a href="https://github.com/edisontw/pool-pepepow" target="_blank" rel="noopener noreferrer">pool-pepepow</a></article>
-                <article class="resource-card"><span>Website</span><a href="https://pepepow.org/" target="_blank" rel="noopener noreferrer">pepepow.org</a></article>
-                <article class="resource-card"><span>Pools</span><a href="https://miningpoolstats.stream/pepepow" target="_blank" rel="noopener noreferrer">MiningPoolStats</a></article>
-                <article class="resource-card"><span>Discord</span><a href="https://discord.gg/sJgDVRkBcq" target="_blank" rel="noopener noreferrer">Community</a></article>
-              </div>
+              <p class="eyebrow">Pool positioning</p><h3 id="pool-about-title">PEPEPOW Lab Pool</h3><p class="muted">A lightweight community pool for PEPEPOW mining tests and public pool software development.</p>
+              <div class="resource-grid" aria-label="PEPEPOW resources"><article class="resource-card"><span>GitHub</span><a href="https://github.com/edisontw/pool-pepepow" target="_blank" rel="noopener noreferrer">pool-pepepow</a></article><article class="resource-card"><span>Website</span><a href="https://pepepow.org/" target="_blank" rel="noopener noreferrer">pepepow.org</a></article><article class="resource-card"><span>Pools</span><a href="https://miningpoolstats.stream/pepepow" target="_blank" rel="noopener noreferrer">MiningPoolStats</a></article><article class="resource-card"><span>Discord</span><a href="https://discord.gg/sJgDVRkBcq" target="_blank" rel="noopener noreferrer">Community</a></article></div>
             </section>
           </div>
         </div>
 
-        <section class="panel status-overview" aria-labelledby="pool-status-overview-title">
-          <p class="eyebrow">Operational status</p>
-          <h3 id="pool-status-overview-title">Pool connection, blocks, and payments</h3>
-          <div class="status-overview-grid">
-            <article class="status-overview-card"><span>Mining connection</span><strong>Ready for miners</strong><div class="status-marker is-ok">Online Stratum</div><div class="status-endpoint-box"><span>Endpoint</span><code>pool.pepepow.net:39333</code></div></article>
-            <article class="status-overview-card"><span>Public data</span><strong>API snapshots</strong><div class="status-marker is-ok">Read-only</div><p>Dashboard data is served from summarized public API snapshots.</p><a class="status-card-link" href="/api.html">API docs →</a></article>
-            <article class="status-overview-card"><span>Block submit</span><strong>Operator-controlled</strong><div class="status-marker is-guarded">Guarded</div><p>Public pages show observations only.</p><a class="status-card-link" href="/blocks.html">Blocks →</a></article>
-            <article class="status-overview-card"><span>Payments</span><strong>Recorded payments</strong><div class="status-marker is-guarded">Completed records</div><p>No public balance or payout controls.</p><a class="status-card-link" href="/payments.html">Payments →</a></article>
-          </div>
-        </section>
+        <section class="panel status-overview" aria-labelledby="pool-status-overview-title"><p class="eyebrow">Operational status</p><h3 id="pool-status-overview-title">Pool connection, blocks, and payments</h3><div class="status-overview-grid"><article class="status-overview-card"><span>Mining connection</span><strong>Ready for miners</strong><div class="status-marker is-ok">Online Stratum</div><div class="status-endpoint-box"><span>Endpoint</span><code>pool.pepepow.net:39333</code></div></article><article class="status-overview-card"><span>Public data</span><strong>API snapshots</strong><div class="status-marker is-ok">Read-only</div><p>Dashboard data is served from summarized public API snapshots.</p><a class="status-card-link" href="/api.html">API docs →</a></article><article class="status-overview-card"><span>Block submit</span><strong>Operator-controlled</strong><div class="status-marker is-guarded">Guarded</div><p>Public pages show observations only.</p><a class="status-card-link" href="/blocks.html">Blocks →</a></article><article class="status-overview-card"><span>Payments</span><strong>Recorded payments</strong><div class="status-marker is-guarded">Completed records</div><p>No public balance or payout controls.</p><a class="status-card-link" href="/payments.html">Payments →</a></article></div></section>
 
-        <section class="panel metrics">
-          <h3>Pool Summary</h3>
-          <div class="metric-grid">
-            <article class="metric-primary"><span>Pool-side hashrate estimate</span><strong id="pool-hashrate">-</strong></article>
-            <article><span>Active Miners</span><strong id="active-miners">-</strong></article>
-            <article><span>Active Workers</span><strong id="active-workers">-</strong></article>
-            <article><span>Last confirmed block</span><strong id="last-block-time">-</strong></article>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h3>Network Summary</h3>
-          <div class="metric-grid">
-            <div><span>Height</span><strong id="network-height">-</strong></div>
-            <div><span>Difficulty</span><strong id="network-difficulty">-</strong></div>
-            <div><span>Network Hashrate</span><strong id="network-hashrate">-</strong></div>
-            <div><span>Node Sync</span><strong id="network-sync">-</strong></div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h3>Recent Blocks</h3>
-          <div id="recent-blocks" class="list-state">Loading blocks...</div>
-        </section>
-
-        <section class="panel">
-          <h3>Recent Payments</h3>
-          <div id="recent-payments" class="list-state">Loading payments...</div>
-        </section>
+        <section class="panel metrics"><h3>Pool Summary</h3><div class="metric-grid"><article class="metric-primary"><span>Pool-side hashrate estimate</span><strong id="pool-hashrate">-</strong></article><article><span>Active Miners</span><strong id="active-miners">-</strong></article><article><span>Active Workers</span><strong id="active-workers">-</strong></article><article><span>Last confirmed block</span><strong id="last-block-time">-</strong></article></div></section>
+        <section class="panel"><h3>Network Summary</h3><div class="metric-grid"><div><span>Height</span><strong id="network-height">-</strong></div><div><span>Difficulty</span><strong id="network-difficulty">-</strong></div><div><span>Network Hashrate</span><strong id="network-hashrate">-</strong></div><div><span>Node Sync</span><strong id="network-sync">-</strong></div></div></section>
+        <section class="panel"><h3>Recent Blocks</h3><div id="recent-blocks" class="list-state">Loading blocks...</div></section>
+        <section class="panel"><h3>Recent Payments</h3><div id="recent-payments" class="list-state">Loading payments...</div></section>
       </main>
     </div>
 
-    <script src="/assets/hashrate-trend.js?v=3"></script>
+    <script src="/assets/hashrate-trend.js?v=4"></script>
+    <script src="/assets/pool-leaderboards.js?v=1"></script>
     <script src="/assets/app.js?v=9"></script>
     <script>
       document.addEventListener("DOMContentLoaded", function () {
