@@ -49,7 +49,7 @@
             <div>
               <p class="eyebrow">Pool found blocks</p>
               <h2>Pool block observations</h2>
-              <p>Blocks and candidates observed by this pool, matched against public chain data when available.</p>
+              <p>Blocks and candidates observed by this pool, matched against public chain data when available. Recent observations are shown first.</p>
             </div>
           </div>
           <div class="status-strip" aria-label="Block status legend">
@@ -68,7 +68,7 @@
               <p>General chain snapshot data for reference. This is not the primary pool-found block list.</p>
             </div>
           </div>
-          <details class="secondary-block-context">
+          <details id="network-blocks-details" class="secondary-block-context">
             <summary>Show recent network blocks</summary>
             <p class="muted">Use this only as chain context. Pool-found blocks are shown above.</p>
             <div id="blocks-table" class="list-state small-gap">Loading network blocks...</div>
@@ -80,7 +80,7 @@
             <div>
               <p class="eyebrow">Round preview</p>
               <h2>Share attribution snapshot</h2>
-              <p>Read-only round data used for visibility and review.</p>
+              <p>Read-only round data used for visibility and review. Recent matched rounds are shown first.</p>
             </div>
           </div>
           <div id="rounds-table" class="list-state">Loading rounds...</div>
@@ -89,5 +89,72 @@
     </div>
 
     <script src="/assets/app.js?v=9"></script>
+    <script>
+      (function () {
+        function closeNetworkBlocks() {
+          const details = document.getElementById("network-blocks-details");
+          if (details) details.open = false;
+        }
+
+        function parseCellValue(row, label) {
+          const cell = row.querySelector(`td[data-label="${label}"]`);
+          if (!cell) return null;
+          const text = (cell.textContent || "").replace(/,/g, "").trim();
+          if (!text || text === "-" || text.toLowerCase() === "nan") return null;
+
+          if (label === "Height" || label === "Confirmations" || label === "Confirms") {
+            const match = text.match(/-?\d+(?:\.\d+)?/);
+            return match ? Number(match[0]) : null;
+          }
+
+          if (label === "Time") {
+            const time = Date.parse(text);
+            return Number.isNaN(time) ? null : time;
+          }
+
+          return text;
+        }
+
+        function sortRenderedTable(containerId, labels) {
+          const container = document.getElementById(containerId);
+          const table = container ? container.querySelector("table") : null;
+          const tbody = table ? table.querySelector("tbody") : null;
+          if (!tbody) return;
+
+          const rows = Array.from(tbody.querySelectorAll("tr"));
+          rows.sort((a, b) => {
+            for (const label of labels) {
+              const av = parseCellValue(a, label);
+              const bv = parseCellValue(b, label);
+              if (av === null && bv === null) continue;
+              if (av === null) return 1;
+              if (bv === null) return -1;
+              if (av > bv) return -1;
+              if (av < bv) return 1;
+            }
+            return 0;
+          });
+          rows.forEach((row) => tbody.appendChild(row));
+        }
+
+        function keepRecentFirst(containerId, labels) {
+          const container = document.getElementById(containerId);
+          if (!container) return;
+          const run = () => sortRenderedTable(containerId, labels);
+          const observer = new MutationObserver(run);
+          observer.observe(container, { childList: true, subtree: true });
+          run();
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+          closeNetworkBlocks();
+          keepRecentFirst("accepted-candidates-table", ["Height", "Time"]);
+          keepRecentFirst("blocks-table", ["Height", "Time"]);
+          keepRecentFirst("rounds-table", ["Height", "Confirmations"]);
+          window.setTimeout(closeNetworkBlocks, 0);
+          window.setTimeout(closeNetworkBlocks, 800);
+        });
+      })();
+    </script>
   </body>
 </html>
