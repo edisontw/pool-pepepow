@@ -13,7 +13,14 @@
 
   function formatNumber(value) {
     if (typeof value !== "number" || !Number.isFinite(value)) return "-";
-    return new Intl.NumberFormat().format(value);
+    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value);
+  }
+
+  function formatDateTime(value) {
+    if (typeof value !== "string" || !value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleString();
   }
 
   function readCount(record, keys) {
@@ -71,6 +78,35 @@
     return `Pool-side submits: ${formatNumber(accepted)} accepted / ${formatNumber(rejected)} rejected. Miner local invalid solutions are not included.`;
   }
 
+  function paymentSortKey(item) {
+    if (!item || typeof item !== "object") return "";
+    return String(item.paidAt || item.timestamp || "");
+  }
+
+  function renderRecordedPaymentsCard(result) {
+    const payments = result && Array.isArray(result.recentPayments) ? result.recentPayments : [];
+    const totalPaid = readCount(result, ["totalPaidManual", "total_paid_manual"]);
+    if (payments.length === 0 && totalPaid === null) return "";
+
+    const latest = payments.slice().sort((a, b) => paymentSortKey(b).localeCompare(paymentSortKey(a)))[0];
+    const latestPaidAt = latest ? formatDateTime(latest.paidAt || latest.timestamp) : null;
+    const latestAmount = latest && typeof latest.amount === "number" && Number.isFinite(latest.amount)
+      ? latest.amount
+      : null;
+
+    let note = `${formatNumber(payments.length)} recorded payment${payments.length === 1 ? "" : "s"} shown for this wallet.`;
+    if (latestPaidAt) {
+      note += ` Latest: ${latestPaidAt}`;
+      if (latestAmount !== null) note += `, ${formatNumber(latestAmount)} PEPEW.`;
+    }
+
+    return `<article class="miner-metric-card">
+      <span>Recorded Payments</span>
+      <strong>${totalPaid === null ? escapeHtml(formatNumber(payments.length)) : `${escapeHtml(formatNumber(totalPaid))} PEPEW`}</strong>
+      <p class="metric-note">${escapeHtml(note)}</p>
+    </article>`;
+  }
+
   function renderPoolAcceptedRateCard(result) {
     const summary = result && typeof result.summary === "object" && result.summary ? result.summary : {};
     return `<div id="miner-pending-extras" class="miner-summary-grid" style="margin-top: 1rem;">
@@ -79,6 +115,7 @@
         <strong>${renderRate(summary)}</strong>
         <p class="metric-note">${escapeHtml(renderPoolAcceptedRateNote(summary))}</p>
       </article>
+      ${renderRecordedPaymentsCard(result)}
     </div>`;
   }
 
