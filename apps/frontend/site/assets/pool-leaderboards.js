@@ -3,7 +3,7 @@
   const MAX_MINER_LOOKUPS = 20;
   let cachedLeaderboardItems = [];
   let cachedShareLabel = "accepted shares";
-  let cachedLastConfirmedBlockText = "";
+  let cachedLastPoolBlockText = "";
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -65,20 +65,11 @@
   }
 
   function rows(items, mode) {
-    const sorted = items
-      .slice()
-      .sort((a, b) => mode === "hashrate" ? b.hashrate - a.hashrate : b.shares - a.shares)
-      .slice(0, 5);
-    if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) {
-      return `<div class="leaderboard-empty">No active data available.</div>`;
-    }
+    const sorted = items.slice().sort((a, b) => mode === "hashrate" ? b.hashrate - a.hashrate : b.shares - a.shares).slice(0, 5);
+    if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) return `<div class="leaderboard-empty">No active data available.</div>`;
     return sorted.map((item, idx) => {
       const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
-      return `<div class="leaderboard-row">
-        <span class="leaderboard-rank">#${idx + 1}</span>
-        <strong title="${escapeHtml(item.wallet)}">${escapeHtml(compactWallet(item.wallet))}</strong>
-        <span>${escapeHtml(value)}</span>
-      </div>`;
+      return `<div class="leaderboard-row"><span class="leaderboard-rank">#${idx + 1}</span><strong title="${escapeHtml(item.wallet)}">${escapeHtml(compactWallet(item.wallet))}</strong><span>${escapeHtml(value)}</span></div>`;
     }).join("");
   }
 
@@ -92,15 +83,7 @@
       box.className = "leaderboard-grid";
       target.appendChild(box);
     }
-    box.innerHTML = `
-      <section class="leaderboard-card">
-        <div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>5m estimate</span></div>
-        ${rows(items, "hashrate")}
-      </section>
-      <section class="leaderboard-card">
-        <div class="leaderboard-head"><h4>Total Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>
-        ${rows(items, "shares")}
-      </section>`;
+    box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>5m estimate</span></div>${rows(items, "hashrate")}</section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Total Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>${rows(items, "shares")}</section>`;
   }
 
   async function fetchJson(url) {
@@ -110,12 +93,8 @@
   }
 
   async function enrichTotalSharesFromMinerApi(items) {
-    const candidates = items
-      .filter((item) => item.wallet && item.wallet !== "unknown")
-      .sort((a, b) => b.hashrate - a.hashrate)
-      .slice(0, MAX_MINER_LOOKUPS);
+    const candidates = items.filter((item) => item.wallet && item.wallet !== "unknown").sort((a, b) => b.hashrate - a.hashrate).slice(0, MAX_MINER_LOOKUPS);
     if (candidates.length === 0) return items;
-
     const results = await Promise.all(candidates.map(async (item) => {
       try {
         const payload = await fetchJson(`/api/miner/${encodeURIComponent(item.wallet)}`);
@@ -140,10 +119,7 @@
     try {
       const pool = await fetchJson("/api/pool/summary");
       const items = normalize(pool || {});
-      if (items.length === 0) {
-        useCachedLeaderboard();
-        return;
-      }
+      if (items.length === 0) { useCachedLeaderboard(); return; }
       renderItems(items, "loading totals");
       const enriched = await enrichTotalSharesFromMinerApi(items);
       cachedLeaderboardItems = enriched;
@@ -154,71 +130,62 @@
     }
   }
 
-  function confirmedCandidateItems(payload) {
+  function observedPoolBlockItems(payload) {
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
     return items.filter((item) => {
       const status = String(item.lifecycleStatus || "").toLowerCase().replace(/_/g, "-");
-      const maturity = String(item.maturityLabel || "").toLowerCase();
-      return status === "confirmed" || maturity === "mature";
+      return status && status !== "orphan" && status !== "orphaned";
     });
   }
 
-  function setLastConfirmedBlockText(value) {
+  function setLastPoolBlockText(value) {
     if (!value || value === "-") return;
     const node = document.getElementById("last-block-time");
     if (!node) return;
-    cachedLastConfirmedBlockText = value;
+    cachedLastPoolBlockText = value;
     node.textContent = value;
-    node.dataset.poolConfirmedBlock = value;
+    node.dataset.poolObservedBlock = value;
   }
 
-  function restoreLastConfirmedBlockText() {
+  function restoreLastPoolBlockText() {
     const node = document.getElementById("last-block-time");
-    if (!node || !cachedLastConfirmedBlockText) return;
-    if (!node.textContent || node.textContent.trim() === "-") {
-      node.textContent = cachedLastConfirmedBlockText;
-    }
+    if (!node || !cachedLastPoolBlockText) return;
+    if (!node.textContent || node.textContent.trim() === "-") node.textContent = cachedLastPoolBlockText;
   }
 
-  async function refreshLastConfirmedBlock() {
+  async function refreshLastObservedPoolBlock() {
     if (document.body.dataset.page !== "dashboard") return;
     const node = document.getElementById("last-block-time");
     if (!node) return;
     try {
       const payload = await fetchJson("/api/accepted-candidates");
-      const confirmed = confirmedCandidateItems(payload)
-        .sort((a, b) => numeric(b.matchedHeight) - numeric(a.matchedHeight));
-      if (confirmed.length === 0) {
-        restoreLastConfirmedBlockText();
-        return;
-      }
-      const latest = confirmed[0];
+      const observed = observedPoolBlockItems(payload).sort((a, b) => numeric(b.matchedHeight, Date.parse(b.submitTimestamp)) - numeric(a.matchedHeight, Date.parse(a.submitTimestamp)));
+      if (observed.length === 0) { restoreLastPoolBlockText(); return; }
+      const latest = observed[0];
       const height = numeric(latest.matchedHeight);
+      const status = String(latest.lifecycleStatus || "observed").replace(/_/g, " ");
       const time = formatDate(latest.submitTimestamp);
-      setLastConfirmedBlockText(height > 0 ? `${formatNumber(height)} · ${time}` : time);
+      setLastPoolBlockText(height > 0 ? `${formatNumber(height)} · ${status} · ${time}` : `${status} · ${time}`);
     } catch (_error) {
-      restoreLastConfirmedBlockText();
+      restoreLastPoolBlockText();
     }
   }
 
-  function installLastConfirmedBlockGuard() {
+  function installLastPoolBlockGuard() {
     const node = document.getElementById("last-block-time");
     if (!node) return;
-    const observer = new MutationObserver(() => restoreLastConfirmedBlockText());
+    const observer = new MutationObserver(() => restoreLastPoolBlockText());
     observer.observe(node, { childList: true, characterData: true, subtree: true });
   }
 
   async function refresh() {
-    await Promise.all([
-      refreshLeaderboards(),
-      refreshLastConfirmedBlock()
-    ]);
+    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock()]);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    installLastConfirmedBlockGuard();
+    installLastPoolBlockGuard();
     refresh();
-    window.setTimeout(refreshLastConfirmedBlock, 1500);
+    window.setTimeout(refreshLastObservedPoolBlock, 1500);
     window.setInterval(refresh, REFRESH_MS);
   });
 })();
