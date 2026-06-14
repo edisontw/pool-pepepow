@@ -1,6 +1,7 @@
 (function () {
   const STORAGE_KEY = "pepepow_hashrate_history_v2";
   const LEGACY_POOL_KEY = "pepepow_pool_hashrate_history_v1";
+  const DISTRIBUTION_CACHE_KEY = "pepepow_worker_distribution_cache_v1";
   const MAX_AGE_MS = 24 * 60 * 60 * 1000;
   const SAMPLE_INTERVAL_MS = 60 * 1000;
   const MAX_POINTS = 1440;
@@ -153,20 +154,38 @@
       const wallet = String(item.wallet || item.address || item.miner || item.username || item.name || "unknown");
       const current = map.get(wallet) || { wallet, hashrate: 0, shares: 0, workers: 0 };
       current.hashrate += numberValue(item.hashrate, item.hashrateHps, item.hashrate_hps, item.estimatedHashrate);
-      current.shares += numberValue(item.acceptedShares, item.shares, item.shareCount, item.accepted_share_count);
+      current.shares += numberValue(item.acceptedShares, item.shares, item.shareCount, item.accepted_share_count, item.shares15m);
       current.workers += numberValue(item.workers, item.workerCount, item.activeWorkers) || 1;
       map.set(wallet, current);
     }
-    return Array.from(map.values());
+    return Array.from(map.values()).filter((item) => item.wallet && item.wallet !== "unknown");
   }
 
-  function leaderboardRows(items, mode) {
+  function loadDistributionCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(DISTRIBUTION_CACHE_KEY) || "null");
+      if (!cached || !Array.isArray(cached.items)) return [];
+      if (typeof cached.t !== "number" || Date.now() - cached.t > MAX_AGE_MS) return [];
+      return cached.items.filter((item) => item && typeof item === "object");
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveDistributionCache(items) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    try {
+      localStorage.setItem(DISTRIBUTION_CACHE_KEY, JSON.stringify({ t: Date.now(), items }));
+    } catch (_error) {}
+  }
+
+  function leaderboardRows(items, mode, emptyText) {
     const sorted = items
       .slice()
       .sort((a, b) => mode === "hashrate" ? b.hashrate - a.hashrate : b.shares - a.shares)
       .slice(0, 5);
     if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) {
-      return `<div class="leaderboard-empty">Waiting for worker distribution data.</div>`;
+      return `<div class="leaderboard-empty">${escapeHtml(emptyText || "No active ranking data available.")}</div>`;
     }
     return sorted.map((item, idx) => {
       const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
@@ -188,15 +207,28 @@
       box.className = "leaderboard-grid";
       target.appendChild(box);
     }
-    const items = normalizeDistribution(pool || {});
+    let items = normalizeDistribution(pool || {});
+    let label = "recent window";
+    let emptyText = "No active ranking data available.";
+    if (items.length === 0 || items.every((item) => item.hashrate <= 0 && item.shares <= 0)) {
+      const cached = loadDistributionCache();
+      if (cached.length > 0) {
+        items = cached;
+        label = "cached recent window";
+      } else {
+        emptyText = "Waiting for worker distribution data.";
+      }
+    } else {
+      saveDistributionCache(items);
+    }
     box.innerHTML = `
       <section class="leaderboard-card">
-        <div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>pool snapshot</span></div>
-        ${leaderboardRows(items, "hashrate")}
+        <div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>${escapeHtml(label)}</span></div>
+        ${leaderboardRows(items, "hashrate", emptyText)}
       </section>
       <section class="leaderboard-card">
-        <div class="leaderboard-head"><h4>Shares Ranking</h4><span>recent window</span></div>
-        ${leaderboardRows(items, "shares")}
+        <div class="leaderboard-head"><h4>Shares Ranking</h4><span>${escapeHtml(label)}</span></div>
+        ${leaderboardRows(items, "shares", emptyText)}
       </section>`;
   }
 
@@ -343,6 +375,7 @@
       renderLeaderboards(pool);
     } catch (_error) {
       renderAll(history, "offline cache");
+      renderLeaderboards({ workerDistribution: loadDistributionCache() });
     }
   }
 
@@ -351,6 +384,7 @@
     installStyles();
     const config = await loadRuntimeConfig();
     renderAll(normalizeHistory(loadHistory()), "loading");
+    renderLeaderboards({ workerDistribution: loadDistributionCache() });
     await sampleAndRender(config.apiBaseUrl || "/api");
     window.setInterval(() => sampleAndRender(config.apiBaseUrl || "/api"), SAMPLE_INTERVAL_MS);
   });
