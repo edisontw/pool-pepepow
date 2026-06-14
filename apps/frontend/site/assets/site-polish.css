@@ -34,6 +34,19 @@
   margin-top: 1rem;
 }
 
+.quick-guide-link {
+  width: fit-content !important;
+  margin-top: 0.65rem !important;
+  padding: 0.48rem 0.75rem !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, var(--accent), #b8ffd3) !important;
+  color: #05210f !important;
+  font-weight: 800 !important;
+  font-size: 0.78rem !important;
+  line-height: 1 !important;
+  box-shadow: 0 4px 12px rgba(129, 247, 176, 0.18) !important;
+}
+
 .status-strip,
 .compact-grid {
   display: grid;
