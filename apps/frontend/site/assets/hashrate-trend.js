@@ -28,10 +28,32 @@
     return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${unit}`;
   }
 
+  function formatNumber(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+    return new Intl.NumberFormat().format(value);
+  }
+
   function formatTimeLabel(ms) {
     const date = new Date(ms);
     if (Number.isNaN(date.getTime())) return "";
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function shortName(value) {
+    const raw = String(value || "unknown");
+    if (raw.length <= 18) return raw;
+    return `${raw.slice(0, 7)}…${raw.slice(-5)}`;
+  }
+
+  function numberValue(...values) {
+    for (const value of values) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+    return 0;
   }
 
   function readPoolHashrateHps(pool) {
@@ -121,6 +143,61 @@
       pool: normalizeSeries(history.pool),
       network: normalizeSeries(history.network)
     };
+  }
+
+  function normalizeDistribution(pool) {
+    const source = Array.isArray(pool.workerDistribution) ? pool.workerDistribution : [];
+    const map = new Map();
+    for (const item of source) {
+      if (!item || typeof item !== "object") continue;
+      const wallet = String(item.wallet || item.address || item.miner || item.username || item.name || "unknown");
+      const current = map.get(wallet) || { wallet, hashrate: 0, shares: 0, workers: 0 };
+      current.hashrate += numberValue(item.hashrate, item.hashrateHps, item.hashrate_hps, item.estimatedHashrate);
+      current.shares += numberValue(item.acceptedShares, item.shares, item.shareCount, item.accepted_share_count);
+      current.workers += numberValue(item.workers, item.workerCount, item.activeWorkers) || 1;
+      map.set(wallet, current);
+    }
+    return Array.from(map.values());
+  }
+
+  function leaderboardRows(items, mode) {
+    const sorted = items
+      .slice()
+      .sort((a, b) => mode === "hashrate" ? b.hashrate - a.hashrate : b.shares - a.shares)
+      .slice(0, 5);
+    if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) {
+      return `<div class="leaderboard-empty">Waiting for worker distribution data.</div>`;
+    }
+    return sorted.map((item, idx) => {
+      const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
+      return `<div class="leaderboard-row">
+        <span class="leaderboard-rank">#${idx + 1}</span>
+        <strong title="${escapeHtml(item.wallet)}">${escapeHtml(shortName(item.wallet))}</strong>
+        <span>${escapeHtml(value)}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function renderLeaderboards(pool) {
+    const target = document.querySelector(".mining-outlook");
+    if (!target) return;
+    let box = document.getElementById("pool-leaderboards");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "pool-leaderboards";
+      box.className = "leaderboard-grid";
+      target.appendChild(box);
+    }
+    const items = normalizeDistribution(pool || {});
+    box.innerHTML = `
+      <section class="leaderboard-card">
+        <div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>pool snapshot</span></div>
+        ${leaderboardRows(items, "hashrate")}
+      </section>
+      <section class="leaderboard-card">
+        <div class="leaderboard-head"><h4>Shares Ranking</h4><span>recent window</span></div>
+        ${leaderboardRows(items, "shares")}
+      </section>`;
   }
 
   function renderChart(containerId, title, points, statusText) {
@@ -219,7 +296,17 @@
       .trend-fill { fill: rgba(55,196,255,0.11); }
       .trend-line { fill: none; stroke: rgba(55,196,255,0.95); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
       .trend-empty { padding: 1rem; border-radius: 14px; background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.16); }
-      @media (max-width: 920px) { .trend-chart-grid { grid-template-columns: 1fr; } }
+      .leaderboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+      .leaderboard-card { display: grid; gap: 0.45rem; padding: 0.9rem; border-radius: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); }
+      .leaderboard-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; margin-bottom: 0.25rem; }
+      .leaderboard-head h4 { margin: 0; font-size: 1rem; }
+      .leaderboard-head span { color: var(--muted); font-size: 0.72rem; }
+      .leaderboard-row { display: grid; grid-template-columns: 2.6rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: center; padding: 0.5rem 0; border-top: 1px solid rgba(255,255,255,0.06); }
+      .leaderboard-rank { color: var(--accent); font-weight: 800; }
+      .leaderboard-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .leaderboard-row > span:last-child { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .leaderboard-empty { color: var(--muted); padding: 0.65rem 0; }
+      @media (max-width: 920px) { .trend-chart-grid, .leaderboard-grid { grid-template-columns: 1fr; } }
     `;
     document.head.appendChild(style);
   }
@@ -253,6 +340,7 @@
       history = normalizeHistory(history);
       saveHistory(history);
       renderAll(history);
+      renderLeaderboards(pool);
     } catch (_error) {
       renderAll(history, "offline cache");
     }
