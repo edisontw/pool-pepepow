@@ -8,154 +8,51 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="stylesheet" href="/assets/styles.css?v=5">
+    <link rel="stylesheet" href="/assets/styles.css?v=6">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=2">
     <style>
       .brand-lockup { align-items: center; gap: 1.1rem; }
       .brand-logo { width: 72px; height: 72px; flex: 0 0 auto; border-radius: 50%; }
       .brand-title { min-width: 0; }
       .brand-title h1 { margin-bottom: 0; }
-      .brand-subtitle {
-        margin: 0.55rem 0 0;
-        max-width: 520px;
-        color: rgba(235, 245, 255, 0.72);
-        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
-        line-height: 1.4;
-      }
+      .brand-subtitle { margin: 0.55rem 0 0; max-width: 520px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.4; }
       .page-grid > .panel.status-overview { grid-column: 1 / -1 !important; }
       .hero-copy .muted { max-width: 720px; }
-      .dashboard-main {
-        grid-column: 1 / -1;
-        display: grid;
-        grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
-        gap: 1rem;
-        align-items: start;
-      }
-      .dashboard-left,
-      .dashboard-right { display: grid; gap: 1rem; min-width: 0; }
+      .dashboard-main { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr); gap: 1rem; align-items: start; }
+      .dashboard-left, .dashboard-right { display: grid; gap: 1rem; min-width: 0; }
       .dashboard-main > .panel { min-width: 0; }
+      .quick-guide-link { display: inline-flex; margin-top: 0.55rem; color: var(--accent-alt); font-weight: 800; font-size: 0.86rem; }
       .resource-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-top: 1rem; }
-      .resource-card {
-        display: grid;
-        gap: 0.35rem;
-        padding: 0.8rem;
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.035);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-      }
-      .resource-card span {
-        color: var(--muted);
-        font-size: 0.72rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
+      .resource-card { display: grid; gap: 0.35rem; padding: 0.8rem; border-radius: 14px; background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.08); }
+      .resource-card span { color: var(--muted); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
       .resource-card a { color: var(--accent-alt); font-weight: 800; overflow-wrap: anywhere; }
       .status-overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem; }
-      .status-overview-card {
-        display: grid;
-        gap: 0.65rem;
-        align-content: start;
-        min-height: 10rem;
-        padding: 1rem;
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.035);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-      }
-      .status-overview-card span {
-        color: var(--muted);
-        font-size: 0.78rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
+      .status-overview-card { display: grid; gap: 0.65rem; align-content: start; min-height: 10rem; padding: 1rem; border-radius: 14px; background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.08); }
+      .status-overview-card span { color: var(--muted); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
       .status-overview-card strong { font-size: clamp(1.05rem, 1.8vw, 1.35rem); line-height: 1.15; }
       .status-overview-card p { margin: 0; color: var(--muted); font-size: 0.86rem; line-height: 1.4; }
-      .status-marker {
-        display: inline-flex;
-        align-items: center;
-        width: fit-content;
-        max-width: 100%;
-        padding: 0.4rem 0.66rem;
-        border-radius: 999px;
-        border: 1px solid rgba(238, 245, 248, 0.2);
-        background: rgba(238, 245, 248, 0.09);
-        color: var(--text);
-        font-size: 0.78rem;
-        font-weight: 800;
-        line-height: 1;
-        white-space: nowrap;
-      }
+      .status-marker { display: inline-flex; align-items: center; width: fit-content; max-width: 100%; padding: 0.4rem 0.66rem; border-radius: 999px; border: 1px solid rgba(238, 245, 248, 0.2); background: rgba(238, 245, 248, 0.09); color: var(--text); font-size: 0.78rem; font-weight: 800; line-height: 1; white-space: nowrap; }
       .status-marker.is-ok { border-color: rgba(129, 247, 176, 0.4); background: rgba(129, 247, 176, 0.16); }
       .status-marker.is-guarded { border-color: rgba(255, 212, 90, 0.42); background: rgba(255, 212, 90, 0.16); }
-      .status-endpoint-box {
-        display: grid;
-        gap: 0.25rem;
-        padding: 0.65rem 0.75rem;
-        border-radius: 12px;
-        border: 1px solid rgba(55, 196, 255, 0.22);
-        background: rgba(55, 196, 255, 0.07);
-      }
+      .status-endpoint-box { display: grid; gap: 0.25rem; padding: 0.65rem 0.75rem; border-radius: 12px; border: 1px solid rgba(55, 196, 255, 0.22); background: rgba(55, 196, 255, 0.07); }
       .status-endpoint-box span { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
       .status-endpoint-box code { display: block; color: var(--text); font-size: 0.82rem; line-height: 1.35; overflow-wrap: anywhere; }
       .status-card-link { margin-top: auto; color: var(--accent-alt); font-size: 0.86rem; font-weight: 700; }
       .radar-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
-      .radar-card {
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        gap: 0.65rem;
-        padding: 0.9rem 0.95rem;
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-      }
+      .radar-card { display: flex; flex-direction: column; justify-content: space-between; gap: 0.65rem; padding: 0.9rem 0.95rem; border-radius: 14px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); }
       .radar-card span { color: var(--muted); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; }
       .radar-card strong { font-size: clamp(1.05rem, 2vw, 1.35rem); line-height: 1.15; word-break: keep-all; overflow-wrap: normal; }
       .trend-chart-grid { grid-template-columns: 1fr !important; }
       .calc-inputs { display: flex; gap: 0.85rem; margin-bottom: 1.1rem; }
       .calc-input-group { display: flex; flex-direction: column; gap: 0.45rem; flex: 1; min-width: 0; }
       .calc-input-group label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-      input[type="number"] {
-        width: 100%;
-        padding: 0.95rem 1rem;
-        border-radius: 14px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(255, 255, 255, 0.04);
-        color: var(--text);
-        font-size: 1rem;
-        outline: none;
-        box-sizing: border-box;
-        transition: border-color 0.2s;
-      }
+      input[type="number"] { width: 100%; padding: 0.95rem 1rem; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.04); color: var(--text); font-size: 1rem; outline: none; box-sizing: border-box; transition: border-color 0.2s; }
       input[type="number"]:focus { border-color: var(--accent); }
-      .calc-select {
-        padding: 0.95rem 1rem;
-        border-radius: 14px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(14, 28, 39, 0.95);
-        color: var(--text);
-        font-size: 1rem;
-        cursor: pointer;
-        outline: none;
-        transition: border-color 0.2s;
-        box-sizing: border-box;
-      }
+      .calc-select { padding: 0.95rem 1rem; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(14, 28, 39, 0.95); color: var(--text); font-size: 1rem; cursor: pointer; outline: none; transition: border-color 0.2s; box-sizing: border-box; }
       .calc-select:focus { border-color: var(--accent); }
-      @media (max-width: 1120px) {
-        .dashboard-main { grid-template-columns: 1fr; }
-        .status-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      }
-      @media (max-width: 920px) {
-        .resource-grid { grid-template-columns: 1fr; }
-        .radar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      }
-      @media (max-width: 640px) {
-        .brand-lockup { gap: 0.85rem; }
-        .brand-logo { width: 58px; height: 58px; }
-        .brand-subtitle { font-size: 0.92rem; }
-        .status-overview-grid,
-        .radar-grid { grid-template-columns: 1fr; }
-        .status-overview-card { min-height: auto; }
-        .calc-usdt-week-span { grid-column: span 1 !important; }
-      }
+      @media (max-width: 1120px) { .dashboard-main { grid-template-columns: 1fr; } .status-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+      @media (max-width: 920px) { .resource-grid { grid-template-columns: 1fr; } .radar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+      @media (max-width: 640px) { .brand-lockup { gap: 0.85rem; } .brand-logo { width: 58px; height: 58px; } .brand-subtitle { font-size: 0.92rem; } .status-overview-grid, .radar-grid { grid-template-columns: 1fr; } .status-overview-card { min-height: auto; } }
     </style>
   </head>
   <body data-page="dashboard">
@@ -187,7 +84,7 @@
             <p class="muted">Public PEPEPOW mining through the Stratum endpoint below.</p>
             <div class="quick-facts">
               <div><span>Username</span><strong><a href="/connect.html">PEPEPOW wallet address</a></strong></div>
-              <div><span>Stratum</span><strong>pool.pepepow.net:39333</strong></div>
+              <div><span>Stratum</span><strong>pool.pepepow.net:39333</strong><a class="quick-guide-link" href="/connect.html">Open connection guide →</a></div>
               <div><span>Payments</span><strong>Recorded completed payments</strong></div>
             </div>
           </div>
@@ -235,12 +132,16 @@
                   </select>
                 </div>
               </div>
-              <div class="metric-grid">
-                <div><span>PEPEW / Hour</span><strong id="calc-pepew-hour">-</strong></div>
-                <div><span>PEPEW / Day</span><strong id="calc-pepew-day">-</strong></div>
-                <div><span>PEPEW / Week</span><strong id="calc-pepew-week">-</strong></div>
-                <div><span>USDT / Day</span><strong id="calc-usdt-day">-</strong></div>
-                <div class="calc-usdt-week-span" style="grid-column: span 2;"><span>USDT / Week</span><strong id="calc-usdt-week">-</strong></div>
+              <div class="calc-results">
+                <div class="calc-pepew-stack">
+                  <div><span>PEPEW / Hour</span><strong id="calc-pepew-hour">-</strong></div>
+                  <div><span>PEPEW / Day</span><strong id="calc-pepew-day">-</strong></div>
+                  <div><span>PEPEW / Week</span><strong id="calc-pepew-week">-</strong></div>
+                </div>
+                <div class="calc-usdt-row">
+                  <div><span>USDT / Day</span><strong id="calc-usdt-day">-</strong></div>
+                  <div><span>USDT / Week</span><strong id="calc-usdt-week">-</strong></div>
+                </div>
               </div>
               <p class="muted small-gap" style="font-size: 0.8rem; margin-top: 0.9rem; line-height: 1.35;">Estimate only. Actual rewards vary by pool luck and network hashrate.</p>
             </section>
@@ -263,34 +164,10 @@
           <p class="eyebrow">Operational status</p>
           <h3 id="pool-status-overview-title">Pool connection, blocks, and payments</h3>
           <div class="status-overview-grid">
-            <article class="status-overview-card">
-              <span>Mining connection</span>
-              <strong>Ready for miners</strong>
-              <div class="status-marker is-ok">Online Stratum</div>
-              <div class="status-endpoint-box"><span>Endpoint</span><code>pool.pepepow.net:39333</code></div>
-              <a class="status-card-link" href="/connect.html">Connection guide →</a>
-            </article>
-            <article class="status-overview-card">
-              <span>Public data</span>
-              <strong>API snapshots</strong>
-              <div class="status-marker is-ok">Read-only</div>
-              <p>Dashboard data is served from summarized public API snapshots.</p>
-              <a class="status-card-link" href="/api.html">API docs →</a>
-            </article>
-            <article class="status-overview-card">
-              <span>Block submit</span>
-              <strong>Operator-controlled</strong>
-              <div class="status-marker is-guarded">Guarded</div>
-              <p>Public pages show observations only.</p>
-              <a class="status-card-link" href="/blocks.html">Blocks →</a>
-            </article>
-            <article class="status-overview-card">
-              <span>Payments</span>
-              <strong>Recorded payments</strong>
-              <div class="status-marker is-guarded">Completed records</div>
-              <p>No public balance or payout controls.</p>
-              <a class="status-card-link" href="/payments.html">Payments →</a>
-            </article>
+            <article class="status-overview-card"><span>Mining connection</span><strong>Ready for miners</strong><div class="status-marker is-ok">Online Stratum</div><div class="status-endpoint-box"><span>Endpoint</span><code>pool.pepepow.net:39333</code></div></article>
+            <article class="status-overview-card"><span>Public data</span><strong>API snapshots</strong><div class="status-marker is-ok">Read-only</div><p>Dashboard data is served from summarized public API snapshots.</p><a class="status-card-link" href="/api.html">API docs →</a></article>
+            <article class="status-overview-card"><span>Block submit</span><strong>Operator-controlled</strong><div class="status-marker is-guarded">Guarded</div><p>Public pages show observations only.</p><a class="status-card-link" href="/blocks.html">Blocks →</a></article>
+            <article class="status-overview-card"><span>Payments</span><strong>Recorded payments</strong><div class="status-marker is-guarded">Completed records</div><p>No public balance or payout controls.</p><a class="status-card-link" href="/payments.html">Payments →</a></article>
           </div>
         </section>
 
@@ -315,18 +192,6 @@
         </section>
 
         <section class="panel">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h3 style="margin: 0;">Connect</h3>
-            <button class="button" id="copy-stratum-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Endpoint</button>
-          </div>
-          <div class="callout" style="margin-top: 0;">
-            <p class="muted">Miner-facing Stratum endpoint</p>
-            <code id="stratum-endpoint">stratum+tcp://pool.pepepow.net:39333</code>
-          </div>
-          <a class="button" href="/connect.html">Open connection guide</a>
-        </section>
-
-        <section class="panel">
           <h3>Recent Blocks</h3>
           <div id="recent-blocks" class="list-state">Loading blocks...</div>
         </section>
@@ -338,7 +203,7 @@
       </main>
     </div>
 
-    <script src="/assets/hashrate-trend.js?v=2"></script>
+    <script src="/assets/hashrate-trend.js?v=3"></script>
     <script src="/assets/app.js?v=9"></script>
     <script>
       document.addEventListener("DOMContentLoaded", function () {
@@ -350,9 +215,7 @@
             if (!response.ok) return;
             const data = await response.json();
             const items = Array.isArray(data.items) ? data.items : [];
-            const block = items.find(function (item) {
-              return item && (item.foundAt || item.time || item.timestamp || item.height);
-            });
+            const block = items.find(function (item) { return item && (item.foundAt || item.time || item.timestamp || item.height); });
             if (!block) return;
             const value = block.foundAt || block.time || block.timestamp;
             if (value) {
@@ -361,9 +224,7 @@
             } else if (block.height !== undefined && block.height !== null) {
               node.textContent = "Height " + String(block.height);
             }
-          } catch (_error) {
-            // Keep existing value.
-          }
+          } catch (_error) {}
         }, 800);
       });
     </script>
