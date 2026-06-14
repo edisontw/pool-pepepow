@@ -3,52 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PEPEPOW Lab Pool API</title>
+    <title>API - PEPEPOW Lab Pool</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="stylesheet" href="/assets/styles.css?v=6">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=1">
     <style>
-      .topbar .brand-lockup {
-        align-items: center;
-        gap: 18px;
-      }
-
-      .topbar .brand-lockup .brand-logo {
-        width: 72px !important;
-        height: 72px !important;
-        min-width: 72px !important;
-        max-width: 72px !important;
-        flex: 0 0 72px;
-        object-fit: contain;
-      }
-
-      .brand-title {
-        min-width: 0;
-      }
-
-      .brand-title h1 {
-        margin: 0;
-      }
-
-      .brand-subtitle {
-        margin: 10px 0 0;
-        max-width: 680px;
-        color: rgba(235, 245, 255, 0.72);
-        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
-        line-height: 1.45;
-      }
-
-      @media (max-width: 640px) {
-        .topbar .brand-lockup .brand-logo {
-          width: 58px !important;
-          height: 58px !important;
-          min-width: 58px !important;
-          max-width: 58px !important;
-          flex-basis: 58px;
-        }
-      }
+      .topbar .brand-lockup { align-items: center; gap: 18px; }
+      .topbar .brand-lockup .brand-logo { width: 72px !important; height: 72px !important; min-width: 72px !important; max-width: 72px !important; flex: 0 0 72px; object-fit: contain; }
+      .brand-title { min-width: 0; }
+      .brand-title h1 { margin: 0; }
+      .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
+      @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
   <body data-page="api">
@@ -58,8 +26,8 @@
           <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="72" height="72">
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
-            <h1>Pool API</h1>
-            <p class="brand-subtitle">Read-only public endpoints for pool status, miners, blocks, payments, and transparency tools.</p>
+            <h1>API</h1>
+            <p class="brand-subtitle">Read-only pool, network, miner, block, and payment endpoints.</p>
           </div>
         </div>
         <nav class="nav">
@@ -74,29 +42,22 @@
 
       <main class="page-single">
         <section class="panel">
-          <h2>Public API</h2>
-          <p class="muted">
-            The PEPEPOW Lab Pool API provides read-only status, network, block, payment, and miner summary data for public integrations.
-          </p>
-          <div class="callout">
-            <p class="muted">Base URL</p>
-            <code>https://pool.pepepow.net/api</code>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Public API</p>
+              <h2>Base URL</h2>
+              <p>Use these endpoints for dashboards, scripts, and pool listing integrations.</p>
+            </div>
           </div>
+          <div class="callout"><code>https://pool.pepepow.net/api</code></div>
         </section>
 
         <section class="panel">
-          <h2>Quick external integration</h2>
-          <p class="muted">
-            Use the stats endpoint for MiningPoolStats and external pool listing sites. Use the status endpoint only when a parser expects a zpool/YiiMP-style object. Detailed endpoints are also available for dashboards and simple scripts.
-          </p>
-          <div class="kv-list">
-            <div><span>Main stats API</span><strong><code>https://pool.pepepow.net/api/stats</code></strong></div>
-            <div><span>Secondary compatibility API</span><strong><code>https://pool.pepepow.net/api/status</code></strong></div>
-            <div><span>Pool summary</span><strong><code>https://pool.pepepow.net/api/pool/summary</code></strong></div>
-            <div><span>Network summary</span><strong><code>https://pool.pepepow.net/api/network/summary</code></strong></div>
-            <div><span>Blocks</span><strong><code>https://pool.pepepow.net/api/blocks</code></strong></div>
-            <div><span>Payments</span><strong><code>https://pool.pepepow.net/api/payments</code></strong></div>
-            <div><span>Accepted candidates</span><strong><code>https://pool.pepepow.net/api/accepted-candidates</code></strong></div>
+          <h2>Quick integration</h2>
+          <div class="compact-grid">
+            <div><span>Main listing</span><strong><code>/api/stats</code></strong></div>
+            <div><span>Compatibility</span><strong><code>/api/status</code></strong></div>
+            <div><span>Health</span><strong><code>/api/health</code></strong></div>
           </div>
           <pre class="code-block">curl -s https://pool.pepepow.net/api/stats | jq
 curl -s https://pool.pepepow.net/api/status | jq</pre>
@@ -105,93 +66,27 @@ curl -s https://pool.pepepow.net/api/status | jq</pre>
         <section class="panel">
           <h2>Endpoints</h2>
           <div class="endpoint-grid">
-            <article class="item-card">
-              <h3>GET /api/stats</h3>
-              <p class="muted">Purpose: Return a NOMP-like pool stats format for MiningPoolStats and external pool listing sites.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/stats</code></p>
-              <pre class="code-block">curl -s https://pool.pepepow.net/api/stats | jq</pre>
-              <p class="muted">Expected use: main public stats API for pool listings. Includes global workers and hashrate, algo summary, pool summary, worker summary, block counts, and payment totals where available.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/status</h3>
-              <p class="muted">Purpose: Return a minimal zpool/YiiMP-like status object for compatibility fallback.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/status</code></p>
-              <pre class="code-block">curl -s https://pool.pepepow.net/api/status | jq</pre>
-              <p class="muted">Expected use: secondary compatibility endpoint only. It does not include fake profitability or rental fields.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/health</h3>
-              <p class="muted">Purpose: Check whether the public API is reachable. This is a health check only, not the main stats API.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/health</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/health</pre>
-              <p class="muted">Expected use: uptime checks and simple service monitoring.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/pool/summary</h3>
-              <p class="muted">Purpose: Read public pool status, miner counts, share-rate estimate, and recent pool activity.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/pool/summary</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/pool/summary</pre>
-              <p class="muted">Expected use: pool dashboards and status widgets.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/network/summary</h3>
-              <p class="muted">Purpose: Read public network height, difficulty, and sync summary shown by the website.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/network/summary</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/network/summary</pre>
-              <p class="muted">Expected use: lightweight network status displays.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/blocks</h3>
-              <p class="muted">Purpose: List recent public block and pool candidate observations.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/blocks</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/blocks</pre>
-              <p class="muted">Expected use: recent block tables and community status pages.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/payments</h3>
-              <p class="muted">Purpose: List public payment records after operator review and recording.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/payments</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/payments</pre>
-              <p class="muted">Expected use: payment history views and miner-facing transparency tools.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/accepted-candidates</h3>
-              <p class="muted">Purpose: List pool-found candidates that have been matched against public chain observations.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/accepted-candidates</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/accepted-candidates</pre>
-              <p class="muted">Expected use: public candidate tracking and pool block discovery views.</p>
-            </article>
-
-            <article class="item-card">
-              <h3>GET /api/miner/&lt;wallet&gt;</h3>
-              <p class="muted">Purpose: Read public summary data for one miner wallet.</p>
-              <p><strong>Full URL:</strong> <code>https://pool.pepepow.net/api/miner/&lt;wallet&gt;</code></p>
-              <pre class="code-block">curl -fsS https://pool.pepepow.net/api/miner/YOUR_PEPEPOW_WALLET</pre>
-              <p class="muted">Expected use: miner lookup pages, personal status checks, and simple worker monitoring.</p>
-            </article>
+            <article class="item-card"><h3>GET /api/stats</h3><p class="muted">MiningPoolStats-style public pool summary.</p><pre class="code-block">curl -s https://pool.pepepow.net/api/stats | jq</pre></article>
+            <article class="item-card"><h3>GET /api/status</h3><p class="muted">Minimal zpool/YiiMP-style compatibility object.</p><pre class="code-block">curl -s https://pool.pepepow.net/api/status | jq</pre></article>
+            <article class="item-card"><h3>GET /api/health</h3><p class="muted">API health and snapshot freshness.</p><pre class="code-block">curl -fsS https://pool.pepepow.net/api/health</pre></article>
+            <article class="item-card"><h3>GET /api/pool/summary</h3><p class="muted">Pool status, miner count, worker count, and pool-side hashrate estimate.</p><pre class="code-block">curl -fsS https://pool.pepepow.net/api/pool/summary</pre></article>
+            <article class="item-card"><h3>GET /api/network/summary</h3><p class="muted">Network height, difficulty, hashrate, and sync status.</p><pre class="code-block">curl -fsS https://pool.pepepow.net/api/network/summary</pre></article>
+            <article class="item-card"><h3>GET /api/blocks</h3><p class="muted">Recent public block records.</p><pre class="code-block">curl -fsS https://pool.pepepow.net/api/blocks</pre></article>
+            <article class="item-card"><h3>GET /api/payments</h3><p class="muted">Recorded completed payment history.</p><pre class="code-block">curl -fsS https://pool.pepepow.net/api/payments</pre></article>
+            <article class="item-card"><h3>GET /api/miner/&lt;wallet&gt;</h3><p class="muted">Miner wallet activity, workers, and recorded payments.</p><pre class="code-block">curl -fsS https://pool.pepepow.net/api/miner/YOUR_PEPEPOW_WALLET</pre></article>
           </div>
         </section>
 
-        <section class="panel">
-          <h2>Safety and boundaries</h2>
+        <section class="panel compact-panel">
+          <h2>Boundaries</h2>
           <ul class="text-list">
-            <li>These endpoints are read-only and intended for website and community status integrations.</li>
-            <li>Stats responses are derived from existing pool snapshots.</li>
-            <li>They do not expose private node services, wallet services, submit controls, admin controls, or runtime JSONL files.</li>
-            <li>Do not depend on private operational details; only use the public JSON fields your integration needs.</li>
-            <li>Payment data is informational and reflects records visible through the public pool website.</li>
-            <li>Use reasonable polling intervals so community dashboards do not overload the pool website.</li>
+            <li>Read-only public data only.</li>
+            <li>No daemon RPC, wallet RPC, submit controls, admin controls, or runtime JSONL access.</li>
+            <li>Use reasonable polling intervals for community integrations.</li>
           </ul>
         </section>
       </main>
     </div>
-    <script src="/assets/app.js"></script>
+    <script src="/assets/app.js?v=9"></script>
   </body>
 </html>
