@@ -1,5 +1,6 @@
 (function () {
-  const STORAGE_KEY = "pepepow_pool_hashrate_history_v1";
+  const STORAGE_KEY = "pepepow_hashrate_history_v2";
+  const LEGACY_POOL_KEY = "pepepow_pool_hashrate_history_v1";
   const MAX_AGE_MS = 24 * 60 * 60 * 1000;
   const SAMPLE_INTERVAL_MS = 60 * 1000;
   const MAX_POINTS = 1440;
@@ -27,7 +28,13 @@
     return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${unit}`;
   }
 
-  function readHashrateHps(pool) {
+  function formatTimeLabel(ms) {
+    const date = new Date(ms);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function readPoolHashrateHps(pool) {
     if (!pool || typeof pool !== "object") return null;
     const keys = [
       "poolHashrate", "pool_hashrate", "hashrate", "estimatedHashrate",
@@ -58,26 +65,41 @@
     return null;
   }
 
-  function loadHistory() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (_error) {
-      return [];
-    }
+  function readNetworkHashrateHps(network) {
+    if (!network || typeof network !== "object") return null;
+    const value = network.networkHashrate ?? network.network_hashrate ?? network.hashrate;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
 
-  function saveHistory(points) {
+  function loadHistory() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(points));
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      if (parsed && Array.isArray(parsed.pool) && Array.isArray(parsed.network)) return parsed;
+    } catch (_error) {
+      // Fall through to legacy import.
+    }
+
+    let legacyPool = [];
+    try {
+      const legacy = JSON.parse(localStorage.getItem(LEGACY_POOL_KEY) || "[]");
+      legacyPool = Array.isArray(legacy) ? legacy : [];
+    } catch (_error) {
+      legacyPool = [];
+    }
+    return { pool: legacyPool, network: [] };
+  }
+
+  function saveHistory(history) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
     } catch (_error) {
       // Ignore storage quota/private mode failures.
     }
   }
 
-  function normalizeHistory(points) {
+  function normalizeSeries(points) {
     const cutoff = Date.now() - MAX_AGE_MS;
-    return points
+    return (Array.isArray(points) ? points : [])
       .filter((point) => point && typeof point.t === "number" && typeof point.h === "number")
       .filter((point) => Number.isFinite(point.t) && Number.isFinite(point.h) && point.t >= cutoff)
       .sort((a, b) => a.t - b.t)
@@ -85,11 +107,11 @@
   }
 
   function appendPoint(points, hashrate) {
+    const normalized = normalizeSeries(points);
     if (typeof hashrate !== "number" || !Number.isFinite(hashrate) || hashrate < 0) {
-      return normalizeHistory(points);
+      return normalized;
     }
     const now = Date.now();
-    const normalized = normalizeHistory(points);
     const last = normalized[normalized.length - 1];
     if (last && now - last.t < SAMPLE_INTERVAL_MS * 0.75) {
       last.t = now;
@@ -97,58 +119,94 @@
       return normalized;
     }
     normalized.push({ t: now, h: hashrate });
-    return normalizeHistory(normalized);
+    return normalizeSeries(normalized);
   }
 
-  function renderTrend(points, statusText) {
-    const container = document.getElementById("hashrate-trend-chart");
+  function normalizeHistory(history) {
+    return {
+      pool: normalizeSeries(history.pool),
+      network: normalizeSeries(history.network)
+    };
+  }
+
+  function renderChart(containerId, title, points, statusText) {
+    const container = document.getElementById(containerId);
     if (!container) return;
 
     if (!Array.isArray(points) || points.length === 0) {
       container.innerHTML = `
         <div class="trend-empty">
-          <strong>No hashrate samples yet.</strong>
-          <p class="muted">This browser stores lightweight one-minute samples while the page is open.</p>
+          <strong>${escapeHtml(title)}</strong>
+          <p class="muted">Waiting for the first lightweight one-minute sample.</p>
         </div>`;
       return;
     }
 
     const width = 640;
-    const height = 210;
-    const pad = 28;
+    const height = 240;
+    const padLeft = 70;
+    const padRight = 18;
+    const padTop = 20;
+    const padBottom = 40;
     const values = points.map((point) => point.h);
-    const min = Math.min(...values, 0);
-    const max = Math.max(...values, 1);
-    const span = Math.max(max - min, 1);
+    const rawMin = Math.min(...values);
+    const rawMax = Math.max(...values);
+    const max = Math.max(rawMax, 1);
+    const min = Math.max(0, rawMin === rawMax ? rawMin * 0.9 : rawMin);
+    const span = Math.max(max - min, max * 0.1, 1);
     const firstT = points[0].t;
     const lastT = points[points.length - 1].t;
     const timeSpan = Math.max(lastT - firstT, 1);
+    const chartW = width - padLeft - padRight;
+    const chartH = height - padTop - padBottom;
 
     const xy = points.map((point) => {
-      const x = pad + ((point.t - firstT) / timeSpan) * (width - pad * 2);
-      const y = height - pad - ((point.h - min) / span) * (height - pad * 2);
+      const x = padLeft + ((point.t - firstT) / timeSpan) * chartW;
+      const y = padTop + (1 - ((point.h - min) / span)) * chartH;
       return { x, y };
     });
 
     const path = xy.map((point, idx) => `${idx === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
-    const fillPath = `${path} L${xy[xy.length - 1].x.toFixed(1)} ${height - pad} L${xy[0].x.toFixed(1)} ${height - pad} Z`;
+    const fillPath = `${path} L${xy[xy.length - 1].x.toFixed(1)} ${height - padBottom} L${xy[0].x.toFixed(1)} ${height - padBottom} Z`;
     const latest = points[points.length - 1];
     const rangeMinutes = Math.max(1, Math.round((lastT - firstT) / 60000));
-    const label = statusText || `${points.length} sample${points.length === 1 ? "" : "s"} / ${rangeMinutes} min`;
+    const sampleLabel = statusText || `${points.length} / ${rangeMinutes} min`;
+    const mid = min + span / 2;
+    const yTop = padTop;
+    const yMid = padTop + chartH / 2;
+    const yBottom = height - padBottom;
+    const xMid = padLeft + chartW / 2;
 
     container.innerHTML = `
+      <div class="trend-title-row">
+        <h4>${escapeHtml(title)}</h4>
+        <span>${escapeHtml(sampleLabel)}</span>
+      </div>
       <div class="trend-meta">
         <div><span>Latest</span><strong>${escapeHtml(formatHashrate(latest.h))}</strong></div>
         <div><span>Peak</span><strong>${escapeHtml(formatHashrate(max))}</strong></div>
-        <div><span>Samples</span><strong>${escapeHtml(label)}</strong></div>
+        <div><span>Low</span><strong>${escapeHtml(formatHashrate(rawMin))}</strong></div>
       </div>
-      <svg class="hashrate-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Pool hashrate trend chart">
-        <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" class="trend-axis"></line>
-        <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" class="trend-axis"></line>
+      <svg class="hashrate-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)} chart">
+        <line x1="${padLeft}" y1="${yTop}" x2="${width - padRight}" y2="${yTop}" class="trend-grid-line"></line>
+        <line x1="${padLeft}" y1="${yMid}" x2="${width - padRight}" y2="${yMid}" class="trend-grid-line"></line>
+        <line x1="${padLeft}" y1="${yBottom}" x2="${width - padRight}" y2="${yBottom}" class="trend-axis"></line>
+        <line x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${yBottom}" class="trend-axis"></line>
+        <text x="${padLeft - 8}" y="${yTop + 4}" text-anchor="end" class="trend-axis-label">${escapeHtml(formatHashrate(max))}</text>
+        <text x="${padLeft - 8}" y="${yMid + 4}" text-anchor="end" class="trend-axis-label">${escapeHtml(formatHashrate(mid))}</text>
+        <text x="${padLeft - 8}" y="${yBottom + 4}" text-anchor="end" class="trend-axis-label">${escapeHtml(formatHashrate(min))}</text>
+        <text x="${padLeft}" y="${height - 12}" text-anchor="start" class="trend-axis-label">${escapeHtml(formatTimeLabel(firstT))}</text>
+        <text x="${xMid}" y="${height - 12}" text-anchor="middle" class="trend-axis-label">${escapeHtml(formatTimeLabel(firstT + timeSpan / 2))}</text>
+        <text x="${width - padRight}" y="${height - 12}" text-anchor="end" class="trend-axis-label">${escapeHtml(formatTimeLabel(lastT))}</text>
         <path d="${fillPath}" class="trend-fill"></path>
         <path d="${path}" class="trend-line"></path>
-      </svg>
-      <p class="muted trend-note">Client-side retained samples only. No raw logs are scanned and no backend history job is required.</p>`;
+      </svg>`;
+  }
+
+  function renderAll(history, statusText) {
+    renderChart("pool-hashrate-trend-chart", "Pool Hashrate", history.pool, statusText);
+    renderChart("network-hashrate-trend-chart", "Network Hashrate", history.network, statusText);
+    renderChart("hashrate-trend-chart", "Pool Hashrate", history.pool, statusText);
   }
 
   function installStyles() {
@@ -157,25 +215,31 @@
     style.id = "hashrate-trend-styles";
     style.textContent = `
       .hashrate-trend-panel { grid-column: 1 / -1; }
-      .trend-chart { display: grid; gap: 0.9rem; }
-      .trend-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
-      .trend-meta div { padding: 0.75rem; border-radius: 12px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.07); }
-      .trend-meta span { display: block; color: var(--muted); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
-      .trend-meta strong { display: block; margin-top: 0.2rem; font-size: 1rem; }
-      .hashrate-svg { width: 100%; min-height: 190px; border-radius: 14px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); }
-      .trend-axis { stroke: rgba(255,255,255,0.16); stroke-width: 1; }
+      .trend-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+      .trend-chart { display: grid; gap: 0.75rem; min-width: 0; }
+      .trend-title-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+      .trend-title-row h4 { margin: 0; font-size: 1rem; }
+      .trend-title-row span { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+      .trend-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; }
+      .trend-meta div { padding: 0.65rem; border-radius: 12px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.07); }
+      .trend-meta span { display: block; color: var(--muted); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .trend-meta strong { display: block; margin-top: 0.2rem; font-size: 0.92rem; }
+      .hashrate-svg { width: 100%; min-height: 210px; border-radius: 14px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); }
+      .trend-axis, .trend-grid-line { stroke: rgba(255,255,255,0.16); stroke-width: 1; }
+      .trend-grid-line { stroke-dasharray: 4 5; opacity: 0.7; }
+      .trend-axis-label { fill: rgba(235,245,255,0.62); font-size: 11px; }
       .trend-fill { fill: rgba(55,196,255,0.11); }
       .trend-line { fill: none; stroke: rgba(55,196,255,0.95); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
-      .trend-note { font-size: 0.82rem; margin: 0; }
       .trend-empty { padding: 1rem; border-radius: 14px; background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.16); }
+      @media (max-width: 920px) { .trend-chart-grid { grid-template-columns: 1fr; } }
       @media (max-width: 640px) { .trend-meta { grid-template-columns: 1fr; } }
     `;
     document.head.appendChild(style);
   }
 
-  async function fetchPoolSummary(apiBaseUrl) {
-    const response = await fetch(`${apiBaseUrl}/pool/summary`, { cache: "no-store" });
-    if (!response.ok) throw new Error("pool summary unavailable");
+  async function fetchJson(url) {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error("request failed");
     return response.json();
   }
 
@@ -191,23 +255,27 @@
   }
 
   async function sampleAndRender(apiBaseUrl) {
-    let history = loadHistory();
+    let history = normalizeHistory(loadHistory());
     try {
-      const pool = await fetchPoolSummary(apiBaseUrl);
-      history = appendPoint(history, readHashrateHps(pool));
+      const [pool, network] = await Promise.all([
+        fetchJson(`${apiBaseUrl}/pool/summary`),
+        fetchJson(`${apiBaseUrl}/network/summary`)
+      ]);
+      history.pool = appendPoint(history.pool, readPoolHashrateHps(pool));
+      history.network = appendPoint(history.network, readNetworkHashrateHps(network));
+      history = normalizeHistory(history);
       saveHistory(history);
-      renderTrend(history);
+      renderAll(history);
     } catch (_error) {
-      renderTrend(normalizeHistory(history), "offline cache");
+      renderAll(history, "offline cache");
     }
   }
 
   document.addEventListener("DOMContentLoaded", async () => {
-    const container = document.getElementById("hashrate-trend-chart");
-    if (!container) return;
+    if (!document.getElementById("pool-hashrate-trend-chart") && !document.getElementById("network-hashrate-trend-chart") && !document.getElementById("hashrate-trend-chart")) return;
     installStyles();
     const config = await loadRuntimeConfig();
-    renderTrend(normalizeHistory(loadHistory()), "loading");
+    renderAll(normalizeHistory(loadHistory()), "loading");
     await sampleAndRender(config.apiBaseUrl || "/api");
     window.setInterval(() => sampleAndRender(config.apiBaseUrl || "/api"), SAMPLE_INTERVAL_MS);
   });
