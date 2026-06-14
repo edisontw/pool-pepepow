@@ -3,6 +3,7 @@
   const MAX_MINER_LOOKUPS = 20;
   let cachedLeaderboardItems = [];
   let cachedShareLabel = "accepted shares";
+  let cachedLastConfirmedBlockText = "";
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -162,6 +163,23 @@
     });
   }
 
+  function setLastConfirmedBlockText(value) {
+    if (!value || value === "-") return;
+    const node = document.getElementById("last-block-time");
+    if (!node) return;
+    cachedLastConfirmedBlockText = value;
+    node.textContent = value;
+    node.dataset.poolConfirmedBlock = value;
+  }
+
+  function restoreLastConfirmedBlockText() {
+    const node = document.getElementById("last-block-time");
+    if (!node || !cachedLastConfirmedBlockText) return;
+    if (!node.textContent || node.textContent.trim() === "-") {
+      node.textContent = cachedLastConfirmedBlockText;
+    }
+  }
+
   async function refreshLastConfirmedBlock() {
     if (document.body.dataset.page !== "dashboard") return;
     const node = document.getElementById("last-block-time");
@@ -170,14 +188,24 @@
       const payload = await fetchJson("/api/accepted-candidates");
       const confirmed = confirmedCandidateItems(payload)
         .sort((a, b) => numeric(b.matchedHeight) - numeric(a.matchedHeight));
-      if (confirmed.length === 0) return;
+      if (confirmed.length === 0) {
+        restoreLastConfirmedBlockText();
+        return;
+      }
       const latest = confirmed[0];
       const height = numeric(latest.matchedHeight);
       const time = formatDate(latest.submitTimestamp);
-      node.textContent = height > 0 ? `${formatNumber(height)} · ${time}` : time;
+      setLastConfirmedBlockText(height > 0 ? `${formatNumber(height)} · ${time}` : time);
     } catch (_error) {
-      // Keep app.js value instead of replacing it with "-".
+      restoreLastConfirmedBlockText();
     }
+  }
+
+  function installLastConfirmedBlockGuard() {
+    const node = document.getElementById("last-block-time");
+    if (!node) return;
+    const observer = new MutationObserver(() => restoreLastConfirmedBlockText());
+    observer.observe(node, { childList: true, characterData: true, subtree: true });
   }
 
   async function refresh() {
@@ -188,7 +216,9 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    installLastConfirmedBlockGuard();
     refresh();
+    window.setTimeout(refreshLastConfirmedBlock, 1500);
     window.setInterval(refresh, REFRESH_MS);
   });
 })();
