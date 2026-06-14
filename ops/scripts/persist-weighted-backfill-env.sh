@@ -22,7 +22,6 @@ chmod 600 "${LAUNCH_ENV_FILE}"
 
 python3 - "${LAUNCH_ENV_FILE}" "${BACKFILL_ENABLED}" "${BACKFILL_WEIGHTS_JSON}" "${BACKFILL_REASON}" "${BACKFILL_MIN_HEIGHT}" "${BACKFILL_MAX_HEIGHT}" <<'PY'
 import json
-import shlex
 import sys
 from pathlib import Path
 
@@ -47,7 +46,7 @@ for wallet, weight in weights.items():
 
 updates = {
     "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED": enabled,
-    "PEPEPOW_OPERATOR_BACKFILL_WEIGHTS_JSON": weights_json,
+    "PEPEPOW_OPERATOR_BACKFILL_WEIGHTS_JSON": json.dumps(weights, separators=(",", ":")),
     "PEPEPOW_OPERATOR_BACKFILL_REASON": reason,
     "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT": min_height,
     "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT": max_height,
@@ -66,7 +65,7 @@ for line in lines:
     out.append(line)
 
 for key, value in updates.items():
-    out.append(f"{key}={shlex.quote(str(value))}")
+    out.append(f"{key}={value}")
 
 path.write_text("\n".join(out) + "\n", encoding="utf-8")
 print(f"updated: {path}")
