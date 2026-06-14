@@ -15,33 +15,36 @@
       .brand-title { min-width: 0; }
       .brand-title h1 { margin-bottom: 0; }
       .brand-subtitle {
-        margin: 0.65rem 0 0;
-        max-width: 620px;
+        margin: 0.55rem 0 0;
+        max-width: 520px;
         color: rgba(235, 245, 255, 0.72);
-        font-size: clamp(0.95rem, 1.8vw, 1.12rem);
-        line-height: 1.45;
+        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
+        line-height: 1.4;
       }
-      .page-grid > .panel.status-overview,
-      .page-grid > .panel.pool-about,
-      .page-grid > .panel.mining-outlook { grid-column: 1 / -1 !important; }
-      .pool-about-grid {
+      .page-grid > .panel.status-overview { grid-column: 1 / -1 !important; }
+      .hero-copy .muted { max-width: 720px; }
+      .dashboard-main {
+        grid-column: 1 / -1;
         display: grid;
-        grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+        grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
         gap: 1rem;
         align-items: start;
       }
-      .resource-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+      .dashboard-left,
+      .dashboard-right { display: grid; gap: 1rem; min-width: 0; }
+      .dashboard-main > .panel { min-width: 0; }
+      .resource-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-top: 1rem; }
       .resource-card {
         display: grid;
         gap: 0.35rem;
-        padding: 0.85rem;
+        padding: 0.8rem;
         border-radius: 14px;
         background: rgba(255, 255, 255, 0.035);
         border: 1px solid rgba(255, 255, 255, 0.08);
       }
       .resource-card span {
         color: var(--muted);
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
@@ -49,9 +52,9 @@
       .status-overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem; }
       .status-overview-card {
         display: grid;
-        gap: 0.75rem;
+        gap: 0.65rem;
         align-content: start;
-        min-height: 11rem;
+        min-height: 10rem;
         padding: 1rem;
         border-radius: 14px;
         background: rgba(255, 255, 255, 0.035);
@@ -59,23 +62,23 @@
       }
       .status-overview-card span {
         color: var(--muted);
-        font-size: 0.82rem;
+        font-size: 0.78rem;
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
-      .status-overview-card strong { font-size: clamp(1.05rem, 1.8vw, 1.45rem); line-height: 1.15; }
-      .status-overview-card p { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.42; }
+      .status-overview-card strong { font-size: clamp(1.05rem, 1.8vw, 1.35rem); line-height: 1.15; }
+      .status-overview-card p { margin: 0; color: var(--muted); font-size: 0.86rem; line-height: 1.4; }
       .status-marker {
         display: inline-flex;
         align-items: center;
         width: fit-content;
         max-width: 100%;
-        padding: 0.42rem 0.7rem;
+        padding: 0.4rem 0.66rem;
         border-radius: 999px;
         border: 1px solid rgba(238, 245, 248, 0.2);
         background: rgba(238, 245, 248, 0.09);
         color: var(--text);
-        font-size: 0.82rem;
+        font-size: 0.78rem;
         font-weight: 800;
         line-height: 1;
         white-space: nowrap;
@@ -85,59 +88,34 @@
       .status-endpoint-box {
         display: grid;
         gap: 0.25rem;
-        padding: 0.68rem 0.75rem;
+        padding: 0.65rem 0.75rem;
         border-radius: 12px;
         border: 1px solid rgba(55, 196, 255, 0.22);
         background: rgba(55, 196, 255, 0.07);
       }
-      .status-endpoint-box span {
-        color: var(--muted);
-        font-size: 0.72rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-      .status-endpoint-box code {
-        display: block;
-        color: var(--text);
-        font-size: 0.82rem;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
-      }
+      .status-endpoint-box span { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .status-endpoint-box code { display: block; color: var(--text); font-size: 0.82rem; line-height: 1.35; overflow-wrap: anywhere; }
       .status-card-link { margin-top: auto; color: var(--accent-alt); font-size: 0.86rem; font-weight: 700; }
-      .radar-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.9rem; }
+      .radar-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
       .radar-card {
         display: flex;
         flex-direction: column;
         justify-content: space-between;
-        gap: 0.8rem;
-        padding: 0.95rem 1rem;
+        gap: 0.65rem;
+        padding: 0.9rem 0.95rem;
         border-radius: 14px;
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.06);
       }
-      .radar-card span {
-        color: var(--muted);
-        font-size: 0.82rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-      .radar-card strong {
-        font-size: clamp(1.05rem, 2vw, 1.45rem);
-        line-height: 1.15;
-        word-break: keep-all;
-        overflow-wrap: normal;
-      }
-      .calc-inputs { display: flex; gap: 0.85rem; margin-bottom: 1.25rem; }
+      .radar-card span { color: var(--muted); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .radar-card strong { font-size: clamp(1.05rem, 2vw, 1.35rem); line-height: 1.15; word-break: keep-all; overflow-wrap: normal; }
+      .trend-chart-grid { grid-template-columns: 1fr !important; }
+      .calc-inputs { display: flex; gap: 0.85rem; margin-bottom: 1.1rem; }
       .calc-input-group { display: flex; flex-direction: column; gap: 0.45rem; flex: 1; min-width: 0; }
-      .calc-input-group label {
-        font-size: 0.8rem;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
+      .calc-input-group label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
       input[type="number"] {
         width: 100%;
-        padding: 1rem 1.1rem;
+        padding: 0.95rem 1rem;
         border-radius: 14px;
         border: 1px solid rgba(255, 255, 255, 0.12);
         background: rgba(255, 255, 255, 0.04);
@@ -149,7 +127,7 @@
       }
       input[type="number"]:focus { border-color: var(--accent); }
       .calc-select {
-        padding: 1rem 1.1rem;
+        padding: 0.95rem 1rem;
         border-radius: 14px;
         border: 1px solid rgba(255, 255, 255, 0.12);
         background: rgba(14, 28, 39, 0.95);
@@ -161,11 +139,12 @@
         box-sizing: border-box;
       }
       .calc-select:focus { border-color: var(--accent); }
-      @media (max-width: 1180px) { .radar-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+      @media (max-width: 1120px) {
+        .dashboard-main { grid-template-columns: 1fr; }
+        .status-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
       @media (max-width: 920px) {
-        .status-overview-grid,
-        .resource-grid,
-        .pool-about-grid { grid-template-columns: 1fr; }
+        .resource-grid { grid-template-columns: 1fr; }
         .radar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
       @media (max-width: 640px) {
@@ -186,8 +165,8 @@
           <img class="brand-logo" src="/2025_PEPEW_Logo_HQ_128.png" alt="PEPEPOW logo" width="72" height="72">
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
-            <h1>Development-focused mining pool</h1>
-            <p class="brand-subtitle">Testing updated pool software, dashboard, API endpoints, monitoring, reward accounting, and transparency tools.</p>
+            <h1>Lab Pool</h1>
+            <p class="brand-subtitle">PEPEPOW mining test pool with public stats, miner lookup, and recorded payments.</p>
           </div>
         </div>
         <nav class="nav">
@@ -205,14 +184,11 @@
           <div class="hero-copy">
             <p class="eyebrow">Algorithm</p>
             <h2 id="algorithm">Loading...</h2>
-            <p class="muted">
-              Public PEPEPOW mining is available through the Stratum endpoint below.
-              This is an open-source, development-focused PEPEPOW pool for testing pool software, dashboards, API endpoints, monitoring, reward accounting, and transparency tools.
-            </p>
+            <p class="muted">Public PEPEPOW mining through the Stratum endpoint below.</p>
             <div class="quick-facts">
-              <div><span>How to mine</span><strong><a href="/connect.html">Use your PEPEPOW wallet as username</a></strong></div>
+              <div><span>Username</span><strong><a href="/connect.html">PEPEPOW wallet address</a></strong></div>
               <div><span>Stratum</span><strong>pool.pepepow.net:39333</strong></div>
-              <div><span>Payments</span><strong>Recorded payments after review or self-test completion</strong></div>
+              <div><span>Payments</span><strong>Recorded completed payments</strong></div>
             </div>
           </div>
           <div class="status-stack">
@@ -221,73 +197,67 @@
           </div>
         </section>
 
-        <section class="panel mining-outlook">
-          <p class="eyebrow">Mining Outlook</p>
-          <h3>PEPEPOW Mining Radar</h3>
-          <div class="radar-grid">
-            <div class="radar-card"><span>Network Hashrate</span><strong id="radar-network-hashrate">-</strong></div>
-            <div class="radar-card"><span>Pool Hashrate</span><strong id="radar-pool-hashrate">-</strong></div>
-            <div class="radar-card"><span>Pool Share of Network</span><strong id="radar-pool-share">-</strong></div>
-            <div class="radar-card"><span>Estimated Unseen Hashrate</span><strong id="radar-unseen-hashrate">-</strong></div>
-            <div class="radar-card"><span>Visibility Signal</span><strong id="radar-visibility-signal">-</strong></div>
-            <div class="radar-card"><span>Reward Variance</span><strong id="radar-reward-variance">-</strong></div>
+        <div class="dashboard-main">
+          <div class="dashboard-left">
+            <section class="panel mining-outlook">
+              <p class="eyebrow">Mining Outlook</p>
+              <h3>PEPEPOW Mining Radar</h3>
+              <div class="radar-grid">
+                <div class="radar-card"><span>Network Hashrate</span><strong id="radar-network-hashrate">-</strong></div>
+                <div class="radar-card"><span>Pool Hashrate</span><strong id="radar-pool-hashrate">-</strong></div>
+                <div class="radar-card"><span>Pool Share</span><strong id="radar-pool-share">-</strong></div>
+                <div class="radar-card"><span>Unseen Hashrate</span><strong id="radar-unseen-hashrate">-</strong></div>
+                <div class="radar-card"><span>Visibility</span><strong id="radar-visibility-signal">-</strong></div>
+                <div class="radar-card"><span>Variance</span><strong id="radar-reward-variance">-</strong></div>
+              </div>
+              <div class="trend-chart-grid" aria-label="Hashrate trend charts">
+                <div id="network-hashrate-trend-chart" class="trend-chart">Loading network hashrate trend...</div>
+                <div id="pool-hashrate-trend-chart" class="trend-chart">Loading pool hashrate trend...</div>
+              </div>
+            </section>
           </div>
-          <div class="trend-chart-grid" aria-label="Hashrate trend charts">
-            <div id="network-hashrate-trend-chart" class="trend-chart">Loading network hashrate trend...</div>
-            <div id="pool-hashrate-trend-chart" class="trend-chart">Loading pool hashrate trend...</div>
-          </div>
-        </section>
 
-        <section class="panel">
-          <p class="eyebrow">Calculator</p>
-          <h3>Mining Reward Calculator</h3>
-          <div class="calc-inputs">
-            <div class="calc-input-group" style="flex: 2;">
-              <label for="calc-hashrate">Your Hashrate</label>
-              <input type="number" id="calc-hashrate" value="100" min="0" step="any" placeholder="Enter hashrate...">
-            </div>
-            <div class="calc-input-group">
-              <label for="calc-unit">Unit</label>
-              <select id="calc-unit" class="calc-select">
-                <option value="H">H/s</option>
-                <option value="KH" selected>KH/s</option>
-                <option value="MH">MH/s</option>
-              </select>
-            </div>
-          </div>
-          <div class="metric-grid">
-            <div><span>Estimated PEPEW / Hour</span><strong id="calc-pepew-hour">-</strong></div>
-            <div><span>Estimated PEPEW / Day</span><strong id="calc-pepew-day">-</strong></div>
-            <div><span>Estimated PEPEW / Week</span><strong id="calc-pepew-week">-</strong></div>
-            <div><span>Estimated USDT / Day</span><strong id="calc-usdt-day">-</strong></div>
-            <div class="calc-usdt-week-span" style="grid-column: span 2;"><span>Estimated USDT / Week</span><strong id="calc-usdt-week">-</strong></div>
-          </div>
-          <p class="muted small-gap" style="font-size: 0.82rem; margin-top: 1rem; line-height: 1.4;">
-            * Estimate only. Actual rewards vary by pool luck, network hashrate, accepted rate, and payout rules.
-          </p>
-          <p class="muted small-gap" style="font-size: 0.82rem; margin-top: 0.5rem; line-height: 1.4;">
-            For wallet-specific reward analysis, use <a href="/miner.html">Miner Lookup</a>.
-          </p>
-        </section>
+          <div class="dashboard-right">
+            <section class="panel">
+              <p class="eyebrow">Calculator</p>
+              <h3>Mining Reward Calculator</h3>
+              <div class="calc-inputs">
+                <div class="calc-input-group" style="flex: 2;">
+                  <label for="calc-hashrate">Your Hashrate</label>
+                  <input type="number" id="calc-hashrate" value="100" min="0" step="any" placeholder="Enter hashrate...">
+                </div>
+                <div class="calc-input-group">
+                  <label for="calc-unit">Unit</label>
+                  <select id="calc-unit" class="calc-select">
+                    <option value="H">H/s</option>
+                    <option value="KH" selected>KH/s</option>
+                    <option value="MH">MH/s</option>
+                  </select>
+                </div>
+              </div>
+              <div class="metric-grid">
+                <div><span>PEPEW / Hour</span><strong id="calc-pepew-hour">-</strong></div>
+                <div><span>PEPEW / Day</span><strong id="calc-pepew-day">-</strong></div>
+                <div><span>PEPEW / Week</span><strong id="calc-pepew-week">-</strong></div>
+                <div><span>USDT / Day</span><strong id="calc-usdt-day">-</strong></div>
+                <div class="calc-usdt-week-span" style="grid-column: span 2;"><span>USDT / Week</span><strong id="calc-usdt-week">-</strong></div>
+              </div>
+              <p class="muted small-gap" style="font-size: 0.8rem; margin-top: 0.9rem; line-height: 1.35;">Estimate only. Actual rewards vary by pool luck and network hashrate.</p>
+            </section>
 
-        <section class="panel pool-about" aria-labelledby="pool-about-title">
-          <div class="pool-about-grid">
-            <div>
+            <section class="panel pool-about" aria-labelledby="pool-about-title">
               <p class="eyebrow">Pool positioning</p>
               <h3 id="pool-about-title">PEPEPOW Lab Pool</h3>
-              <p class="muted">
-                Miners may choose any pool based on latency, stability, fees, payout policy, and trust.
-                Using multiple independent pools helps improve PEPEPOW network decentralization.
-              </p>
-            </div>
-            <div class="resource-grid" aria-label="PEPEPOW resources">
-              <article class="resource-card"><span>Pool GitHub</span><a href="https://github.com/edisontw/pool-pepepow" target="_blank" rel="noopener noreferrer">github.com/edisontw/pool-pepepow</a></article>
-              <article class="resource-card"><span>PEPEPOW Website</span><a href="https://pepepow.org/" target="_blank" rel="noopener noreferrer">pepepow.org</a></article>
-              <article class="resource-card"><span>Mining pools</span><a href="https://miningpoolstats.stream/pepepow" target="_blank" rel="noopener noreferrer">MiningPoolStats / PEPEPOW</a></article>
-              <article class="resource-card"><span>Discord</span><a href="https://discord.gg/sJgDVRkBcq" target="_blank" rel="noopener noreferrer">discord.gg/sJgDVRkBcq</a></article>
-            </div>
+              <p class="muted">A lightweight community pool for PEPEPOW mining tests and public pool software development.</p>
+              <div class="resource-grid" aria-label="PEPEPOW resources">
+                <article class="resource-card"><span>GitHub</span><a href="https://github.com/edisontw/pool-pepepow" target="_blank" rel="noopener noreferrer">pool-pepepow</a></article>
+                <article class="resource-card"><span>Website</span><a href="https://pepepow.org/" target="_blank" rel="noopener noreferrer">pepepow.org</a></article>
+                <article class="resource-card"><span>Pools</span><a href="https://miningpoolstats.stream/pepepow" target="_blank" rel="noopener noreferrer">MiningPoolStats</a></article>
+                <article class="resource-card"><span>Discord</span><a href="https://discord.gg/sJgDVRkBcq" target="_blank" rel="noopener noreferrer">Community</a></article>
+              </div>
+            </section>
           </div>
-        </section>
+        </div>
 
         <section class="panel status-overview" aria-labelledby="pool-status-overview-title">
           <p class="eyebrow">Operational status</p>
@@ -298,29 +268,28 @@
               <strong>Ready for miners</strong>
               <div class="status-marker is-ok">Online Stratum</div>
               <div class="status-endpoint-box"><span>Endpoint</span><code>pool.pepepow.net:39333</code></div>
-              <p>Use your PEPEPOW wallet as the username.</p>
-              <a class="status-card-link" href="/connect.html">Open connection guide →</a>
+              <a class="status-card-link" href="/connect.html">Connection guide →</a>
             </article>
             <article class="status-overview-card">
               <span>Public data</span>
-              <strong>API-backed snapshots</strong>
-              <div class="status-marker is-ok">Read-only data</div>
-              <p>Homepage metrics come from public APIs and summarized snapshots, not daemon or wallet RPC.</p>
-              <a class="status-card-link" href="/api.html">View API docs →</a>
+              <strong>API snapshots</strong>
+              <div class="status-marker is-ok">Read-only</div>
+              <p>Dashboard data is served from summarized public API snapshots.</p>
+              <a class="status-card-link" href="/api.html">API docs →</a>
             </article>
             <article class="status-overview-card">
               <span>Block submit</span>
               <strong>Operator-controlled</strong>
-              <div class="status-marker is-guarded">Guarded submit</div>
-              <p>Pool candidates and chain matches are shown for observation. Public pages never expose submit controls.</p>
-              <a class="status-card-link" href="/blocks.html">Check blocks →</a>
+              <div class="status-marker is-guarded">Guarded</div>
+              <p>Public pages show observations only.</p>
+              <a class="status-card-link" href="/blocks.html">Blocks →</a>
             </article>
             <article class="status-overview-card">
               <span>Payments</span>
               <strong>Recorded payments</strong>
-              <div class="status-marker is-guarded">Completed records only</div>
-              <p>Payments appear after they are completed and recorded. No public balance or payout controls are exposed.</p>
-              <a class="status-card-link" href="/payments.html">View payments →</a>
+              <div class="status-marker is-guarded">Completed records</div>
+              <p>No public balance or payout controls.</p>
+              <a class="status-card-link" href="/payments.html">Payments →</a>
             </article>
           </div>
         </section>
@@ -328,17 +297,10 @@
         <section class="panel metrics">
           <h3>Pool Summary</h3>
           <div class="metric-grid">
-            <article class="metric-primary"><span>Pool-side share-rate estimate</span><strong id="pool-hashrate">-</strong></article>
+            <article class="metric-primary"><span>Pool-side hashrate estimate</span><strong id="pool-hashrate">-</strong></article>
             <article><span>Active Miners</span><strong id="active-miners">-</strong></article>
             <article><span>Active Workers</span><strong id="active-workers">-</strong></article>
-            <article><span>Last confirmed block shown</span><strong id="last-block-time">-</strong></article>
-          </div>
-          <p class="muted small-gap" style="font-size: 0.85rem; margin-top: 1rem;">
-            * Estimated from pool-accepted shares and current pool difficulty settings. Miner-reported hashrate may differ.
-          </p>
-          <div class="info-note">
-            <strong>What these numbers mean</strong>
-            <p>Active miners/workers and share-rate are pool-side estimates from recent accepted shares. They are useful for pool visibility, but they are not exact local GPU hashrate or a payment statement.</p>
+            <article><span>Last confirmed block</span><strong id="last-block-time">-</strong></article>
           </div>
         </section>
 
@@ -361,7 +323,6 @@
             <p class="muted">Miner-facing Stratum endpoint</p>
             <code id="stratum-endpoint">stratum+tcp://pool.pepepow.net:39333</code>
           </div>
-          <p class="muted small-gap">Start with the connection guide, then check your wallet on Miner Lookup after your first accepted share appears.</p>
           <a class="button" href="/connect.html">Open connection guide</a>
         </section>
 
@@ -378,6 +339,33 @@
     </div>
 
     <script src="/assets/hashrate-trend.js?v=2"></script>
-    <script src="/assets/app.js?v=8"></script>
+    <script src="/assets/app.js?v=9"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        window.setTimeout(async function () {
+          const node = document.getElementById("last-block-time");
+          if (!node) return;
+          try {
+            const response = await fetch("/api/blocks", { cache: "no-store" });
+            if (!response.ok) return;
+            const data = await response.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            const block = items.find(function (item) {
+              return item && (item.foundAt || item.time || item.timestamp || item.height);
+            });
+            if (!block) return;
+            const value = block.foundAt || block.time || block.timestamp;
+            if (value) {
+              const date = new Date(value);
+              node.textContent = Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+            } else if (block.height !== undefined && block.height !== null) {
+              node.textContent = "Height " + String(block.height);
+            }
+          } catch (_error) {
+            // Keep existing value.
+          }
+        }, 800);
+      });
+    </script>
   </body>
 </html>
