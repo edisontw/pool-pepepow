@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -705,6 +706,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
     env = load_env_vars()
     backfill_enabled = env.get("PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "").strip().lower() == "true"
     backfill_wallet = env.get("PEPEPOW_OPERATOR_BACKFILL_WALLET", "").strip()
+    backfill_weights_json = env.get("PEPEPOW_OPERATOR_BACKFILL_WEIGHTS_JSON", "").strip()
     backfill_reason = env.get("PEPEPOW_OPERATOR_BACKFILL_REASON", "operator_approved_unattributed_confirmed_rewards").strip()
     try:
         backfill_min_height_raw = env.get("PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "").strip()
@@ -717,6 +719,23 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
     except (TypeError, ValueError):
         backfill_max_height = None
     backfill_wallet_valid = bool(re.fullmatch(r"[A-Za-z0-9]{26,128}", backfill_wallet))
+    backfill_weights: dict[str, float] = {}
+    if backfill_weights_json:
+        try:
+            parsed_weights = json.loads(backfill_weights_json)
+        except json.JSONDecodeError:
+            parsed_weights = None
+        if isinstance(parsed_weights, dict):
+            for wallet, weight in parsed_weights.items():
+                wallet_str = str(wallet).strip()
+                if not re.fullmatch(r"[A-Za-z0-9]{26,128}", wallet_str):
+                    continue
+                try:
+                    weight_float = float(weight)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(weight_float) and weight_float > 0:
+                    backfill_weights[wallet_str] = weight_float
 
     carry_map = {}
     if carry_path and carry_path.exists():
@@ -950,10 +969,10 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                     except (ValueError, TypeError):
                         pass
 
-                def eligible_operator_single_miner_backfill(round_data: dict[str, Any], block_reason: str) -> bool:
+                def eligible_operator_backfill(round_data: dict[str, Any], block_reason: str) -> bool:
                     if not (
                         backfill_enabled
-                        and backfill_wallet_valid
+                        and (backfill_wallet_valid if not backfill_weights_json else bool(backfill_weights))
                         and l_status == "confirmed"
                         and coinbase_matches_expected_pool_wallet is True
                         and not is_already_paid
@@ -978,29 +997,54 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                         return False
                     if backfill_max_height is not None and height_value > backfill_max_height:
                         return False
-                    if (c_hash, backfill_wallet) in paid_pairs:
-                        return False
+                    if backfill_weights_json:
+                        if any((c_hash, wallet) in paid_pairs for wallet in backfill_weights):
+                            return False
+                    else:
+                        if (c_hash, backfill_wallet) in paid_pairs:
+                            return False
                     return True
 
-                def apply_operator_single_miner_backfill() -> None:
+                def apply_operator_backfill() -> None:
                     nonlocal status, reason, weight_mode, round_share_total, payouts
                     status = "ready_for_manual_review"
                     reason = None
-                    weight_mode = "operator_single_miner_backfill"
-                    round_share_total = 1.0
-                    payouts = [{
-                        "wallet": backfill_wallet,
-                        "weight": 1.0,
-                        "amount": net_reward,
-                        "baseAmount": net_reward,
-                        "carryInAmount": 0.0,
-                        "status": "pending_manual_payment",
-                        "carrySourceCount": 0,
-                        "carrySourceCandidateIds": [],
-                        "fallbackReason": backfill_reason,
-                        "fallbackWarning": True,
-                        "operatorApprovedBackfill": True,
-                    }]
+                    if backfill_weights_json:
+                        total_weight = sum(backfill_weights.values())
+                        weight_mode = "operator_weighted_backfill"
+                        round_share_total = total_weight
+                        payouts = []
+                        for wallet, weight in backfill_weights.items():
+                            amount = net_reward * weight / total_weight
+                            payouts.append({
+                                "wallet": wallet,
+                                "weight": weight,
+                                "amount": amount,
+                                "baseAmount": amount,
+                                "carryInAmount": 0.0,
+                                "status": "pending_manual_payment",
+                                "carrySourceCount": 0,
+                                "carrySourceCandidateIds": [],
+                                "fallbackReason": backfill_reason,
+                                "fallbackWarning": True,
+                                "operatorApprovedBackfill": True,
+                            })
+                    else:
+                        weight_mode = "operator_single_miner_backfill"
+                        round_share_total = 1.0
+                        payouts = [{
+                            "wallet": backfill_wallet,
+                            "weight": 1.0,
+                            "amount": net_reward,
+                            "baseAmount": net_reward,
+                            "carryInAmount": 0.0,
+                            "status": "pending_manual_payment",
+                            "carrySourceCount": 0,
+                            "carrySourceCandidateIds": [],
+                            "fallbackReason": backfill_reason,
+                            "fallbackWarning": True,
+                            "operatorApprovedBackfill": True,
+                        }]
 
                 # 2. Candidate hash validation
                 if not c_hash:
@@ -1051,8 +1095,8 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                     shares = r_data.get("shares")
                     # 4. Wallet weights / shares validation
                     if not isinstance(shares, dict) or not shares:
-                        if eligible_operator_single_miner_backfill(r_data, "missing_share_data"):
-                            apply_operator_single_miner_backfill()
+                        if eligible_operator_backfill(r_data, "missing_share_data"):
+                            apply_operator_backfill()
                         else:
                             status = "blocked"
                             reason = "missing_share_data"
