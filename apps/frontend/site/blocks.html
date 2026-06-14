@@ -3,52 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PEPEPOW Lab Pool Blocks</title>
+    <title>Blocks - PEPEPOW Lab Pool</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="stylesheet" href="/assets/styles.css?v=6">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=1">
     <style>
-      .topbar .brand-lockup {
-        align-items: center;
-        gap: 18px;
-      }
-
-      .topbar .brand-lockup .brand-logo {
-        width: 72px !important;
-        height: 72px !important;
-        min-width: 72px !important;
-        max-width: 72px !important;
-        flex: 0 0 72px;
-        object-fit: contain;
-      }
-
-      .brand-title {
-        min-width: 0;
-      }
-
-      .brand-title h1 {
-        margin: 0;
-      }
-
-      .brand-subtitle {
-        margin: 10px 0 0;
-        max-width: 680px;
-        color: rgba(235, 245, 255, 0.72);
-        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
-        line-height: 1.45;
-      }
-
-      @media (max-width: 640px) {
-        .topbar .brand-lockup .brand-logo {
-          width: 58px !important;
-          height: 58px !important;
-          min-width: 58px !important;
-          max-width: 58px !important;
-          flex-basis: 58px;
-        }
-      }
+      .topbar .brand-lockup { align-items: center; gap: 18px; }
+      .topbar .brand-lockup .brand-logo { width: 72px !important; height: 72px !important; min-width: 72px !important; max-width: 72px !important; flex: 0 0 72px; object-fit: contain; }
+      .brand-title { min-width: 0; }
+      .brand-title h1 { margin: 0; }
+      .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
+      @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
   <body data-page="blocks">
@@ -59,7 +27,7 @@
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Blocks</h1>
-            <p class="brand-subtitle">Recent network blocks and Lab Pool candidate chain observations.</p>
+            <p class="brand-subtitle">Network blocks, pool candidates, and round observations.</p>
           </div>
         </div>
         <nav class="nav">
@@ -74,37 +42,45 @@
 
       <main class="page-single">
         <section class="panel">
-          <h2>Recent network blocks</h2>
-          <p class="muted">
-            Block states shown here come from public pool snapshots. Accepted shares are not the same as confirmed blocks.
-          </p>
-          <div class="legend-grid" aria-label="Block status legend">
-            <div><strong>Confirmed</strong><span>Block is matched and past maturity threshold.</span></div>
-            <div><strong>Immature</strong><span>Matched but still waiting for confirmations.</span></div>
-            <div><strong>Orphan</strong><span>Not on the active chain.</span></div>
-            <div><strong>Candidate recorded</strong><span>Pool-side observation only, not a payout promise.</span></div>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Chain view</p>
+              <h2>Recent network blocks</h2>
+              <p>Recent chain snapshot data. Pool shares and candidates are shown separately below.</p>
+            </div>
           </div>
-          <div id="blocks-table" class="list-state">Loading blocks...</div>
+          <div class="status-strip" aria-label="Block status legend">
+            <div><span>Confirmed</span><strong>Mature matched block</strong></div>
+            <div><span>Immature</span><strong>Waiting for confirmations</strong></div>
+            <div><span>Candidate</span><strong>Pool observation only</strong></div>
+          </div>
+          <div id="blocks-table" class="list-state small-gap">Loading blocks...</div>
         </section>
 
         <section class="panel">
-          <h2>Accepted pool candidates / chain observation</h2>
-          <p class="muted">
-            Pool candidates are tracked for chain-match and lifecycle observation. Candidate observation is not a confirmed block or a recorded payment.
-          </p>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Pool candidates</p>
+              <h2>Candidate chain observation</h2>
+              <p>Pool-found candidates matched against public chain data. This is observational until block maturity and payment recording are complete.</p>
+            </div>
+          </div>
           <div id="accepted-candidates-table" class="list-state">Loading accepted candidates...</div>
         </section>
 
         <section class="panel">
-          <h2>Rounds / observation preview</h2>
-          <p class="muted">
-            Internal round observation preview based on pool-side shares and candidate match. Payment records are published only after operator review or private self-test completion.
-          </p>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Round preview</p>
+              <h2>Share attribution snapshot</h2>
+              <p>Read-only round data used for visibility and review.</p>
+            </div>
+          </div>
           <div id="rounds-table" class="list-state">Loading rounds...</div>
         </section>
       </main>
     </div>
 
-    <script src="/assets/app.js"></script>
+    <script src="/assets/app.js?v=9"></script>
   </body>
 </html>
