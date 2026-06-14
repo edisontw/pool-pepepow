@@ -78,6 +78,8 @@ STRATUM_DIFF1_TARGET_PEPEPOW_POOL = int(
 # The Bitcoin diff1 target is 65,536x stricter and rejects ordinary pool shares.
 STRATUM_DIFF1_TARGET = STRATUM_DIFF1_TARGET_PEPEPOW_POOL
 MAX_UINT256_TARGET = (1 << 256) - 1
+MANUAL_SHARE_DIFFICULTY_MIN = 0.0000015
+MANUAL_SHARE_DIFFICULTY_MAX = 1_000_000.0
 
 
 def utc_now() -> datetime:
@@ -615,6 +617,7 @@ class StratumIngressService:
 
         if request.method == "mining.authorize":
             login = request.params[0] if request.params else None
+            password = request.params[1] if len(request.params) > 1 else None
             wallet, worker, normalized_login = authorize_identity(
                 login if isinstance(login, str) else None
             )
@@ -633,12 +636,28 @@ class StratumIngressService:
             )
 
             notifications: list[dict[str, Any]] = []
-            desired_difficulty = self._initial_session_difficulty()
+            manual_difficulty = _manual_share_difficulty_from_password(
+                password if isinstance(password, str) else None
+            )
+            setattr(
+                state,
+                "_manual_share_difficulty_override",
+                manual_difficulty is not None,
+            )
+            desired_difficulty = (
+                manual_difficulty
+                if manual_difficulty is not None
+                else self._initial_session_difficulty()
+            )
             if state.current_difficulty != desired_difficulty:
                 state.current_difficulty = desired_difficulty
                 difficulty_message = self._current_difficulty_notification(
                     state,
-                    reason="authorize-fixed",
+                    reason=(
+                        "authorize-manual-sd"
+                        if manual_difficulty is not None
+                        else "authorize-fixed"
+                    ),
                     remote_address=remote_address,
                 )
                 if difficulty_message is not None:
@@ -3531,6 +3550,8 @@ class StratumIngressService:
         observed_at: datetime,
         sample_for_vardiff: bool,
     ) -> dict[str, Any] | None:
+        if getattr(state, "_manual_share_difficulty_override", False):
+            return None
         if not self._config.stratum_vardiff_enabled or not sample_for_vardiff:
             return None
 
@@ -3773,6 +3794,30 @@ def _share_target_from_difficulty(difficulty: float | None) -> int | None:
         return None
     target = int(STRATUM_DIFF1_TARGET / difficulty)
     return max(1, min(MAX_UINT256_TARGET, target))
+
+
+def _manual_share_difficulty_from_password(password: str | None) -> float | None:
+    if password is None:
+        return None
+
+    for token in re.split(r"[\s,]+", password.strip()):
+        if not token.startswith("sd="):
+            continue
+        raw_value = token[3:].strip()
+        if not raw_value:
+            return None
+        try:
+            difficulty = float(raw_value)
+        except ValueError:
+            return None
+        if not math.isfinite(difficulty) or difficulty <= 0:
+            return None
+        return min(
+            MANUAL_SHARE_DIFFICULTY_MAX,
+            max(MANUAL_SHARE_DIFFICULTY_MIN, difficulty),
+        )
+
+    return None
 
 
 def _build_share_hash_threshold_summary(

@@ -349,6 +349,37 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(f"{target:064x}", expected_target)
 
+    def test_manual_share_difficulty_password_parser_accepts_supported_token_forms(self):
+        cases = {
+            "sd=200": 200.0,
+            "x,sd=200": 200.0,
+            "workerpass sd=200": 200.0,
+        }
+
+        for password, expected in cases.items():
+            with self.subTest(password=password):
+                self.assertEqual(
+                    stratum_ingress._manual_share_difficulty_from_password(password),
+                    expected,
+                )
+
+    def test_manual_share_difficulty_password_parser_ignores_invalid_values(self):
+        for password in ("sd=", "sd=abc", "sd=0", "sd=-1", "sd=nan", "sd=inf"):
+            with self.subTest(password=password):
+                self.assertIsNone(
+                    stratum_ingress._manual_share_difficulty_from_password(password)
+                )
+
+    def test_manual_share_difficulty_password_parser_clamps_safe_bounds(self):
+        self.assertEqual(
+            stratum_ingress._manual_share_difficulty_from_password("sd=0.00000001"),
+            stratum_ingress.MANUAL_SHARE_DIFFICULTY_MIN,
+        )
+        self.assertEqual(
+            stratum_ingress._manual_share_difficulty_from_password("sd=1000000000"),
+            stratum_ingress.MANUAL_SHARE_DIFFICULTY_MAX,
+        )
+
     def test_share_hash_threshold_summary_keeps_pool_share_target_distinct(self):
         block_target_int = int("00ff" + "00" * 30, 16)
         share_target_int = int("000f" + "00" * 30, 16)
@@ -1087,6 +1118,133 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
                     1,
                 )
                 self.assertEqual(activity_snapshot["pool"]["activeMiners"], 1)
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_authorize_manual_share_difficulty_from_password(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 1,
+                        "method": "mining.subscribe",
+                        "params": ["test-miner/1.0"],
+                    },
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": [
+                                "PEPEPOW1KnownWalletAddress000000.rig01",
+                                "x,sd=200",
+                            ],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                authorize_response = await self._read_json(reader)
+                difficulty_message = await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+
+                self.assertTrue(authorize_response["result"])
+                self.assertEqual(difficulty_message["method"], "mining.set_difficulty")
+                self.assertEqual(difficulty_message["params"], [13_107_200.0])
+                issued_job = service._job_manager.get_job(notify_message["params"][0])
+                self.assertIsNotNone(issued_job)
+                self.assertEqual(issued_job.assigned_difficulty, 200.0)
+
+                submit_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                        ),
+                    },
+                )
+                self.assertTrue(submit_response["result"])
+
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+                share_event = json.loads(
+                    self._read_share_events(config.activity_log_path)[0]
+                )
+                self.assertEqual(
+                    share_event["wallet"], "PEPEPOW1KnownWalletAddress000000"
+                )
+                self.assertEqual(share_event["worker"], "rig01")
+                self.assertEqual(share_event["difficulty"], 200.0)
+
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
+    async def test_authorize_invalid_manual_share_difficulty_keeps_default_fixed_diff(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 1,
+                        "method": "mining.subscribe",
+                        "params": ["test-miner/1.0"],
+                    },
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": [
+                                "PEPEPOW1KnownWalletAddress000000.rig01",
+                                "workerpass sd=bad",
+                            ],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                self.assertTrue((await self._read_json(reader))["result"])
+                difficulty_message = await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+
+                self.assertEqual(difficulty_message["params"], [98.304])
+                issued_job = service._job_manager.get_job(notify_message["params"][0])
+                self.assertIsNotNone(issued_job)
+                self.assertEqual(issued_job.assigned_difficulty, 0.0015)
+
             finally:
                 if writer is not None:
                     writer.close()
@@ -6958,5 +7116,3 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         
         meets_block_target = daemon_hash_int <= target_int
         self.assertFalse(meets_block_target)
-
-
