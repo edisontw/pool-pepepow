@@ -1,5 +1,6 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
+  const MAX_MINER_LOOKUPS = 5;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -71,7 +72,7 @@
     }).join("");
   }
 
-  function render(pool) {
+  function renderItems(items, shareLabel) {
     const target = document.querySelector(".mining-outlook");
     if (!target) return;
     let box = document.getElementById("pool-leaderboards");
@@ -81,30 +82,57 @@
       box.className = "leaderboard-grid";
       target.appendChild(box);
     }
-    const items = normalize(pool || {});
     box.innerHTML = `
       <section class="leaderboard-card">
         <div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>5m estimate</span></div>
         ${rows(items, "hashrate")}
       </section>
       <section class="leaderboard-card">
-        <div class="leaderboard-head"><h4>Shares Ranking</h4><span>15m shares</span></div>
+        <div class="leaderboard-head"><h4>Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>
         ${rows(items, "shares")}
       </section>`;
   }
 
-  async function fetchPool() {
-    const response = await fetch("/api/pool/summary", { cache: "no-store" });
-    if (!response.ok) throw new Error("pool summary unavailable");
+  async function fetchJson(url) {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error("request failed");
     return response.json();
+  }
+
+  async function enrichSharesFromMinerApi(items) {
+    if (items.some((item) => item.shares > 0)) return { items, label: "15m shares" };
+    const candidates = items
+      .filter((item) => item.wallet && item.wallet !== "unknown")
+      .sort((a, b) => b.hashrate - a.hashrate)
+      .slice(0, MAX_MINER_LOOKUPS);
+    if (candidates.length === 0) return { items, label: "recent window" };
+
+    const results = await Promise.all(candidates.map(async (item) => {
+      try {
+        const payload = await fetchJson(`/api/miner/${encodeURIComponent(item.wallet)}`);
+        const summary = payload && payload.summary ? payload.summary : {};
+        return [item.wallet, numeric(summary.acceptedShares, summary.shareCount)];
+      } catch (_error) {
+        return [item.wallet, 0];
+      }
+    }));
+    const sharesByWallet = new Map(results);
+    return {
+      items: items.map((item) => ({ ...item, shares: sharesByWallet.get(item.wallet) || item.shares })),
+      label: `accepted shares`
+    };
   }
 
   async function refresh() {
     if (document.body.dataset.page !== "dashboard") return;
     try {
-      render(await fetchPool());
+      const pool = await fetchJson("/api/pool/summary");
+      let items = normalize(pool || {});
+      renderItems(items, "loading shares");
+      const enriched = await enrichSharesFromMinerApi(items);
+      renderItems(enriched.items, enriched.label);
     } catch (_error) {
-      render({ workerDistribution: [] });
+      renderItems([], "recent window");
     }
   }
 
