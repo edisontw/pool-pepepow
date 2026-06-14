@@ -43,14 +43,14 @@
           </div>
         </div>
         <section class="panel status-overview" aria-labelledby="pool-status-overview-title"><p class="eyebrow">Operational status</p><h3 id="pool-status-overview-title">Pool connection, blocks, and payments</h3><div class="status-overview-grid"><article class="status-overview-card"><span>Mining connection</span><strong>Ready for miners</strong><div class="status-marker is-ok">Online Stratum</div><div class="status-endpoint-box"><span>Endpoint</span><code>pool.pepepow.net:39333</code></div></article><article class="status-overview-card"><span>Public data</span><strong>API snapshots</strong><div class="status-marker is-ok">Read-only</div><p>Dashboard data is served from summarized public API snapshots.</p><a class="status-card-link" href="/api.html">API docs →</a></article><article class="status-overview-card"><span>Block submit</span><strong>Operator-controlled</strong><div class="status-marker is-guarded">Guarded</div><p>Public pages show observations only.</p><a class="status-card-link" href="/blocks.html">Blocks →</a></article><article class="status-overview-card"><span>Payments</span><strong>Recorded payments</strong><div class="status-marker is-guarded">Completed records</div><p>No public balance or payout controls.</p><a class="status-card-link" href="/payments.html">Payments →</a></article></div></section>
-        <section class="panel metrics"><h3>Pool Summary</h3><div class="metric-grid"><article class="metric-primary"><span>Pool-side hashrate estimate</span><strong id="pool-hashrate">-</strong></article><article><span>Active Miners</span><strong id="active-miners">-</strong></article><article><span>Active Workers</span><strong id="active-workers">-</strong></article><article><span>Last confirmed block</span><strong id="last-block-time">-</strong></article></div></section>
+        <section class="panel metrics"><h3>Pool Summary</h3><div class="metric-grid"><article class="metric-primary"><span>Pool-side hashrate estimate</span><strong id="pool-hashrate">-</strong></article><article><span>Active Miners</span><strong id="active-miners">-</strong></article><article><span>Active Workers</span><strong id="active-workers">-</strong></article><article><span>Last confirmed pool block</span><strong id="last-block-time">-</strong></article></div></section>
         <section class="panel"><h3>Network Summary</h3><div class="metric-grid"><div><span>Height</span><strong id="network-height">-</strong></div><div><span>Difficulty</span><strong id="network-difficulty">-</strong></div><div><span>Network Hashrate</span><strong id="network-hashrate">-</strong></div><div><span>Node Sync</span><strong id="network-sync">-</strong></div></div></section>
         <section class="panel recent-compact"><h3>Recent Blocks</h3><div id="recent-blocks" class="list-state">Loading blocks...</div></section>
         <section class="panel recent-compact recent-payments-compact"><h3>Recent Payments</h3><div id="recent-payments" class="list-state">Loading payments...</div></section>
       </main>
     </div>
     <script src="/assets/hashrate-trend.js?v=4"></script>
-    <script src="/assets/pool-leaderboards.js?v=2"></script>
     <script src="/assets/app.js?v=9"></script>
+    <script src="/assets/pool-leaderboards.js?v=3"></script>
   </body>
 </html>
