@@ -1,6 +1,6 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
-  const MAX_MINER_LOOKUPS = 5;
+  const MAX_MINER_LOOKUPS = 20;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -49,7 +49,7 @@
     return source.map((item) => ({
       wallet: String(item.wallet || item.address || item.miner || item.username || item.name || "unknown"),
       hashrate: numeric(item.hashrate, item.hashrateHps, item.hashrate_hps, item.estimatedHashrate),
-      shares: numeric(item.shares15m, item.acceptedShares, item.shares, item.shareCount, item.accepted_share_count),
+      shares: numeric(item.totalAcceptedShares, item.acceptedShares, item.shareCount, item.shares, item.accepted_share_count),
       activeWorkers: numeric(item.activeWorkers, item.workerCount, item.workers)
     }));
   }
@@ -60,7 +60,7 @@
       .sort((a, b) => mode === "hashrate" ? b.hashrate - a.hashrate : b.shares - a.shares)
       .slice(0, 5);
     if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) {
-      return `<div class="leaderboard-empty">No active data in the recent window.</div>`;
+      return `<div class="leaderboard-empty">No active data available.</div>`;
     }
     return sorted.map((item, idx) => {
       const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
@@ -88,7 +88,7 @@
         ${rows(items, "hashrate")}
       </section>
       <section class="leaderboard-card">
-        <div class="leaderboard-head"><h4>Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>
+        <div class="leaderboard-head"><h4>Total Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>
         ${rows(items, "shares")}
       </section>`;
   }
@@ -99,40 +99,35 @@
     return response.json();
   }
 
-  async function enrichSharesFromMinerApi(items) {
-    if (items.some((item) => item.shares > 0)) return { items, label: "15m shares" };
+  async function enrichTotalSharesFromMinerApi(items) {
     const candidates = items
       .filter((item) => item.wallet && item.wallet !== "unknown")
       .sort((a, b) => b.hashrate - a.hashrate)
       .slice(0, MAX_MINER_LOOKUPS);
-    if (candidates.length === 0) return { items, label: "recent window" };
+    if (candidates.length === 0) return items;
 
     const results = await Promise.all(candidates.map(async (item) => {
       try {
         const payload = await fetchJson(`/api/miner/${encodeURIComponent(item.wallet)}`);
         const summary = payload && payload.summary ? payload.summary : {};
-        return [item.wallet, numeric(summary.acceptedShares, summary.shareCount)];
+        return [item.wallet, numeric(summary.acceptedShares, summary.shareCount, item.shares)];
       } catch (_error) {
-        return [item.wallet, 0];
+        return [item.wallet, item.shares];
       }
     }));
     const sharesByWallet = new Map(results);
-    return {
-      items: items.map((item) => ({ ...item, shares: sharesByWallet.get(item.wallet) || item.shares })),
-      label: `accepted shares`
-    };
+    return items.map((item) => ({ ...item, shares: sharesByWallet.get(item.wallet) || item.shares }));
   }
 
   async function refresh() {
     if (document.body.dataset.page !== "dashboard") return;
     try {
       const pool = await fetchJson("/api/pool/summary");
-      let items = normalize(pool || {});
-      renderItems(items, "loading shares");
-      const enriched = await enrichSharesFromMinerApi(items);
-      renderItems(enriched.items, enriched.label);
+      const items = normalize(pool || {});
+      renderItems(items, "loading totals");
+      renderItems(await enrichTotalSharesFromMinerApi(items), "accepted shares");
     } catch (_error) {
-      renderItems([], "recent window");
+      renderItems([], "accepted shares");
     }
   }
 
