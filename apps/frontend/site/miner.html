@@ -3,47 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PEPEPOW Lab Pool Miner Lookup</title>
+    <title>Miner Lookup - PEPEPOW Lab Pool</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="stylesheet" href="/assets/styles.css?v=5">
+    <link rel="stylesheet" href="/assets/styles.css?v=6">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=1">
     <style>
-      .page-brand-lockup {
-        align-items: center;
-        gap: 18px;
-      }
-
-      .page-brand-logo {
-        width: 72px !important;
-        height: 72px !important;
-        flex: 0 0 72px;
-        border-radius: 50%;
-      }
-
-      .page-title {
-        min-width: 0;
-      }
-
-      .page-title h1 {
-        margin-bottom: 0;
-      }
-
-      .page-subtitle {
-        margin: 10px 0 0;
-        color: rgba(235, 245, 255, 0.72);
-        font-size: clamp(0.98rem, 2vw, 1.12rem);
-        line-height: 1.45;
-      }
-
-      @media (max-width: 640px) {
-        .page-brand-logo {
-          width: 58px !important;
-          height: 58px !important;
-          flex-basis: 58px;
-        }
-      }
+      .page-brand-lockup { align-items: center; gap: 18px; }
+      .page-brand-logo { width: 72px !important; height: 72px !important; flex: 0 0 72px; border-radius: 50%; }
+      .page-title { min-width: 0; }
+      .page-title h1 { margin-bottom: 0; }
+      .page-subtitle { margin: 10px 0 0; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.98rem, 2vw, 1.12rem); line-height: 1.45; }
+      @media (max-width: 640px) { .page-brand-logo { width: 58px !important; height: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
   <body data-page="miner">
@@ -54,7 +27,7 @@
           <div class="page-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Miner Lookup</h1>
-            <p class="page-subtitle">Check wallet activity, accepted shares, workers, last share time, and estimated reward analysis.</p>
+            <p class="page-subtitle">Check wallet activity, workers, recorded payments, and reward estimates.</p>
           </div>
         </div>
         <nav class="nav">
@@ -70,28 +43,22 @@
       <main class="page-single">
         <section class="panel">
           <form id="miner-form" class="lookup-form">
-            <label for="wallet-input">Wallet Address</label>
+            <label for="wallet-input">PEPEPOW wallet address</label>
             <div class="lookup-row">
-              <input
-                id="wallet-input"
-                name="wallet"
-                type="text"
-                placeholder="Input your PEPEPOW wallet address..."
-                value=""
-              >
+              <input id="wallet-input" name="wallet" type="text" placeholder="Paste PEPEPOW wallet address..." value="">
               <button class="button" type="submit">Lookup</button>
             </div>
           </form>
           <div id="miner-result" class="list-state empty-state">
-            <strong>Input PEPEPOW wallet address to check miner status</strong>
-            <p class="muted">Data will appear after the pool receives accepted shares. This section only displays the estimated hashrate, accepted shares, active workers, and the last share.</p>
-            <a class="button" href="/connect.html"> How to start mining </a>
+            <strong>Enter a wallet address to view miner status</strong>
+            <p class="muted">Accepted shares usually appear within about one minute after mining starts.</p>
+            <a class="button" href="/connect.html">How to mine</a>
           </div>
           <div id="miner-reward-analysis"></div>
         </section>
       </main>
     </div>
 
-    <script src="/assets/app.js?v=7"></script>
+    <script src="/assets/app.js?v=9"></script>
   </body>
 </html>
