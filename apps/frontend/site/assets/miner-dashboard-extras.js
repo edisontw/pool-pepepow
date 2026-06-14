@@ -7,7 +7,7 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
+      .replace(/\"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
 
@@ -17,17 +17,6 @@
   }
 
   function readCount(record, keys) {
-    if (!record || typeof record !== "object") return null;
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-        return value;
-      }
-    }
-    return null;
-  }
-
-  function readAmount(record, keys) {
     if (!record || typeof record !== "object") return null;
     for (const key of keys) {
       const value = record[key];
@@ -82,88 +71,25 @@
     return `Pool-side submits: ${formatNumber(accepted)} accepted / ${formatNumber(rejected)} rejected. Miner local invalid solutions are not included.`;
   }
 
-  function normalizeStatus(value) {
-    return String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  }
-
-  function roundHasWallet(round, wallet) {
-    if (!round || typeof round !== "object" || !wallet) return false;
-    const shares = round.shares;
-    return shares && typeof shares === "object" && Object.prototype.hasOwnProperty.call(shares, wallet);
-  }
-
-  function isConfirmedRound(round) {
-    const status = normalizeStatus(round.status || round.roundStatus || round.lifecycleStatus);
-    return status === "confirmed" || status === "mature" || status === "paid" || status === "paid-manual";
-  }
-
-  function isOrphanRound(round) {
-    const status = normalizeStatus(round.status || round.roundStatus || round.lifecycleStatus);
-    return status === "orphan" || status === "orphaned";
-  }
-
-  function calculatePendingConfirmation(roundsPayload, wallet) {
-    const items = roundsPayload && Array.isArray(roundsPayload.items) ? roundsPayload.items : [];
-    let count = 0;
-    let latestHeight = null;
-    for (const round of items) {
-      if (!roundHasWallet(round, wallet)) continue;
-      if (isConfirmedRound(round) || isOrphanRound(round)) continue;
-      count += 1;
-      const height = readCount(round, ["matchedHeight", "height"]);
-      if (height !== null) latestHeight = latestHeight === null ? height : Math.max(latestHeight, height);
-    }
-    return { count, latestHeight, scanned: items.length };
-  }
-
-  function renderPendingMetricCards(result, pendingInfo) {
+  function renderPoolAcceptedRateCard(result) {
     const summary = result && typeof result.summary === "object" && result.summary ? result.summary : {};
-    const explicitPendingConfirmation = summary.pendingConfirmation ?? summary.pendingConfirmations ?? result.pendingConfirmation ?? result.pendingConfirmations;
-    const pendingPayout = readAmount(summary, ["pendingPayout", "pending_payout"])
-      ?? readAmount(result, ["pendingPayout", "pending_payout"]);
-
-    let pendingConfirmationText = "Not available yet";
-    let pendingConfirmationNote = "Wallet-level pending confirmation is shown only when round attribution data is available.";
-    if (typeof explicitPendingConfirmation === "number") {
-      pendingConfirmationText = formatNumber(explicitPendingConfirmation);
-      pendingConfirmationNote = "API-provided wallet-level pending confirmation count.";
-    } else if (pendingInfo && typeof pendingInfo.count === "number") {
-      pendingConfirmationText = formatNumber(pendingInfo.count);
-      pendingConfirmationNote = `Read-only count from recent rounds involving this wallet. ${formatNumber(pendingInfo.scanned)} recent rounds scanned.`;
-      if (typeof pendingInfo.latestHeight === "number") {
-        pendingConfirmationNote += ` Latest pending height: ${formatNumber(pendingInfo.latestHeight)}.`;
-      }
-    }
-
-    const pendingPayoutCard = pendingPayout === null ? "" : `
-      <article class="miner-metric-card">
-        <span>Pending Payout</span>
-        <strong>${escapeHtml(formatNumber(pendingPayout))}</strong>
-        <p class="metric-note">API-provided wallet-level pending payout. Not estimated from shares.</p>
-      </article>`;
-
     return `<div id="miner-pending-extras" class="miner-summary-grid" style="margin-top: 1rem;">
       <article class="miner-metric-card">
         <span>Pool Accepted Rate</span>
         <strong>${renderRate(summary)}</strong>
         <p class="metric-note">${escapeHtml(renderPoolAcceptedRateNote(summary))}</p>
       </article>
-      <article class="miner-metric-card">
-        <span>Pending Confirmation</span>
-        <strong>${escapeHtml(pendingConfirmationText)}</strong>
-        <p class="metric-note">${escapeHtml(pendingConfirmationNote)}</p>
-      </article>${pendingPayoutCard}
     </div>`;
   }
 
-  function insertPendingCards(result, pendingInfo) {
+  function insertPoolAcceptedRateCard(result) {
     const container = document.getElementById("miner-result");
     if (!container || !result || !result.found) return;
     const existing = document.getElementById("miner-pending-extras");
     if (existing) existing.remove();
     const summaryGrid = container.querySelector(".miner-summary-grid");
     if (!summaryGrid) return;
-    summaryGrid.insertAdjacentHTML("afterend", renderPendingMetricCards(result, pendingInfo));
+    summaryGrid.insertAdjacentHTML("afterend", renderPoolAcceptedRateCard(result));
   }
 
   function addWorkerAcceptedRateColumn(result) {
@@ -244,14 +170,7 @@
     try {
       const result = await fetchJson(`/api/miner/${encodeURIComponent(wallet)}`);
       if (!result) return;
-      let pendingInfo = null;
-      try {
-        const rounds = await fetchJson("/api/rounds");
-        pendingInfo = calculatePendingConfirmation(rounds, wallet);
-      } catch (_roundsError) {
-        pendingInfo = null;
-      }
-      insertPendingCards(result, pendingInfo);
+      insertPoolAcceptedRateCard(result);
       addWorkerAcceptedRateColumn(result);
       syncRewardAnalysisAcceptedRate(result);
     } catch (_error) {
