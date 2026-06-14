@@ -33,7 +33,7 @@
           <div class="dashboard-left">
             <section class="panel mining-outlook">
               <p class="eyebrow">Mining Outlook</p><h3>PEPEPOW Mining Radar</h3>
-              <div class="radar-grid"><div class="radar-card"><span>Network Hashrate</span><strong id="radar-network-hashrate">-</strong></div><div class="radar-card"><span>Pool Hashrate</span><strong id="radar-pool-hashrate">-</strong></div><div class="radar-card"><span>Pool Share</span><strong id="radar-pool-share">-</strong></div><div class="radar-card" title="Requires cached external known-pool data. Not estimated as network minus this pool."><span>Unseen / solo / unlisted</span><strong id="radar-unseen-hashrate">External data unavailable</strong></div><div class="radar-card"><span>Visibility</span><strong id="radar-visibility-signal">-</strong></div><div class="radar-card"><span>Variance</span><strong id="radar-reward-variance">-</strong></div></div>
+              <div class="radar-grid"><div class="radar-card"><span>Network Hashrate</span><strong id="radar-network-hashrate">-</strong></div><div class="radar-card"><span>Pool Hashrate</span><strong id="radar-pool-hashrate">-</strong></div><div class="radar-card"><span>Pool Share</span><strong id="radar-pool-share">-</strong></div><div class="radar-card"><span>Visibility</span><strong id="radar-visibility-signal">-</strong></div><div class="radar-card"><span>Variance</span><strong id="radar-reward-variance">-</strong></div></div>
               <div class="trend-chart-grid" aria-label="Hashrate trend charts"><div id="network-hashrate-trend-chart" class="trend-chart">Loading network hashrate trend...</div><div id="pool-hashrate-trend-chart" class="trend-chart">Loading pool hashrate trend...</div></div>
             </section>
           </div>
@@ -51,27 +51,6 @@
     </div>
     <script src="/assets/hashrate-trend.js?v=4"></script>
     <script src="/assets/app.js?v=9"></script>
-    <script>
-      document.addEventListener("DOMContentLoaded", () => {
-        const value = document.getElementById("radar-unseen-hashrate");
-        if (!value) return;
-        const card = value.closest(".radar-card");
-        const label = card ? card.querySelector("span") : null;
-        const labelText = "Unseen / solo / unlisted";
-        const valueText = "External data unavailable";
-        const note = "Requires cached external known-pool data. Not estimated as network minus this pool.";
-        const apply = () => {
-          if (label && label.textContent !== labelText) label.textContent = labelText;
-          if (value.textContent !== valueText) value.textContent = valueText;
-          if (value.title !== note) value.title = note;
-          if (card && card.title !== note) card.title = note;
-        };
-        apply();
-        new MutationObserver(() => {
-          if (value.textContent !== valueText || (label && label.textContent !== labelText)) apply();
-        }).observe(value, { childList: true, subtree: true, characterData: true });
-      });
-    </script>
     <script src="/assets/pool-leaderboards.js?v=3"></script>
   </body>
 </html>
