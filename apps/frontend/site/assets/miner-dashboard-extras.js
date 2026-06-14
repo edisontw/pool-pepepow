@@ -27,6 +27,17 @@
     return null;
   }
 
+  function readAmount(record, keys) {
+    if (!record || typeof record !== "object") return null;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+        return value;
+      }
+    }
+    return null;
+  }
+
   function calculatePoolAcceptedRate(record) {
     if (!record || typeof record !== "object") return null;
 
@@ -108,7 +119,8 @@
   function renderPendingMetricCards(result, pendingInfo) {
     const summary = result && typeof result.summary === "object" && result.summary ? result.summary : {};
     const explicitPendingConfirmation = summary.pendingConfirmation ?? summary.pendingConfirmations ?? result.pendingConfirmation ?? result.pendingConfirmations;
-    const pendingPayout = summary.pendingPayout ?? result.pendingPayout;
+    const pendingPayout = readAmount(summary, ["pendingPayout", "pending_payout"])
+      ?? readAmount(result, ["pendingPayout", "pending_payout"]);
 
     let pendingConfirmationText = "Not available yet";
     let pendingConfirmationNote = "Wallet-level pending confirmation is shown only when round attribution data is available.";
@@ -123,9 +135,12 @@
       }
     }
 
-    const pendingPayoutText = typeof pendingPayout === "number"
-      ? formatNumber(pendingPayout)
-      : "Not available yet";
+    const pendingPayoutCard = pendingPayout === null ? "" : `
+      <article class="miner-metric-card">
+        <span>Pending Payout</span>
+        <strong>${escapeHtml(formatNumber(pendingPayout))}</strong>
+        <p class="metric-note">API-provided wallet-level pending payout. Not estimated from shares.</p>
+      </article>`;
 
     return `<div id="miner-pending-extras" class="miner-summary-grid" style="margin-top: 1rem;">
       <article class="miner-metric-card">
@@ -137,12 +152,7 @@
         <span>Pending Confirmation</span>
         <strong>${escapeHtml(pendingConfirmationText)}</strong>
         <p class="metric-note">${escapeHtml(pendingConfirmationNote)}</p>
-      </article>
-      <article class="miner-metric-card">
-        <span>Pending Payout</span>
-        <strong>${escapeHtml(pendingPayoutText)}</strong>
-        <p class="metric-note">Not a balance estimate. This stays unavailable until payout accounting exposes a reliable wallet field.</p>
-      </article>
+      </article>${pendingPayoutCard}
     </div>`;
   }
 
