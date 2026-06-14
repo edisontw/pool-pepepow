@@ -1,6 +1,8 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
   const MAX_MINER_LOOKUPS = 20;
+  let cachedLeaderboardItems = [];
+  let cachedShareLabel = "accepted shares";
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -14,6 +16,13 @@
   function formatNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) ? new Intl.NumberFormat().format(n) : "-";
+  }
+
+  function formatDate(value) {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString();
   }
 
   function formatHashrate(value) {
@@ -49,9 +58,9 @@
     return source.map((item) => ({
       wallet: String(item.wallet || item.address || item.miner || item.username || item.name || "unknown"),
       hashrate: numeric(item.hashrate, item.hashrateHps, item.hashrate_hps, item.estimatedHashrate),
-      shares: numeric(item.totalAcceptedShares, item.acceptedShares, item.shareCount, item.shares, item.accepted_share_count),
+      shares: numeric(item.totalAcceptedShares, item.acceptedShares, item.shareCount, item.shares, item.accepted_share_count, item.shares15m),
       activeWorkers: numeric(item.activeWorkers, item.workerCount, item.workers)
-    }));
+    })).filter((item) => item.wallet && item.wallet !== "unknown");
   }
 
   function rows(items, mode) {
@@ -119,16 +128,63 @@
     return items.map((item) => ({ ...item, shares: sharesByWallet.get(item.wallet) || item.shares }));
   }
 
-  async function refresh() {
+  function useCachedLeaderboard() {
+    if (cachedLeaderboardItems.length === 0) return false;
+    renderItems(cachedLeaderboardItems, `${cachedShareLabel} · cached`);
+    return true;
+  }
+
+  async function refreshLeaderboards() {
     if (document.body.dataset.page !== "dashboard") return;
     try {
       const pool = await fetchJson("/api/pool/summary");
       const items = normalize(pool || {});
+      if (items.length === 0) {
+        useCachedLeaderboard();
+        return;
+      }
       renderItems(items, "loading totals");
-      renderItems(await enrichTotalSharesFromMinerApi(items), "accepted shares");
+      const enriched = await enrichTotalSharesFromMinerApi(items);
+      cachedLeaderboardItems = enriched;
+      cachedShareLabel = "accepted shares";
+      renderItems(enriched, cachedShareLabel);
     } catch (_error) {
-      renderItems([], "accepted shares");
+      useCachedLeaderboard();
     }
+  }
+
+  function confirmedCandidateItems(payload) {
+    const items = payload && Array.isArray(payload.items) ? payload.items : [];
+    return items.filter((item) => {
+      const status = String(item.lifecycleStatus || "").toLowerCase().replace(/_/g, "-");
+      const maturity = String(item.maturityLabel || "").toLowerCase();
+      return status === "confirmed" || maturity === "mature";
+    });
+  }
+
+  async function refreshLastConfirmedBlock() {
+    if (document.body.dataset.page !== "dashboard") return;
+    const node = document.getElementById("last-block-time");
+    if (!node) return;
+    try {
+      const payload = await fetchJson("/api/accepted-candidates");
+      const confirmed = confirmedCandidateItems(payload)
+        .sort((a, b) => numeric(b.matchedHeight) - numeric(a.matchedHeight));
+      if (confirmed.length === 0) return;
+      const latest = confirmed[0];
+      const height = numeric(latest.matchedHeight);
+      const time = formatDate(latest.submitTimestamp);
+      node.textContent = height > 0 ? `${formatNumber(height)} · ${time}` : time;
+    } catch (_error) {
+      // Keep app.js value instead of replacing it with "-".
+    }
+  }
+
+  async function refresh() {
+    await Promise.all([
+      refreshLeaderboards(),
+      refreshLastConfirmedBlock()
+    ]);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
