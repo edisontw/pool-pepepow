@@ -1,0 +1,14 @@
+.algorithm-tag-row{display:inline-flex;align-items:center;flex-wrap:wrap;gap:.45rem;margin-top:.85rem;padding:.45rem .65rem;border:1px solid rgba(129,247,176,.2);border-radius:999px;background:rgba(129,247,176,.06)}
+.algorithm-tag{color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+#stratum-endpoint,.example-command-mini code{font-family:var(--mono)}
+.mining-connection .quick-facts strong{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem}
+.mining-connection .copy-mini{margin-left:0;min-width:1.8rem;padding:.2rem .5rem}
+.estimate-warning{margin:1rem 0 0;padding:.8rem .9rem;border:1px solid rgba(255,212,90,.32);border-radius:14px;background:rgba(255,212,90,.11);color:#ffe7a1;line-height:1.4}
+.recent-compact .list-state{gap:.55rem}
+.recent-compact .item-card{grid-template-columns:1fr 1.7fr 1fr 1.25fr;align-items:center;padding:.7rem .8rem}
+.recent-payments-compact .item-card{grid-template-columns:1.35fr 1.5fr 1fr 1.25fr}
+.recent-compact .item-card span{display:block;margin-bottom:.2rem;color:var(--muted);font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.recent-compact .item-card strong{font-size:.9rem}
+.recent-payments-compact .item-card div:nth-child(3) strong{color:var(--accent);font-size:1rem;font-weight:900}
+.nav a.active{color:var(--accent);border-color:rgba(129,247,176,.58);background:rgba(129,247,176,.13);box-shadow:inset 0 -2px 0 rgba(129,247,176,.45)}
+@media(max-width:760px){.recent-compact .item-card,.recent-payments-compact .item-card{grid-template-columns:1fr;gap:.65rem}.algorithm-tag-row{border-radius:14px}}
