@@ -1,4 +1,6 @@
 (function () {
+  const EXTRA_REFRESH_MS = 30000;
+
   function escapeHtml(str) {
     if (typeof str !== "string") return "";
     return str
@@ -257,14 +259,34 @@
     if (!target) return;
 
     let timer = null;
-    const schedule = () => {
+    let activeWallet = "";
+    let lastLoadedAt = 0;
+    let loading = false;
+
+    const schedule = (force) => {
       window.clearTimeout(timer);
-      timer = window.setTimeout(() => loadMinerExtras(currentWallet()), 150);
+      timer = window.setTimeout(async () => {
+        const wallet = currentWallet();
+        const walletChanged = wallet !== activeWallet;
+        const now = Date.now();
+        if (!wallet) return;
+        if (loading) return;
+        if (!force && !walletChanged && now - lastLoadedAt < EXTRA_REFRESH_MS) return;
+
+        loading = true;
+        activeWallet = wallet;
+        try {
+          await loadMinerExtras(wallet);
+          lastLoadedAt = Date.now();
+        } finally {
+          loading = false;
+        }
+      }, 250);
     };
 
-    const observer = new MutationObserver(schedule);
+    const observer = new MutationObserver(() => schedule(false));
     observer.observe(target, { childList: true, subtree: true });
-    schedule();
+    schedule(true);
   }
 
   document.addEventListener("DOMContentLoaded", setup);
