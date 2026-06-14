@@ -16,6 +16,9 @@
       .brand-title { min-width: 0; }
       .brand-title h1 { margin: 0; }
       .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
+      .secondary-block-context { margin-top: 1rem; }
+      .secondary-block-context summary { cursor: pointer; color: var(--accent-alt); font-weight: 700; }
+      .secondary-block-context summary + p { margin-top: 0.75rem; }
       @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
@@ -27,7 +30,7 @@
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Blocks</h1>
-            <p class="brand-subtitle">Network blocks, pool candidates, and round observations.</p>
+            <p class="brand-subtitle">Pool-found blocks first, with network snapshot data available as secondary context.</p>
           </div>
         </div>
         <nav class="nav">
@@ -44,9 +47,9 @@
         <section class="panel">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Chain view</p>
-              <h2>Recent network blocks</h2>
-              <p>Recent chain snapshot data. Pool shares and candidates are shown separately below.</p>
+              <p class="eyebrow">Pool found blocks</p>
+              <h2>Pool block observations</h2>
+              <p>Blocks and candidates observed by this pool, matched against public chain data when available.</p>
             </div>
           </div>
           <div class="status-strip" aria-label="Block status legend">
@@ -54,18 +57,22 @@
             <div><span>Immature</span><strong>Waiting for confirmations</strong></div>
             <div><span>Candidate</span><strong>Pool observation only</strong></div>
           </div>
-          <div id="blocks-table" class="list-state small-gap">Loading blocks...</div>
+          <div id="accepted-candidates-table" class="list-state">Loading pool block observations...</div>
         </section>
 
         <section class="panel">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Pool candidates</p>
-              <h2>Candidate chain observation</h2>
-              <p>Pool-found candidates matched against public chain data. This is observational until block maturity and payment recording are complete.</p>
+              <p class="eyebrow">Network context</p>
+              <h2>Recent network blocks</h2>
+              <p>General chain snapshot data for reference. This is not the primary pool-found block list.</p>
             </div>
           </div>
-          <div id="accepted-candidates-table" class="list-state">Loading accepted candidates...</div>
+          <details class="secondary-block-context">
+            <summary>Show recent network blocks</summary>
+            <p class="muted">Use this only as chain context. Pool-found blocks are shown above.</p>
+            <div id="blocks-table" class="list-state small-gap">Loading network blocks...</div>
+          </details>
         </section>
 
         <section class="panel">
