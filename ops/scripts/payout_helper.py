@@ -707,10 +707,14 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
     backfill_wallet = env.get("PEPEPOW_OPERATOR_BACKFILL_WALLET", "").strip()
     backfill_reason = env.get("PEPEPOW_OPERATOR_BACKFILL_REASON", "operator_approved_unattributed_confirmed_rewards").strip()
     try:
-        backfill_min_height = int(env.get("PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", ""))
-        backfill_max_height = int(env.get("PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT", ""))
+        backfill_min_height_raw = env.get("PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "").strip()
+        backfill_min_height = int(backfill_min_height_raw) if backfill_min_height_raw else None
     except (TypeError, ValueError):
         backfill_min_height = None
+    try:
+        backfill_max_height_raw = env.get("PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT", "").strip()
+        backfill_max_height = int(backfill_max_height_raw) if backfill_max_height_raw else None
+    except (TypeError, ValueError):
         backfill_max_height = None
     backfill_wallet_valid = bool(re.fullmatch(r"[A-Za-z0-9]{26,128}", backfill_wallet))
 
@@ -950,9 +954,6 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                     if not (
                         backfill_enabled
                         and backfill_wallet_valid
-                        and backfill_min_height is not None
-                        and backfill_max_height is not None
-                        and backfill_min_height <= backfill_max_height
                         and l_status == "confirmed"
                         and coinbase_matches_expected_pool_wallet is True
                         and not is_already_paid
@@ -963,18 +964,23 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                         and block_reason == "missing_share_data"
                     ):
                         return False
+                    if (
+                        backfill_min_height is not None
+                        and backfill_max_height is not None
+                        and backfill_min_height > backfill_max_height
+                    ):
+                        return False
                     try:
                         height_value = int(height)
                     except (TypeError, ValueError):
+                        return backfill_min_height is None and backfill_max_height is None
+                    if backfill_min_height is not None and height_value < backfill_min_height:
                         return False
-                    if not (backfill_min_height <= height_value <= backfill_max_height):
+                    if backfill_max_height is not None and height_value > backfill_max_height:
                         return False
                     if (c_hash, backfill_wallet) in paid_pairs:
                         return False
-                    return (
-                        round_data.get("attribution_status") == "incomplete"
-                        and round_data.get("attribution_reason") == "share_log_tail_too_short"
-                    )
+                    return True
 
                 def apply_operator_single_miner_backfill() -> None:
                     nonlocal status, reason, weight_mode, round_share_total, payouts

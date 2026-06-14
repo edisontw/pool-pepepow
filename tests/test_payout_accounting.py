@@ -6263,9 +6263,7 @@ class FallbackPayoutTests(unittest.TestCase):
             with self.rounds_path.open("w", encoding="utf-8") as f:
                 json.dump({"rounds": [{
                     "candidate_hash": "hashbackfillmissingshare00000001",
-                    "shares": {},
-                    "attribution_status": "incomplete",
-                    "attribution_reason": "share_log_tail_too_short"
+                    "shares": {}
                 }]}, f)
 
             rc = payout_helper.generate_payout_candidates(
@@ -6288,7 +6286,7 @@ class FallbackPayoutTests(unittest.TestCase):
             self.assertTrue(payout["fallbackWarning"])
             self.assertTrue(payout["operatorApprovedBackfill"])
             self.assertEqual(payout["weight"], 1.0)
-            self.assertAlmostEqual(payout["amount"], 4387.5 * 0.99)
+            self.assertAlmostEqual(payout["amount"], 4343.625)
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
                       "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
@@ -6304,6 +6302,8 @@ class FallbackPayoutTests(unittest.TestCase):
         os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_confirmed_single_miner_share_log_tail_short_2026-06-13"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT"] = "300"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"] = "310"
         try:
             accepted_data = {
                 "accepted_candidates": [{
@@ -6338,10 +6338,11 @@ class FallbackPayoutTests(unittest.TestCase):
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
                       "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
-                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON"]:
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON",
+                      "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
                 os.environ.pop(k, None)
 
-    def test_operator_backfill_requires_tail_short_attribution_reason(self):
+    def test_operator_backfill_allows_non_tail_short_attribution_reason(self):
         os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
         os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
         os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1.0"
@@ -6380,8 +6381,10 @@ class FallbackPayoutTests(unittest.TestCase):
                 res = json.load(f)
 
             item = res["items"][0]
-            self.assertEqual(item["status"], "blocked")
-            self.assertEqual(item["reason"], "missing_share_data")
+            self.assertEqual(item["status"], "ready_for_manual_review")
+            self.assertIsNone(item["reason"])
+            self.assertEqual(item["weightMode"], "operator_single_miner_backfill")
+            self.assertAlmostEqual(item["payouts"][0]["amount"], 4343.625)
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
                       "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
