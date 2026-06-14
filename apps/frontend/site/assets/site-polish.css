@@ -96,6 +96,68 @@
   min-width: 760px;
 }
 
+.payments-table-wide .table-wrap table {
+  min-width: 980px;
+}
+
+.payment-amount {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.payment-source-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.payment-source-list code {
+  font-size: 0.82rem;
+}
+
+.calc-results {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.calc-pepew-stack {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.calc-pepew-stack > div,
+.calc-usdt-row > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.78rem 0.9rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.calc-pepew-stack span,
+.calc-usdt-row span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.calc-pepew-stack strong,
+.calc-usdt-row strong {
+  white-space: nowrap;
+  font-size: clamp(1.05rem, 1.7vw, 1.35rem);
+  text-align: right;
+}
+
+.calc-usdt-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
 .code-block {
   white-space: pre-wrap;
   word-break: break-word;
@@ -114,5 +176,11 @@
 
   .section-head {
     display: grid;
+  }
+}
+
+@media (max-width: 640px) {
+  .calc-usdt-row {
+    grid-template-columns: 1fr;
   }
 }
