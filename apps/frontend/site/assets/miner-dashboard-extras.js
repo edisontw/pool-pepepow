@@ -14,9 +14,35 @@
     return new Intl.NumberFormat().format(value);
   }
 
-  function findRecentAcceptedRate(record) {
+  function readCount(record, keys) {
     if (!record || typeof record !== "object") return null;
-    const keys = ["recentAcceptedRate", "recent_accepted_rate", "acceptedRate", "accepted_rate"];
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  function calculatePoolAcceptedRate(record) {
+    if (!record || typeof record !== "object") return null;
+
+    const explicitRate = readExplicitAcceptedRate(record);
+    if (explicitRate !== null) return explicitRate;
+
+    const accepted = readCount(record, ["acceptedSubmits", "accepted_submits", "acceptedShares", "accepted_shares"]);
+    const rejected = readCount(record, ["rejectedSubmits", "rejected_submits", "rejectedShares", "rejected_shares"]);
+    if (accepted === null || rejected === null) return null;
+
+    const total = accepted + rejected;
+    if (total <= 0) return null;
+    return accepted / total;
+  }
+
+  function readExplicitAcceptedRate(record) {
+    if (!record || typeof record !== "object") return null;
+    const keys = ["poolAcceptedRate", "pool_accepted_rate", "recentPoolAcceptedRate", "recent_pool_accepted_rate", "acceptedRate", "accepted_rate", "recentAcceptedRate", "recent_accepted_rate"];
     for (const key of keys) {
       const value = record[key];
       if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1) {
@@ -27,11 +53,20 @@
   }
 
   function renderRate(record) {
-    const rate = findRecentAcceptedRate(record);
+    const rate = calculatePoolAcceptedRate(record);
     if (rate === null) {
       return '<span class="muted">Not available yet</span>';
     }
     return escapeHtml((rate * 100).toFixed(2) + "%");
+  }
+
+  function renderPoolAcceptedRateNote(record) {
+    const accepted = readCount(record, ["acceptedSubmits", "accepted_submits", "acceptedShares", "accepted_shares"]);
+    const rejected = readCount(record, ["rejectedSubmits", "rejected_submits", "rejectedShares", "rejected_shares"]);
+    if (accepted === null || rejected === null) {
+      return "Calculated only when pool-side accepted and rejected submit counters are available.";
+    }
+    return `Pool-side submits: ${formatNumber(accepted)} accepted / ${formatNumber(rejected)} rejected. Miner local invalid solutions are not included.`;
   }
 
   function renderPendingMetricCards(result) {
@@ -47,6 +82,11 @@
       : "Not available yet";
 
     return `<div id="miner-pending-extras" class="miner-summary-grid" style="margin-top: 1rem;">
+      <article class="miner-metric-card">
+        <span>Pool Accepted Rate</span>
+        <strong>${renderRate(summary)}</strong>
+        <p class="metric-note">${escapeHtml(renderPoolAcceptedRateNote(summary))}</p>
+      </article>
       <article class="miner-metric-card">
         <span>Pending Confirmation</span>
         <strong>${escapeHtml(pendingConfirmationText)}</strong>
@@ -87,13 +127,13 @@
     const headerRow = table.querySelector("thead tr");
     if (headerRow) {
       const th = document.createElement("th");
-      th.textContent = "Accepted Rate";
+      th.textContent = "Pool Accepted Rate";
       headerRow.appendChild(th);
     }
 
     table.querySelectorAll("tbody tr").forEach((row, index) => {
       const td = document.createElement("td");
-      td.setAttribute("data-label", "Accepted Rate");
+      td.setAttribute("data-label", "Pool Accepted Rate");
       td.innerHTML = renderRate(workers[index]);
       row.appendChild(td);
     });
@@ -102,7 +142,7 @@
 
     const note = document.createElement("p");
     note.className = "muted table-note";
-    note.textContent = "Worker accepted-rate is shown only when a reliable recent accepted-rate field exists. It is not calculated from lifetime totals.";
+    note.textContent = "Pool Accepted Rate uses pool-side accepted/rejected submit counters only. Miner local invalid solutions are not included.";
     table.parentElement.appendChild(note);
   }
 
