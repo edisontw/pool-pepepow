@@ -3,52 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PEPEPOW Lab Pool Payments</title>
+    <title>Payments - PEPEPOW Lab Pool</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="stylesheet" href="/assets/styles.css?v=6">
+    <link rel="stylesheet" href="/assets/site-polish.css?v=1">
     <style>
-      .topbar .brand-lockup {
-        align-items: center;
-        gap: 18px;
-      }
-
-      .topbar .brand-lockup .brand-logo {
-        width: 72px !important;
-        height: 72px !important;
-        min-width: 72px !important;
-        max-width: 72px !important;
-        flex: 0 0 72px;
-        object-fit: contain;
-      }
-
-      .brand-title {
-        min-width: 0;
-      }
-
-      .brand-title h1 {
-        margin: 0;
-      }
-
-      .brand-subtitle {
-        margin: 10px 0 0;
-        max-width: 680px;
-        color: rgba(235, 245, 255, 0.72);
-        font-size: clamp(0.95rem, 1.8vw, 1.08rem);
-        line-height: 1.45;
-      }
-
-      @media (max-width: 640px) {
-        .topbar .brand-lockup .brand-logo {
-          width: 58px !important;
-          height: 58px !important;
-          min-width: 58px !important;
-          max-width: 58px !important;
-          flex-basis: 58px;
-        }
-      }
+      .topbar .brand-lockup { align-items: center; gap: 18px; }
+      .topbar .brand-lockup .brand-logo { width: 72px !important; height: 72px !important; min-width: 72px !important; max-width: 72px !important; flex: 0 0 72px; object-fit: contain; }
+      .brand-title { min-width: 0; }
+      .brand-title h1 { margin: 0; }
+      .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
+      @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
   <body data-page="payments">
@@ -59,7 +27,7 @@
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Payments</h1>
-            <p class="brand-subtitle">Recorded payment history after operator review or private self-test.</p>
+            <p class="brand-subtitle">Completed and recorded pool payments.</p>
           </div>
         </div>
         <nav class="nav">
@@ -74,13 +42,17 @@
 
       <main class="page-single">
         <section class="panel">
-          <p class="muted">
-            Payments shown here are recorded after operator review or private self-test completion. This page does not show pending or estimated amounts.
-          </p>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Payment history</p>
+              <h2>Recorded payments</h2>
+              <p>Only completed records are shown. Pending balances and estimates are not displayed on this page.</p>
+            </div>
+          </div>
           <div id="payment-info" class="chip-row">
-            <span class="info-chip">Payment mode: manual/recorded</span>
-            <span class="info-chip">Pool fee: Fee shown when configured</span>
-            <span class="info-chip">Minimum payout shown when configured</span>
+            <span class="info-chip">Mode: recorded payments</span>
+            <span class="info-chip">Pool fee: loading</span>
+            <span class="info-chip">Minimum payout: loading</span>
           </div>
           <div id="latest-payment" class="latest-card"></div>
           <div id="payments-table" class="list-state">Loading payments...</div>
@@ -88,6 +60,6 @@
       </main>
     </div>
 
-    <script src="/assets/app.js"></script>
+    <script src="/assets/app.js?v=9"></script>
   </body>
 </html>
