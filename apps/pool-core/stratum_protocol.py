@@ -171,7 +171,19 @@ def resolve_submit_identity(
     if params:
         login = params[0]
         if isinstance(login, str) and login.strip():
-            return authorize_identity(login)
+            normalized_login = login.strip()
+            if "." in normalized_login:
+                return authorize_identity(normalized_login)
+            if (
+                state.authorized_wallet is not None
+                and normalized_login == state.authorized_wallet
+            ):
+                return (
+                    state.authorized_wallet,
+                    state.authorized_worker or DEFAULT_WORKER_NAME,
+                    state.authorized_login or normalized_login,
+                )
+            return authorize_identity(normalized_login)
 
     if state.authorized_login is not None:
         return (
