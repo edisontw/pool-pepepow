@@ -1,6 +1,5 @@
 (function () {
   const EXTRA_REFRESH_MS = 30000;
-  const BLOCK_REWARD_PEPEW = 7000 * 0.95 * 0.65;
 
   function escapeHtml(str) {
     if (typeof str !== "string") return "";
@@ -31,10 +30,6 @@
       if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
     }
     return null;
-  }
-
-  function normalizeStatus(value) {
-    return String(value || "").trim().toLowerCase().replace(/_/g, "-");
   }
 
   function calculatePoolAcceptedRate(record) {
@@ -77,84 +72,6 @@
     return String(item.paidAt || item.timestamp || "");
   }
 
-  function paidRoundKeys(result) {
-    const keys = new Set();
-    const payments = result && Array.isArray(result.recentPayments) ? result.recentPayments : [];
-    for (const payment of payments) {
-      if (!payment || typeof payment !== "object") continue;
-      const ids = Array.isArray(payment.sourceCandidateIds) ? payment.sourceCandidateIds : [];
-      for (const id of ids) keys.add(String(id));
-      const heights = Array.isArray(payment.blockHeights) ? payment.blockHeights : [];
-      for (const height of heights) keys.add(`height:${height}`);
-      if (payment.candidateId) keys.add(String(payment.candidateId));
-      if (payment.blockHeight) keys.add(`height:${payment.blockHeight}`);
-    }
-    return keys;
-  }
-
-  function walletRoundShare(round, wallet) {
-    if (!round || typeof round !== "object" || !wallet) return null;
-    const shares = round.shares;
-    if (!shares || typeof shares !== "object") return null;
-    const item = shares[wallet];
-    return item && typeof item === "object" ? item : null;
-  }
-
-  function estimatedWalletReward(round, wallet) {
-    const share = walletRoundShare(round, wallet);
-    if (!share) return 0;
-    const percent = readCount(share, ["sharePercent", "share_percent"]);
-    if (percent === null) return 0;
-    return BLOCK_REWARD_PEPEW * (percent / 100);
-  }
-
-  function roundKey(round) {
-    if (!round || typeof round !== "object") return "";
-    return String(round.candidateHash || round.roundId || round.candidate_hash || round.round_id || "");
-  }
-
-  function roundHeightKey(round) {
-    const height = readCount(round, ["matchedHeight", "height"]);
-    return height === null ? "" : `height:${height}`;
-  }
-
-  function calculateRecentRewardLifecycle(roundsPayload, result, wallet) {
-    const items = roundsPayload && Array.isArray(roundsPayload.items) ? roundsPayload.items : [];
-    const paidKeys = paidRoundKeys(result);
-    const lifecycle = {
-      scanned: items.length,
-      immatureCount: 0,
-      immatureAmount: 0,
-      maturedUnpaidCount: 0,
-      maturedUnpaidAmount: 0,
-      latestImmatureHeight: null,
-      latestMaturedUnpaidHeight: null,
-    };
-    for (const round of items) {
-      if (!walletRoundShare(round, wallet)) continue;
-      const status = normalizeStatus(round.status || round.roundStatus || round.lifecycleStatus);
-      if (status === "orphan" || status === "orphaned") continue;
-      const amount = estimatedWalletReward(round, wallet);
-      const height = readCount(round, ["matchedHeight", "height"]);
-      const key = roundKey(round);
-      const hkey = roundHeightKey(round);
-      const isPaid = (key && paidKeys.has(key)) || (hkey && paidKeys.has(hkey));
-
-      if (status === "confirmed" || status === "mature") {
-        if (!isPaid) {
-          lifecycle.maturedUnpaidCount += 1;
-          lifecycle.maturedUnpaidAmount += amount;
-          if (height !== null) lifecycle.latestMaturedUnpaidHeight = lifecycle.latestMaturedUnpaidHeight === null ? height : Math.max(lifecycle.latestMaturedUnpaidHeight, height);
-        }
-      } else if (status) {
-        lifecycle.immatureCount += 1;
-        lifecycle.immatureAmount += amount;
-        if (height !== null) lifecycle.latestImmatureHeight = lifecycle.latestImmatureHeight === null ? height : Math.max(lifecycle.latestImmatureHeight, height);
-      }
-    }
-    return lifecycle;
-  }
-
   function renderRecordedPaymentsCard(result) {
     const payments = result && Array.isArray(result.recentPayments) ? result.recentPayments : [];
     const totalPaid = readCount(result, ["totalPaidManual", "total_paid_manual"]);
@@ -174,23 +91,20 @@
     </article>`;
   }
 
-  function renderRewardLifecycleCards(lifecycle) {
-    if (!lifecycle || lifecycle.scanned <= 0) return "";
-    const immatureNote = `Recent rounds snapshot only. ${formatNumber(lifecycle.scanned)} rounds scanned.` + (lifecycle.latestImmatureHeight === null ? "" : ` Latest height: ${formatNumber(lifecycle.latestImmatureHeight)}.`);
-    const unpaidNote = `Recent confirmed rounds minus recorded payment mappings. ${formatNumber(lifecycle.scanned)} rounds scanned.` + (lifecycle.latestMaturedUnpaidHeight === null ? "" : ` Latest height: ${formatNumber(lifecycle.latestMaturedUnpaidHeight)}.`);
-    return `<article class="miner-metric-card">
-      <span>Recent Immature Rewards</span>
-      <strong>${formatNumber(lifecycle.immatureAmount)} PEPEW</strong>
-      <p class="metric-note">${formatNumber(lifecycle.immatureCount)} block${lifecycle.immatureCount === 1 ? "" : "s"}. ${escapeHtml(immatureNote)}</p>
+  function renderReservedRewardLifecycleCards() {
+    return `<article class="miner-metric-card muted-card">
+      <span>Immature Rewards</span>
+      <strong>Reserved</strong>
+      <p class="metric-note">Reserved for a future API-backed wallet reward lifecycle summary. No recent-round scan or estimate is shown.</p>
     </article>
-    <article class="miner-metric-card">
-      <span>Recent Matured Unpaid Rewards</span>
-      <strong>${formatNumber(lifecycle.maturedUnpaidAmount)} PEPEW</strong>
-      <p class="metric-note">${formatNumber(lifecycle.maturedUnpaidCount)} block${lifecycle.maturedUnpaidCount === 1 ? "" : "s"}. ${escapeHtml(unpaidNote)}</p>
+    <article class="miner-metric-card muted-card">
+      <span>Matured Unpaid Rewards</span>
+      <strong>Reserved</strong>
+      <p class="metric-note">Reserved for a future payout-accounting backed field. Recorded payments below remain the reliable payout source.</p>
     </article>`;
   }
 
-  function renderPoolAcceptedRateCard(result, lifecycle) {
+  function renderMinerExtras(result) {
     const summary = result && typeof result.summary === "object" && result.summary ? result.summary : {};
     return `<div id="miner-pending-extras" class="miner-summary-grid" style="margin-top: 1rem;">
       <article class="miner-metric-card">
@@ -199,18 +113,18 @@
         <p class="metric-note">${escapeHtml(renderPoolAcceptedRateNote(summary))}</p>
       </article>
       ${renderRecordedPaymentsCard(result)}
-      ${renderRewardLifecycleCards(lifecycle)}
+      ${renderReservedRewardLifecycleCards()}
     </div>`;
   }
 
-  function insertPoolAcceptedRateCard(result, lifecycle) {
+  function insertMinerExtras(result) {
     const container = document.getElementById("miner-result");
     if (!container || !result || !result.found) return;
     const existing = document.getElementById("miner-pending-extras");
     if (existing) existing.remove();
     const summaryGrid = container.querySelector(".miner-summary-grid");
     if (!summaryGrid) return;
-    summaryGrid.insertAdjacentHTML("afterend", renderPoolAcceptedRateCard(result, lifecycle));
+    summaryGrid.insertAdjacentHTML("afterend", renderMinerExtras(result));
   }
 
   function addWorkerAcceptedRateColumn(result) {
@@ -280,14 +194,7 @@
     try {
       const result = await fetchJson(`/api/miner/${encodeURIComponent(wallet)}`);
       if (!result) return;
-      let lifecycle = null;
-      try {
-        const rounds = await fetchJson("/api/rounds");
-        lifecycle = calculateRecentRewardLifecycle(rounds, result, wallet);
-      } catch (_roundsError) {
-        lifecycle = null;
-      }
-      insertPoolAcceptedRateCard(result, lifecycle);
+      insertMinerExtras(result);
       addWorkerAcceptedRateColumn(result);
       syncRewardAnalysisAcceptedRate(result);
     } catch (_error) {
