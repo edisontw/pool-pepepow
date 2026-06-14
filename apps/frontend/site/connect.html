@@ -98,6 +98,21 @@
         </section>
 
         <section class="panel">
+          <h3>Static difficulty / <code>sd=</code> notes</h3>
+          <p class="notice-line">Some miners support adding <code>sd=</code> to the worker name to request a static difficulty. These are starting points only and may need testing.</p>
+          <div class="kv-list">
+            <div><span>Raspberry Pi</span><strong><code>sd=10</code></strong></div>
+            <div><span>Low-end CPU</span><strong>Usually do not use <code>sd=</code></strong></div>
+            <div><span>High-end CPU</span><strong><code>sd=100</code> or greater</strong></div>
+            <div><span>GPU</span><strong>Roughly <code>sd=100</code> per MH/s</strong></div>
+          </div>
+          <pre class="code-block" style="margin-top: 1rem;">YOUR_WALLET.rpi,sd=10
+YOUR_WALLET.cpu,sd=100
+YOUR_WALLET.gpu10mh,sd=1000</pre>
+          <p class="notice-line">GPU example: a 10 MH/s worker can start around <code>sd=1000</code>. This rule of thumb still needs real-world testing.</p>
+        </section>
+
+        <section class="panel">
           <h3>Pool notes</h3>
           <ul class="text-list">
             <li>Accepted shares usually appear within about one minute.</li>
