@@ -119,12 +119,13 @@
 
   function insertMinerExtras(result) {
     const container = document.getElementById("miner-result");
-    if (!container || !result || !result.found) return;
+    if (!container || !result || !result.found) return false;
     const existing = document.getElementById("miner-pending-extras");
     if (existing) existing.remove();
     const summaryGrid = container.querySelector(".miner-summary-grid");
-    if (!summaryGrid) return;
+    if (!summaryGrid) return false;
     summaryGrid.insertAdjacentHTML("afterend", renderMinerExtras(result));
+    return true;
   }
 
   function addWorkerAcceptedRateColumn(result) {
@@ -183,6 +184,15 @@
     note.textContent = renderPoolAcceptedRateNote(summary);
   }
 
+  function repaintFromCache(cachedResult) {
+    if (!cachedResult) return false;
+    const hasExtras = Boolean(document.getElementById("miner-pending-extras"));
+    const didInsert = hasExtras ? false : insertMinerExtras(cachedResult);
+    addWorkerAcceptedRateColumn(cachedResult);
+    syncRewardAnalysisAcceptedRate(cachedResult);
+    return didInsert;
+  }
+
   async function fetchJson(url) {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) return null;
@@ -190,15 +200,16 @@
   }
 
   async function loadMinerExtras(wallet) {
-    if (!wallet) return;
+    if (!wallet) return null;
     try {
       const result = await fetchJson(`/api/miner/${encodeURIComponent(wallet)}`);
-      if (!result) return;
+      if (!result) return null;
       insertMinerExtras(result);
       addWorkerAcceptedRateColumn(result);
       syncRewardAnalysisAcceptedRate(result);
+      return result;
     } catch (_error) {
-      // Optional frontend enhancement only.
+      return null;
     }
   }
 
@@ -214,6 +225,8 @@
     let activeWallet = "";
     let lastLoadedAt = 0;
     let loading = false;
+    let cachedResult = null;
+
     const schedule = (force) => {
       window.clearTimeout(timer);
       timer = window.setTimeout(async () => {
@@ -221,18 +234,32 @@
         const walletChanged = wallet !== activeWallet;
         const now = Date.now();
         if (!wallet) return;
-        if (loading) return;
-        if (!force && !walletChanged && now - lastLoadedAt < EXTRA_REFRESH_MS) return;
+
+        if (!force && !walletChanged && cachedResult && now - lastLoadedAt < EXTRA_REFRESH_MS) {
+          repaintFromCache(cachedResult);
+          return;
+        }
+        if (loading) {
+          repaintFromCache(cachedResult);
+          return;
+        }
+
         loading = true;
         activeWallet = wallet;
         try {
-          await loadMinerExtras(wallet);
-          lastLoadedAt = Date.now();
+          const fresh = await loadMinerExtras(wallet);
+          if (fresh) {
+            cachedResult = fresh;
+            lastLoadedAt = Date.now();
+          } else {
+            repaintFromCache(cachedResult);
+          }
         } finally {
           loading = false;
         }
       }, 250);
     };
+
     const observer = new MutationObserver(() => schedule(false));
     observer.observe(target, { childList: true, subtree: true });
     schedule(true);
