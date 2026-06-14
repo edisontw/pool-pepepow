@@ -75,9 +75,7 @@
     try {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
       if (parsed && Array.isArray(parsed.pool) && Array.isArray(parsed.network)) return parsed;
-    } catch (_error) {
-      // Fall through to legacy import.
-    }
+    } catch (_error) {}
 
     let legacyPool = [];
     try {
@@ -92,9 +90,7 @@
   function saveHistory(history) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
-    } catch (_error) {
-      // Ignore storage quota/private mode failures.
-    }
+    } catch (_error) {}
   }
 
   function normalizeSeries(points) {
@@ -108,9 +104,7 @@
 
   function appendPoint(points, hashrate) {
     const normalized = normalizeSeries(points);
-    if (typeof hashrate !== "number" || !Number.isFinite(hashrate) || hashrate < 0) {
-      return normalized;
-    }
+    if (typeof hashrate !== "number" || !Number.isFinite(hashrate) || hashrate < 0) return normalized;
     const now = Date.now();
     const last = normalized[normalized.length - 1];
     if (last && now - last.t < SAMPLE_INTERVAL_MS * 0.75) {
@@ -134,11 +128,7 @@
     if (!container) return;
 
     if (!Array.isArray(points) || points.length === 0) {
-      container.innerHTML = `
-        <div class="trend-empty">
-          <strong>${escapeHtml(title)}</strong>
-          <p class="muted">Waiting for the first lightweight one-minute sample.</p>
-        </div>`;
+      container.innerHTML = `<div class="trend-empty"><strong>${escapeHtml(title)}</strong><p class="muted">Waiting for the first lightweight one-minute sample.</p></div>`;
       return;
     }
 
@@ -159,7 +149,6 @@
     const timeSpan = Math.max(lastT - firstT, 1);
     const chartW = width - padLeft - padRight;
     const chartH = height - padTop - padBottom;
-
     const xy = points.map((point) => {
       const x = padLeft + ((point.t - firstT) / timeSpan) * chartW;
       const y = padTop + (1 - ((point.h - min) / span)) * chartH;
@@ -182,10 +171,10 @@
         <h4>${escapeHtml(title)}</h4>
         <span>${escapeHtml(sampleLabel)}</span>
       </div>
-      <div class="trend-meta">
-        <div><span>Latest</span><strong>${escapeHtml(formatHashrate(latest.h))}</strong></div>
-        <div><span>Peak</span><strong>${escapeHtml(formatHashrate(max))}</strong></div>
-        <div><span>Low</span><strong>${escapeHtml(formatHashrate(rawMin))}</strong></div>
+      <div class="trend-meta trend-meta-compact">
+        <span><b>Latest</b> ${escapeHtml(formatHashrate(latest.h))}</span>
+        <span><b>Peak</b> ${escapeHtml(formatHashrate(max))}</span>
+        <span><b>Low</b> ${escapeHtml(formatHashrate(rawMin))}</span>
       </div>
       <svg class="hashrate-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)} chart">
         <line x1="${padLeft}" y1="${yTop}" x2="${width - padRight}" y2="${yTop}" class="trend-grid-line"></line>
@@ -216,14 +205,13 @@
     style.textContent = `
       .hashrate-trend-panel { grid-column: 1 / -1; }
       .trend-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
-      .trend-chart { display: grid; gap: 0.75rem; min-width: 0; }
+      .trend-chart { display: grid; gap: 0.55rem; min-width: 0; }
       .trend-title-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
       .trend-title-row h4 { margin: 0; font-size: 1rem; }
-      .trend-title-row span { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
-      .trend-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; }
-      .trend-meta div { padding: 0.65rem; border-radius: 12px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.07); }
-      .trend-meta span { display: block; color: var(--muted); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
-      .trend-meta strong { display: block; margin-top: 0.2rem; font-size: 0.92rem; }
+      .trend-title-row span { color: var(--muted); font-size: 0.76rem; white-space: nowrap; }
+      .trend-meta-compact { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+      .trend-meta-compact span { display: inline-flex; gap: 0.25rem; padding: 0.26rem 0.45rem; border-radius: 999px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.06); color: var(--muted); font-size: 0.72rem; }
+      .trend-meta-compact b { color: rgba(235,245,255,0.82); font-weight: 700; }
       .hashrate-svg { width: 100%; min-height: 210px; border-radius: 14px; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); }
       .trend-axis, .trend-grid-line { stroke: rgba(255,255,255,0.16); stroke-width: 1; }
       .trend-grid-line { stroke-dasharray: 4 5; opacity: 0.7; }
@@ -232,7 +220,6 @@
       .trend-line { fill: none; stroke: rgba(55,196,255,0.95); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
       .trend-empty { padding: 1rem; border-radius: 14px; background: rgba(255,255,255,0.035); border: 1px dashed rgba(255,255,255,0.16); }
       @media (max-width: 920px) { .trend-chart-grid { grid-template-columns: 1fr; } }
-      @media (max-width: 640px) { .trend-meta { grid-template-columns: 1fr; } }
     `;
     document.head.appendChild(style);
   }
