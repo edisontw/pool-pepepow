@@ -180,7 +180,7 @@
     const node = document.getElementById("last-block-time");
     if (!node || !cachedLastPoolBlockText || !cachedLastPoolBlockHtml) return;
     const current = node.textContent ? node.textContent.trim() : "";
-    if (!current || current === "-" || current !== cachedLastPoolBlockText) {
+    if (!current || current === "-" || node.innerHTML !== cachedLastPoolBlockHtml) {
       node.innerHTML = cachedLastPoolBlockHtml;
       node.dataset.poolObservedBlock = cachedLastPoolBlockText;
     }
