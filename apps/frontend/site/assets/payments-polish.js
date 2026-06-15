@@ -83,33 +83,6 @@
     return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span>${action}${explorerLink(url)}</span>`;
   }
 
-  function sourceCandidates(item) {
-    const candidates = item.sourceCandidateIds || item.source_candidate_ids || item.candidates || [];
-    return Array.isArray(candidates) ? candidates.filter(Boolean).map(String) : [];
-  }
-
-  function candidateDisplay(item, candidatesByHeight) {
-    const direct = item.candidateHash || item.candidate_hash || item.blockHash || item.block_hash || item.candidateId || item.candidate_id;
-    if (direct) return valueWithActions(direct, "block");
-
-    const sources = sourceCandidates(item);
-    if (sources.length === 1) return valueWithActions(sources[0], "block");
-    if (sources.length > 1) {
-      const title = sources.join("\n");
-      return `<span class="payment-source-list" title="${escapeHtml(title)}"><strong>${sources.length} candidates</strong><code>${escapeHtml(shortHash(sources[0]))}</code></span>`;
-    }
-
-    const heights = [];
-    if (Array.isArray(item.blockHeights)) heights.push(...item.blockHeights);
-    if (item.blockHeight !== undefined && item.blockHeight !== null) heights.push(item.blockHeight);
-    if (item.height !== undefined && item.height !== null) heights.push(item.height);
-    const matched = heights.map((h) => candidatesByHeight.get(String(h))).filter(Boolean);
-    if (matched.length === 1) return candidateDisplay(matched[0], candidatesByHeight);
-    if (matched.length > 1) return `<span class="payment-source-list"><strong>${matched.length} candidates</strong></span>`;
-
-    return "-";
-  }
-
   function blockDisplay(item) {
     if (item.blockHeightRange) return escapeHtml(String(item.blockHeightRange));
     if (Array.isArray(item.blockHeights) && item.blockHeights.length > 0) {
@@ -124,20 +97,7 @@
     return height !== null && height !== undefined && height !== "" ? valueWithActions(height, "block") : "-";
   }
 
-  function buildCandidateHeightMap(payloads) {
-    const map = new Map();
-    for (const payload of payloads) {
-      const items = payload && Array.isArray(payload.items) ? payload.items : [];
-      for (const item of items) {
-        if (!item || typeof item !== "object") continue;
-        const heights = [item.blockHeight, item.height, item.matchedHeight, item.block_height].filter((v) => v !== undefined && v !== null && v !== "");
-        for (const h of heights) map.set(String(h), item);
-      }
-    }
-    return map;
-  }
-
-  function renderPaymentsTable(candidatesByHeight) {
+  function renderPaymentsTable() {
     const target = document.getElementById("payments-table");
     if (!target) return;
 
@@ -152,17 +112,16 @@
     const visible = paymentItems.slice(start, start + PAGE_SIZE);
 
     const rows = visible.map((item) => `<tr>
-      <td data-label="Wallet">${valueWithActions(item.wallet, "address")}</td>
-      <td data-label="Blocks">${blockDisplay(item)}</td>
-      <td data-label="Candidate hash">${candidateDisplay(item, candidatesByHeight)}</td>
-      <td data-label="Amount"><span class="payment-amount">${escapeHtml(formatNumber(item.amount))}</span></td>
       <td data-label="Time">${escapeHtml(formatDate(item.paidAt || item.timestamp))}</td>
-      <td data-label="Confirms">${escapeHtml(formatNumber(item.confirmations))}</td>
+      <td data-label="Wallet">${valueWithActions(item.wallet, "address")}</td>
+      <td data-label="Amount"><span class="payment-amount">${escapeHtml(formatNumber(item.amount))}</span></td>
       <td data-label="TxID">${valueWithActions(item.txid, "txid")}</td>
+      <td data-label="Blocks">${blockDisplay(item)}</td>
+      <td data-label="Confirms">${escapeHtml(formatNumber(item.confirmations))}</td>
     </tr>`).join("");
 
     target.innerHTML = `<div class="table-wrap"><table class="payments-table-wide" data-polished="1">
-      <thead><tr><th>Wallet</th><th>Blocks</th><th>Candidate hash</th><th>Amount</th><th>Time</th><th>Confirms</th><th>TxID</th></tr></thead>
+      <thead><tr><th>Time</th><th>Wallet</th><th>Amount</th><th>TxID</th><th>Blocks</th><th>Confirms</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <div class="table-pagination" style="display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap;">
@@ -184,23 +143,18 @@
 
   async function run() {
     if (document.body.dataset.page !== "payments") return;
-    const [payments, accepted, rounds] = await Promise.all([
-      fetchJson("/api/payments"),
-      fetchJson("/api/accepted-candidates"),
-      fetchJson("/api/rounds")
-    ]);
+    const payments = await fetchJson("/api/payments");
     paymentItems = Array.isArray(payments.items) ? payments.items : [];
     paymentItems.sort((a, b) => String(b.paidAt || b.timestamp || "").localeCompare(String(a.paidAt || a.timestamp || "")));
-    const candidatesByHeight = buildCandidateHeightMap([accepted, rounds]);
 
     document.addEventListener("click", (event) => {
       const button = event.target.closest("[data-payment-page]");
       if (!button || button.disabled) return;
       paymentPage = Number(button.getAttribute("data-payment-page"));
-      renderPaymentsTable(candidatesByHeight);
+      renderPaymentsTable();
     });
 
-    renderPaymentsTable(candidatesByHeight);
+    renderPaymentsTable();
   }
 
   document.addEventListener("DOMContentLoaded", run);
