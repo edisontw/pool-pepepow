@@ -81,6 +81,11 @@
     if (type === "address" && isPepepowAddress(raw)) url = explorerAddressUrl(raw);
     if (type === "block" && (isHash64(raw) || /^\d+$/.test(raw))) url = explorerBlockUrl(raw);
     const action = type === "address" && isPepepowAddress(raw) ? minerLookupButton(raw) : copyButton(raw);
+
+    if (type === "address" || type === "txid") {
+      return `<span class="payment-value-stack"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span><span class="payment-action-row">${action}${explorerLink(url)}</span></span>`;
+    }
+
     return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span>${action}${explorerLink(url)}</span>`;
   }
 
@@ -96,6 +101,14 @@
     }
     const height = item.blockHeight ?? item.height ?? item.matchedHeight ?? item.block_height;
     return height !== null && height !== undefined && height !== "" ? valueWithActions(height, "block") : "-";
+  }
+
+  function installStyles() {
+    if (document.getElementById("payments-polish-style")) return;
+    const style = document.createElement("style");
+    style.id = "payments-polish-style";
+    style.textContent = ".payments-table-wide th{white-space:nowrap}.payments-table-wide th:last-child,.payments-table-wide td:last-child{min-width:4.8rem;white-space:nowrap}.payment-value-stack{display:inline-flex;flex-direction:column;align-items:flex-start;gap:.32rem}.payment-action-row{display:inline-flex;align-items:center;gap:.35rem;flex-wrap:wrap}.payment-action-row .copy-mini,.payment-action-row .explorer-link{margin:0}";
+    document.head.appendChild(style);
   }
 
   function renderPaymentsTable() {
@@ -162,6 +175,7 @@
 
   async function run() {
     if (document.body.dataset.page !== "payments") return;
+    installStyles();
     await loadPayments();
 
     document.addEventListener("click", (event) => {
