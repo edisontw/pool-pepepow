@@ -16,12 +16,12 @@
       .brand-title { min-width: 0; }
       .brand-title h1 { margin: 0; }
       .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
-      #rounds-table table { table-layout: auto; }
-      #rounds-table th, #rounds-table td { vertical-align: top; }
-      #rounds-table th:nth-child(1), #rounds-table td:nth-child(1) { min-width: 10rem; }
-      #rounds-table th:nth-child(2), #rounds-table td:nth-child(2) { min-width: 9rem; white-space: nowrap; }
+      #accepted-candidates-table table, #rounds-table table { table-layout: auto; }
+      #accepted-candidates-table th, #accepted-candidates-table td, #rounds-table th, #rounds-table td { vertical-align: top; }
+      #accepted-candidates-table th:nth-child(1), #accepted-candidates-table td:nth-child(1), #rounds-table th:nth-child(2), #rounds-table td:nth-child(2) { min-width: 9rem; white-space: nowrap; }
+      #accepted-candidates-table th:nth-child(2), #accepted-candidates-table td:nth-child(2), #rounds-table th:nth-child(1), #rounds-table td:nth-child(1) { min-width: 11rem; }
       #rounds-table th:nth-child(4), #rounds-table td:nth-child(4) { min-width: 8.5rem; }
-      #rounds-table th:nth-child(9), #rounds-table td:nth-child(9) { min-width: 14rem; }
+      #rounds-table th:nth-child(9), #rounds-table td:nth-child(9) { min-width: 13rem; }
       @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
@@ -52,7 +52,7 @@
             <div>
               <p class="eyebrow">Pool-found blocks</p>
               <h2>Pool block observations</h2>
-              <p>Blocks and candidates observed by this pool, matched against public chain data when available.</p>
+              <p>Blocks and candidates observed by this pool, newest observations first.</p>
             </div>
           </div>
           <div class="status-strip" aria-label="Block status legend">
@@ -78,6 +78,7 @@
 
     <script src="/assets/time-format.js?v=1"></script>
     <script src="/assets/app.js?v=10"></script>
-    <script src="/assets/blocks-rounds-override.js?v=2"></script>
+    <script src="/assets/blocks-found-override.js?v=1"></script>
+    <script src="/assets/blocks-rounds-override.js?v=3"></script>
   </body>
 </html>
