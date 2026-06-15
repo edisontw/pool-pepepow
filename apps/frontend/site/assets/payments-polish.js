@@ -44,6 +44,11 @@
     return `https://explorer.pepepow.net/address/${encodeURIComponent(String(value))}`;
   }
 
+  function minerLookupUrl(value) {
+    if (!value) return "";
+    return `/miner.html?wallet=${encodeURIComponent(String(value))}`;
+  }
+
   function isHash64(value) {
     return typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value);
   }
@@ -62,6 +67,11 @@
     return `<button class="copy-mini" type="button" data-copy-value="${escapeHtml(value)}">Copy</button>`;
   }
 
+  function minerLookupButton(value) {
+    if (!value) return "";
+    return `<a class="copy-mini" href="${escapeHtml(minerLookupUrl(value))}" title="Open Miner Lookup for this wallet">Miner Lookup</a>`;
+  }
+
   function valueWithActions(value, type) {
     if (value === null || value === undefined || value === "") return "-";
     const raw = String(value);
@@ -69,7 +79,8 @@
     if (type === "txid" && isHash64(raw)) url = explorerTxUrl(raw);
     if (type === "address" && isPepepowAddress(raw)) url = explorerAddressUrl(raw);
     if (type === "block" && (isHash64(raw) || /^\d+$/.test(raw))) url = explorerBlockUrl(raw);
-    return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span>${copyButton(raw)}${explorerLink(url)}</span>`;
+    const action = type === "address" && isPepepowAddress(raw) ? minerLookupButton(raw) : copyButton(raw);
+    return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span>${action}${explorerLink(url)}</span>`;
   }
 
   function sourceCandidates(item) {
