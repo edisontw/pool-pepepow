@@ -1122,16 +1122,32 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                                     continue
                             return field_total
 
+                        summed_share_score = sum_share_field("share_score")
+                        summed_share_count = sum_share_field("share_count")
                         if total_score <= 0:
-                            total_score = sum_share_field("share_score")
+                            total_score = summed_share_score
                         if total_count <= 0:
-                            total_count = sum_share_field("share_count")
+                            total_count = summed_share_count
+
+                        def positive_share_weights(field_name: str) -> list[tuple[str, dict[str, Any], float]]:
+                            entries: list[tuple[str, dict[str, Any], float]] = []
+                            for wallet, share_info in shares.items():
+                                if not isinstance(share_info, dict):
+                                    continue
+                                try:
+                                    weight = float(share_info.get(field_name) or 0.0)
+                                except (ValueError, TypeError):
+                                    continue
+                                if math.isfinite(weight) and weight > 0:
+                                    entries.append((wallet, share_info, weight))
+                            return entries
 
                         weight_mode = "share_difficulty_sum"
-                        total_weight = total_score
-                        if total_weight <= 0:
+                        positive_weight_entries = positive_share_weights("share_score")
+                        if not positive_weight_entries and total_count > 0:
                             weight_mode = "accepted_share_count"
-                            total_weight = total_count
+                            positive_weight_entries = positive_share_weights("share_count")
+                        total_weight = sum(weight for _wallet, _share_info, weight in positive_weight_entries)
 
                         if total_weight <= 0:
                             status = "blocked"
@@ -1146,12 +1162,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                             pool_fee_amount = miner_gross_reward * pool_fee_pct / 100.0
                             net_reward = miner_gross_reward - pool_fee_amount
 
-                            for wallet, share_info in shares.items():
-                                if weight_mode == "share_difficulty_sum":
-                                    weight = share_info.get("share_score", 0.0)
-                                else:
-                                    weight = share_info.get("share_count", 0.0)
-                                
+                            for wallet, share_info, weight in positive_weight_entries:
                                 base_amount = net_reward * weight / total_weight
                                 
                                 carry_state = wallet_carry_state.get(wallet, {})
@@ -3392,6 +3403,15 @@ def auto_payout_once(
                 if payout_status not in {"pending_manual_payment", "ready_for_wallet_send", "below_threshold", "below_threshold_carried"}:
                     append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status or 'missing'}")
                     continue
+                if "weight" in payout:
+                    try:
+                        payout_weight = Decimal(str(payout.get("weight")))
+                    except (InvalidOperation, ValueError):
+                        append_skip(c_id, wallet, amount_raw, "non_positive_round_weight")
+                        continue
+                    if not payout_weight.is_finite() or payout_weight <= 0:
+                        append_skip(c_id, wallet, amount_raw, "non_positive_round_weight")
+                        continue
                 try:
                     amount_decimal = Decimal(str(amount_raw))
                 except (InvalidOperation, ValueError):

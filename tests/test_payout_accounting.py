@@ -3639,6 +3639,50 @@ class CarryFocusedTests(unittest.TestCase):
         finally:
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
 
+    def test_zero_weight_wallet_does_not_receive_later_carry_payment(self):
+        import os
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1000.0"
+        try:
+            stale_wallet = "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"
+            active_wallet = "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"
+            self._write_carry([{
+                "wallet": stale_wallet,
+                "amount": 5000.0,
+                "sourceCandidateId": "candoldstale0000000000000001",
+                "sourceBlockHash": "hasholdstale0000000000000001",
+                "sourceHeight": 99,
+            }])
+            self._write_accepted([{
+                "candidate_hash": "candlaterround00000000000001",
+                "lifecycle_status": "confirmed",
+                "matched_height": 100,
+                "submit_timestamp": "2026-06-15T08:00:00Z",
+                "reward": 4387.5,
+            }])
+            self._write_rounds([{
+                "candidate_hash": "candlaterround00000000000001",
+                "total_share_score": 10.0,
+                "total_share_count": 10,
+                "shares": {
+                    active_wallet: {"share_count": 10, "share_score": 10.0},
+                    stale_wallet: {"share_count": 0, "share_score": 0.0},
+                },
+            }])
+
+            rc = self._run_candidates()
+            self.assertEqual(rc, 0)
+            item = self._load_output()["items"][0]
+            self.assertEqual(item["status"], "ready_for_manual_review")
+            payouts = item["payouts"]
+            self.assertEqual([p["wallet"] for p in payouts], [active_wallet])
+            self.assertNotIn(stale_wallet, {p["wallet"] for p in payouts})
+            self.assertEqual(payouts[0]["carryInAmount"], 0.0)
+            self.assertEqual(payouts[0]["carrySourceCandidateIds"], ["candlaterround00000000000001"])
+            self.assertNotIn("candoldstale0000000000000001", payouts[0]["carrySourceCandidateIds"])
+            self.assertAlmostEqual(payouts[0]["amount"], 4343.625)
+        finally:
+            os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
     def test_same_run_carried_payouts_crossing_threshold_become_pending(self):
         import os
         os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
@@ -4694,6 +4738,35 @@ class AutoPayoutOnceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         mock_send.assert_not_called()
         self.assertEqual(self._read_result()["items"][0]["reason"], "below_threshold")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_explicit_zero_weight_payout_rows(self, mock_send):
+        self._write_candidates([
+            self._candidate(
+                "candautostalezero000000000001",
+                wallet="PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4",
+                amount=5000.0,
+                payout_extra={
+                    "weight": 0.0,
+                    "carryInAmount": 5000.0,
+                    "carrySourceCandidateIds": ["candoldstale0000000000000001"],
+                },
+            )
+        ])
+
+        rc = payout_helper.auto_payout_once(
+            self.candidates_path,
+            self.actions_log,
+            self.payments_snapshot,
+            self.output_path,
+            allowed_wallets={"PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4"},
+            min_payout=1000.0,
+            max_sends=5,
+        )
+
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "non_positive_round_weight")
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_skips_wallet_preview_rows(self, mock_send):
