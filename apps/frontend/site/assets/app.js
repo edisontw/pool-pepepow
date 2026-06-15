@@ -7,6 +7,9 @@
 
   const FRONTEND_BUILD = "dashboard-fix-v7";
   console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
+  const MINER_PAYMENTS_PAGE_SIZE = 10;
+  let minerRecordedPayments = [];
+  let minerRecordedPaymentsPage = 0;
 
   function readPoolHashrateHps(pool) {
     if (!pool || typeof pool !== "object") {
@@ -298,6 +301,37 @@
     }
     const h = item.blockHeight ?? item.height ?? item.matchedHeight ?? item.block_height;
     return h !== null && h !== undefined && h !== "" ? renderValueWithCopyAndExplorer(h, "block") : "-";
+  }
+
+  function paymentSortKey(item) {
+    return String((item && (item.paidAt || item.timestamp)) || "");
+  }
+
+  function paymentsForWallet(payments, wallet) {
+    const items = payments && Array.isArray(payments.items) ? payments.items : [];
+    return items
+      .filter((item) => item && item.wallet === wallet)
+      .sort((a, b) => paymentSortKey(b).localeCompare(paymentSortKey(a)));
+  }
+
+  function renderMinerRecordedPayments() {
+    const total = minerRecordedPayments.length;
+    if (total === 0) {
+      return '<div class="muted">No recorded manual payments for this wallet yet.</div>';
+    }
+    const totalPages = Math.max(1, Math.ceil(total / MINER_PAYMENTS_PAGE_SIZE));
+    minerRecordedPaymentsPage = Math.min(Math.max(0, minerRecordedPaymentsPage), totalPages - 1);
+    const start = minerRecordedPaymentsPage * MINER_PAYMENTS_PAGE_SIZE;
+    const pageItems = minerRecordedPayments.slice(start, start + MINER_PAYMENTS_PAGE_SIZE);
+    const table = renderTable(pageItems, [
+      { key: "wallet", label: "Wallet", render: (val) => renderValueWithCopyAndExplorer(val, "address") },
+      { key: "paidAt", label: "Paid", render: (_val, item) => formatDate(item.paidAt || item.timestamp) },
+      { key: "amount", label: "Amount", render: formatNumber },
+      { key: "txid", label: "TxID", render: (val) => renderValueWithCopyAndExplorer(val, "txid") },
+      { key: "blockHeight", label: "Blocks", render: renderPaymentBlocks },
+      { key: "confirmations", label: "Confirms", render: renderOptionalNumber }
+    ], "No recorded manual payments for this wallet yet.", { limit: MINER_PAYMENTS_PAGE_SIZE });
+    return `${table}<div class="pagination-controls"><button type="button" data-miner-payments-page="${minerRecordedPaymentsPage - 1}" ${minerRecordedPaymentsPage <= 0 ? "disabled" : ""}>Prev</button><span>Page ${minerRecordedPaymentsPage + 1} of ${totalPages}</span><button type="button" data-miner-payments-page="${minerRecordedPaymentsPage + 1}" ${minerRecordedPaymentsPage >= totalPages - 1 ? "disabled" : ""}>Next</button></div>`;
   }
 
   function renderOptionalNumber(value) {
@@ -977,11 +1011,12 @@
 
   async function lookupMiner(config, wallet) {
     // Fetch miner data plus supporting context in parallel
-    const [result, pool, network, priceData] = await Promise.all([
+    const [result, pool, network, priceData, allPayments] = await Promise.all([
       fetchJson(`${config.apiBaseUrl}/miner/${encodeURIComponent(wallet)}`),
       fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({})),
       fetchJson(`${config.apiBaseUrl}/network/summary`).catch(() => ({})),
-      fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
+      fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null),
+      fetchJson(`${config.apiBaseUrl}/payments`).catch(() => ({ items: [] }))
     ]);
 
     let htmlContent = "";
@@ -1022,20 +1057,13 @@
       ]);
     }
 
+    const apiPayments = paymentsForWallet(allPayments, wallet);
     const recentPayments = Array.isArray(result.recentPayments) ? result.recentPayments : [];
+    minerRecordedPayments = apiPayments.length > 0 ? apiPayments : recentPayments;
+    minerRecordedPaymentsPage = 0;
 
     htmlContent += "<h3>Recorded payments</h3>";
-    htmlContent += renderTable(recentPayments, [
-      { key: "paidAt", label: "Paid", render: (_val, item) => formatDate(item.paidAt || item.timestamp) },
-      { key: "amount", label: "Amount", render: formatNumber },
-      {
-        key: "txid",
-        label: "TxID",
-        render: (val) => renderValueWithCopyAndExplorer(val, "txid")
-      },
-      { key: "blockHeight", label: "Blocks", render: renderPaymentBlocks },
-      { key: "confirmations", label: "Confirms", render: renderOptionalNumber }
-    ], "No recorded manual payments for this wallet yet.");
+    htmlContent += `<div id="miner-recorded-payments">${renderMinerRecordedPayments()}</div>`;
 
     setHtml("miner-result", htmlContent);
 
@@ -1123,6 +1151,12 @@
   async function run() {
     setActiveNav();
     setupInlineCopyButtons();
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-miner-payments-page]");
+      if (!button || button.disabled) return;
+      minerRecordedPaymentsPage = Number(button.getAttribute("data-miner-payments-page"));
+      setHtml("miner-recorded-payments", renderMinerRecordedPayments());
+    });
     const page = document.body.dataset.page;
     const config = await loadRuntimeConfig();
 

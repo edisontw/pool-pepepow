@@ -118,6 +118,10 @@ LOCAL_SERVICE_BASELINE = {
     "deploymentVariant": "core-api-stratum-no-local-frontend",
 }
 
+HASHRATE_HISTORY_MAX_AGE_SECONDS = 24 * 60 * 60
+HASHRATE_HISTORY_MAX_POINTS = 1440
+HASHRATE_HISTORY_SAMPLE_MS = 60 * 1000
+
 
 def create_app(config: AppConfig | None = None) -> Flask:
     app_config = config or load_config()
@@ -131,6 +135,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
         app_config.stale_after_seconds,
     )
     app.config["PRICE_CACHE"] = PriceCache()
+    app.config["HASHRATE_HISTORY"] = {"pool": [], "network": []}
     wallet_pattern = re.compile(app_config.allowed_wallet_pattern)
 
     def json_error(status: HTTPStatus, message: str):
@@ -309,6 +314,21 @@ def create_app(config: AppConfig | None = None) -> Flask:
         )
         payload["blockFeedKind"] = record.meta.get("blockFeedKind")
         return jsonify(payload)
+
+    @app.get("/api/hashrate/history")
+    def hashrate_history():
+        record = get_snapshot_record()
+        history = app.config["HASHRATE_HISTORY"]
+        _append_hashrate_history_sample(history, record)
+        return jsonify(
+            {
+                "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "maxAgeSeconds": HASHRATE_HISTORY_MAX_AGE_SECONDS,
+                "maxPoints": HASHRATE_HISTORY_MAX_POINTS,
+                "pool": history["pool"],
+                "network": history["network"],
+            }
+        )
 
     @app.get("/api/blocks")
     def blocks():
@@ -661,6 +681,62 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_time_ms(value: Any) -> int:
+    if not isinstance(value, str) or not value:
+        return int(time.time() * 1000)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return int(parsed.timestamp() * 1000)
+    except ValueError:
+        return int(time.time() * 1000)
+
+
+def _normalize_history_series(points: Any, now_ms: int) -> list[dict[str, Any]]:
+    cutoff = now_ms - HASHRATE_HISTORY_MAX_AGE_SECONDS * 1000
+    if not isinstance(points, list):
+        return []
+    normalized = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        t = _as_int(point.get("t"), -1)
+        h = _as_float(point.get("h"), -1.0)
+        if t >= cutoff and h >= 0:
+            normalized.append({"t": t, "h": h})
+    normalized.sort(key=lambda item: item["t"])
+    return normalized[-HASHRATE_HISTORY_MAX_POINTS:]
+
+
+def _append_history_point(points: Any, t: int, hashrate: float, now_ms: int) -> list[dict[str, Any]]:
+    normalized = _normalize_history_series(points, now_ms)
+    if hashrate < 0:
+        return normalized
+    if normalized and t - _as_int(normalized[-1].get("t")) < int(HASHRATE_HISTORY_SAMPLE_MS * 0.75):
+        normalized[-1] = {"t": t, "h": hashrate}
+    else:
+        normalized.append({"t": t, "h": hashrate})
+    return _normalize_history_series(normalized, now_ms)
+
+
+def _network_hashrate(record: SnapshotRecord | None) -> float:
+    if record is None:
+        return 0.0
+    network = record.data.get("network", {})
+    if not isinstance(network, dict):
+        return 0.0
+    for key in ("networkHashrate", "network_hashrate", "hashrate"):
+        if key in network:
+            return _as_float(network.get(key))
+    return 0.0
+
+
+def _append_hashrate_history_sample(history: dict[str, Any], record: SnapshotRecord) -> None:
+    now_ms = int(time.time() * 1000)
+    sample_ms = _parse_time_ms(record.generated_at)
+    history["pool"] = _append_history_point(history.get("pool"), sample_ms, _pool_hashrate(record), now_ms)
+    history["network"] = _append_history_point(history.get("network"), sample_ms, _network_hashrate(record), now_ms)
 
 
 def _format_hashrate(value: Any) -> str:

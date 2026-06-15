@@ -141,8 +141,8 @@
 
   function normalizeHistory(history) {
     return {
-      pool: normalizeSeries(history.pool),
-      network: normalizeSeries(history.network)
+      pool: normalizeSeries(history && history.pool),
+      network: normalizeSeries(history && history.network)
     };
   }
 
@@ -349,6 +349,11 @@
     return response.json();
   }
 
+  async function loadApiHistory(apiBaseUrl) {
+    const payload = await fetchJson(`${apiBaseUrl}/hashrate/history`);
+    return normalizeHistory(payload || {});
+  }
+
   async function loadRuntimeConfig() {
     try {
       const response = await fetch("/runtime-config.json", { cache: "no-store" });
@@ -361,8 +366,9 @@
   }
 
   async function sampleAndRender(apiBaseUrl) {
-    let history = normalizeHistory(loadHistory());
+    let history;
     try {
+      history = await loadApiHistory(apiBaseUrl);
       const [pool, network] = await Promise.all([
         fetchJson(`${apiBaseUrl}/pool/summary`),
         fetchJson(`${apiBaseUrl}/network/summary`)
@@ -371,9 +377,10 @@
       history.network = appendPoint(history.network, readNetworkHashrateHps(network));
       history = normalizeHistory(history);
       saveHistory(history);
-      renderAll(history);
+      renderAll(history, "api history");
       renderLeaderboards(pool);
     } catch (_error) {
+      history = normalizeHistory(loadHistory());
       renderAll(history, "offline cache");
       renderLeaderboards({ workerDistribution: loadDistributionCache() });
     }

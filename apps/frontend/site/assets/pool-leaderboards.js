@@ -46,6 +46,10 @@
     return raw.length > 18 ? `${raw.slice(0, 7)}…${raw.slice(-5)}` : raw;
   }
 
+  function explorerAddressUrl(wallet) {
+    return `https://explorer.pepepow.net/address/${encodeURIComponent(String(wallet || ""))}`;
+  }
+
   function numeric(...values) {
     for (const value of values) {
       const n = Number(value);
@@ -69,7 +73,7 @@
     if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) return `<div class="leaderboard-empty">No active data available.</div>`;
     return sorted.map((item, idx) => {
       const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
-      return `<div class="leaderboard-row"><span class="leaderboard-rank">#${idx + 1}</span><strong title="${escapeHtml(item.wallet)}">${escapeHtml(compactWallet(item.wallet))}</strong><span>${escapeHtml(value)}</span></div>`;
+      return `<div class="leaderboard-row"><span class="leaderboard-rank">#${idx + 1}</span><strong title="${escapeHtml(item.wallet)}">${escapeHtml(compactWallet(item.wallet))} <a class="explorer-link" href="${escapeHtml(explorerAddressUrl(item.wallet))}" target="_blank" rel="noopener noreferrer" aria-label="Open wallet in explorer">↗</a></strong><span>${escapeHtml(value)}</span></div>`;
     }).join("");
   }
 

@@ -374,6 +374,29 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertNotIn("pool.activeMiners", payload["placeholderFields"])
             self.assertEqual(payload["hashratePolicy"], "share-rate-assumed-diff")
 
+    def test_hashrate_history_endpoint_returns_rolling_snapshot_samples(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "runtime.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_payload["generatedAt"] = "2999-01-01T00:00:00Z"
+            runtime_payload["network"]["networkHashrate"] = 987654321.0
+            runtime_path.write_text(
+                json.dumps(runtime_payload), encoding="utf-8"
+            )
+
+            app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
+            client = app.test_client()
+
+            response = client.get("/api/hashrate/history")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["maxAgeSeconds"], 24 * 60 * 60)
+            self.assertEqual(payload["maxPoints"], 1440)
+            self.assertEqual(len(payload["pool"]), 1)
+            self.assertEqual(len(payload["network"]), 1)
+            self.assertEqual(payload["pool"][0]["h"], 57266230.61333334)
+            self.assertEqual(payload["network"][0]["h"], 987654321.0)
+
     def test_blocks_endpoint_uses_runtime_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             runtime_path = Path(tmp_dir) / "runtime.json"
