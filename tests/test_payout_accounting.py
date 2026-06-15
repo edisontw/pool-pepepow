@@ -1028,6 +1028,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertIn('python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once', service_body)
         self.assertIn('PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=1', service_body)
         self.assertIn('PEPEPOW_AUTO_PAYOUT_MAX_SENDS=1', service_body)
+        self.assertIn('PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS=true', service_body)
         self.assertIn('--max-sends 1', service_body)
         self.assertIn('--min-payout 1', service_body)
         self.assertIn('--allowed-wallet "${PEPEPOW_OPERATOR_BACKFILL_WALLET}"', service_body)
@@ -1052,6 +1053,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertIn('followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-300}"', service_body)
         self.assertIn('echo "auto_payout_followup_count: ${followup_count}"', service_body)
         self.assertIn('candidate_followup_service candidate-followup "${followup_count}" --record', service_body)
+        self.assertIn('PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS=false', service_body)
 
         expected_order = [
             'echo "auto_payout_followup_count: ${followup_count}"',
@@ -4786,6 +4788,66 @@ class AutoPayoutOnceTests(unittest.TestCase):
         )
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_missing_round_fallback_by_default(self, mock_send):
+        self._write_candidates([
+            self._candidate(
+                "candautomissingfallback000001",
+                weightMode="missing_round_candidate_wallet_fallback",
+                payout_extra={"fallbackWarning": True},
+            )
+        ])
+
+        with unittest.mock.patch.dict(os.environ, {"PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS": ""}):
+            rc = self._run()
+
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "fallback_payout_not_allowed")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_operator_backfill_by_default(self, mock_send):
+        self._write_candidates([
+            self._candidate(
+                "candautooperatorbackfill00001",
+                weightMode="operator_single_miner_backfill",
+                payout_extra={"operatorApprovedBackfill": True},
+            )
+        ])
+
+        with unittest.mock.patch.dict(os.environ, {"PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS": ""}):
+            rc = self._run()
+
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "fallback_payout_not_allowed")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_allows_fallback_payouts_when_explicitly_enabled(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        self._write_candidates([
+            self._candidate(
+                "candautoallowfallback000001",
+                weightMode="missing_round_candidate_wallet_fallback",
+                payout_extra={"fallbackWarning": True},
+            ),
+            self._candidate(
+                "candautoallowbackfill000001",
+                weightMode="operator_single_miner_backfill",
+                payout_extra={"operatorApprovedBackfill": True},
+            ),
+        ])
+
+        with unittest.mock.patch.dict(os.environ, {"PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS": "true"}):
+            rc = self._run(max_sends=5)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 1)
+        result = self._read_result()
+        self.assertEqual(result["sendInvocations"], 1)
+        self.assertEqual(result["sentCount"], 1)
+        self.assertEqual(result["items"][0]["sourceCount"], 2)
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_same_wallet_sends_one_summed_transaction(self, mock_send):
         mock_send.side_effect = self._sent_side_effect
         self._write_candidates([
@@ -6190,6 +6252,7 @@ class FallbackPayoutTests(unittest.TestCase):
         os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
         os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
         os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS"] = "true"
         os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
         mock_send.return_value = 0
         try:
@@ -6245,6 +6308,7 @@ class FallbackPayoutTests(unittest.TestCase):
             os.environ.pop("PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", None)
             os.environ.pop("PEPEPOW_POOL_CORE_REWARD_ADDRESS", None)
             os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", None)
+            os.environ.pop("PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS", None)
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
 
     def test_operator_backfill_blocked_missing_round(self):
@@ -6809,9 +6873,11 @@ class FallbackPayoutTests(unittest.TestCase):
         os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
         os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
         os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
-        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "false"
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_confirmed_single_miner_share_log_tail_short_2026-06-13"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT"] = "300"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"] = "320"
@@ -6867,12 +6933,15 @@ class FallbackPayoutTests(unittest.TestCase):
                 res = json.load(f)
 
             self.assertEqual(res["sendInvocations"], 1)
-            self.assertEqual(res["items"][0]["action"], "aggregate_send_once")
-            self.assertEqual(res["items"][0]["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
-            self.assertEqual(res["items"][0]["sourceCandidateIds"], ["hashbackfillautosend000000000001"])
+            send_items = [item for item in res["items"] if item.get("action") == "aggregate_send_once"]
+            self.assertEqual(len(send_items), 1)
+            self.assertEqual(send_items[0]["wallet"], "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd")
+            self.assertEqual(send_items[0]["sourceCandidateIds"], ["hashbackfillautosend000000000001"])
         finally:
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
-                      "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", "PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS",
+                      "PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET",
+                      "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
                       "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_REASON",
                       "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
                 os.environ.pop(k, None)

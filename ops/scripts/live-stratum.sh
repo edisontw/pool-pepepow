@@ -1283,6 +1283,7 @@ PY
   PEPEPOW_AUTO_PAYOUT_MAX_SENDS=1 \
   PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT=1 \
   PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET=false \
+  PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS=true \
   PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET="${PEPEPOW_OPERATOR_BACKFILL_WALLET}" \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
       --candidates "${RUNTIME_DIR}/payout-candidates.json" \
@@ -1379,6 +1380,7 @@ auto_payout_once_service() {
   PEPEPOW_ENABLE_REAL_WALLET_PAYOUT="${REAL_WALLET_PAYOUT_ENABLED}" \
   PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS="${REAL_WALLET_PAYOUT_MAX_SENDS}" \
   PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET="${allow_any_wallet}" \
+  PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS=false \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
       --candidates "${RUNTIME_DIR}/payout-candidates.json" \
       --actions-log "${RUNTIME_DIR}/payment-actions.jsonl" \

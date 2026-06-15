@@ -3256,6 +3256,12 @@ def auto_payout_once(
     """Select eligible payouts, aggregate them by wallet, and send one tx per wallet."""
     env = load_env_vars()
     allow_any_wallet = env.get("PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET", "").strip().lower() == "true"
+    allow_fallback_payouts = (
+        env.get("PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS", "")
+        .strip()
+        .lower()
+        == "true"
+    )
     if not allowed_wallets and not allow_any_wallet:
         env_wallets = os.getenv("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS")
         if env_wallets:
@@ -3390,6 +3396,15 @@ def auto_payout_once(
 
                 wallet = str(payout.get("wallet") or "")
                 amount_raw = payout.get("amount")
+                weight_mode = str(candidate.get("weightMode") or candidate.get("weight_mode") or "")
+                if not allow_fallback_payouts and (
+                    payout.get("fallbackWarning") is True
+                    or payout.get("operatorApprovedBackfill") is True
+                    or weight_mode.endswith("_fallback")
+                    or weight_mode.startswith("operator_")
+                ):
+                    append_skip(c_id, wallet, amount_raw, "fallback_payout_not_allowed")
+                    continue
                 if not allow_any_wallet and allowed_wallets and wallet not in allowed_wallets:
                     append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
                     continue
