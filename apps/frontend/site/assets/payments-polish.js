@@ -2,6 +2,7 @@
   const PAGE_SIZE = 20;
   let paymentItems = [];
   let paymentPage = 0;
+  let rendering = false;
 
   function shortHash(value) {
     const raw = String(value || "");
@@ -99,10 +100,12 @@
 
   function renderPaymentsTable() {
     const target = document.getElementById("payments-table");
-    if (!target) return;
+    if (!target || rendering) return;
+    rendering = true;
 
     if (!Array.isArray(paymentItems) || paymentItems.length === 0) {
-      target.innerHTML = '<div class="muted">No manual payment records are currently available in the public snapshot.</div>';
+      target.innerHTML = '<div class="muted" data-payments-polished="1">No manual payment records are currently available in the public snapshot.</div>';
+      rendering = false;
       return;
     }
 
@@ -120,16 +123,17 @@
       <td data-label="Confirms">${escapeHtml(formatNumber(item.confirmations))}</td>
     </tr>`).join("");
 
-    target.innerHTML = `<div class="table-wrap"><table class="payments-table-wide" data-polished="1">
+    target.innerHTML = `<div class="table-wrap" data-payments-polished="1"><table class="payments-table-wide" data-polished="1">
       <thead><tr><th>Time</th><th>Wallet</th><th>Amount</th><th>TxID</th><th>Blocks</th><th>Confirms</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <div class="table-pagination" style="display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap;">
+    <div class="table-pagination" data-payments-polished="1" style="display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap;">
       <span class="muted">Showing ${start + 1}-${Math.min(start + PAGE_SIZE, paymentItems.length)} of ${paymentItems.length}</span>
       <button class="copy-mini" type="button" data-payment-page="${paymentPage - 1}" ${paymentPage <= 0 ? "disabled" : ""}>Prev</button>
       <span class="muted">Page ${paymentPage + 1} / ${totalPages}</span>
       <button class="copy-mini" type="button" data-payment-page="${paymentPage + 1}" ${paymentPage >= totalPages - 1 ? "disabled" : ""}>Next</button>
     </div>`;
+    window.setTimeout(() => { rendering = false; }, 0);
   }
 
   async function fetchJson(url) {
@@ -141,11 +145,24 @@
     }
   }
 
-  async function run() {
-    if (document.body.dataset.page !== "payments") return;
+  async function loadPayments() {
     const payments = await fetchJson("/api/payments");
     paymentItems = Array.isArray(payments.items) ? payments.items : [];
     paymentItems.sort((a, b) => String(b.paidAt || b.timestamp || "").localeCompare(String(a.paidAt || a.timestamp || "")));
+  }
+
+  function needsPolish() {
+    const target = document.getElementById("payments-table");
+    if (!target) return false;
+    const header = target.querySelector("thead tr");
+    if (!header) return true;
+    const columns = Array.from(header.children).map((node) => node.textContent.trim()).join("|");
+    return columns !== "Time|Wallet|Amount|TxID|Blocks|Confirms";
+  }
+
+  async function run() {
+    if (document.body.dataset.page !== "payments") return;
+    await loadPayments();
 
     document.addEventListener("click", (event) => {
       const button = event.target.closest("[data-payment-page]");
@@ -154,7 +171,23 @@
       renderPaymentsTable();
     });
 
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-copy-value]");
+      if (!button || !navigator.clipboard) return;
+      navigator.clipboard.writeText(button.getAttribute("data-copy-value") || "").catch(() => {});
+    });
+
     renderPaymentsTable();
+    window.setTimeout(renderPaymentsTable, 900);
+    window.setTimeout(renderPaymentsTable, 1800);
+
+    const target = document.getElementById("payments-table");
+    if (target) {
+      const observer = new MutationObserver(() => {
+        if (!rendering && needsPolish()) window.setTimeout(renderPaymentsTable, 0);
+      });
+      observer.observe(target, { childList: true, subtree: true });
+    }
   }
 
   document.addEventListener("DOMContentLoaded", run);
