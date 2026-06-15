@@ -47,10 +47,6 @@
     return raw.length > 18 ? `${raw.slice(0, 7)}…${raw.slice(-5)}` : raw;
   }
 
-  function explorerAddressUrl(wallet) {
-    return `https://explorer.pepepow.net/address/${encodeURIComponent(String(wallet || ""))}`;
-  }
-
   function minerLookupUrl(wallet) {
     return `/miner.html?wallet=${encodeURIComponent(String(wallet || ""))}`;
   }
@@ -81,17 +77,10 @@
       const wallet = escapeHtml(item.wallet);
       const compact = escapeHtml(compactWallet(item.wallet));
       const lookupUrl = escapeHtml(minerLookupUrl(item.wallet));
-      const explorerUrl = escapeHtml(explorerAddressUrl(item.wallet));
       return `<div class="leaderboard-row">
-        <div class="leaderboard-main">
-          <span class="leaderboard-rank">#${idx + 1}</span>
-          <strong class="leaderboard-wallet" title="${wallet}">${compact}</strong>
-          <span class="leaderboard-value">${escapeHtml(value)}</span>
-        </div>
-        <div class="leaderboard-actions" aria-label="Wallet actions for ${wallet}">
-          <a class="leaderboard-action" href="${lookupUrl}">Miner Lookup</a>
-          <a class="leaderboard-action" href="${explorerUrl}" target="_blank" rel="noopener noreferrer">Explorer ↗</a>
-        </div>
+        <span class="leaderboard-rank">#${idx + 1}</span>
+        <a class="leaderboard-wallet" href="${lookupUrl}" title="Miner lookup: ${wallet}">${compact}</a>
+        <span class="leaderboard-value">${escapeHtml(value)}</span>
       </div>`;
     }).join("");
   }
@@ -106,7 +95,7 @@
       box.className = "leaderboard-grid";
       target.appendChild(box);
     }
-    box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>5m estimate</span></div>${rows(items, "hashrate")}</section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Total Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>${rows(items, "shares")}</section>`;
+    box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>recent window</span></div>${rows(items, "hashrate")}</section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>${rows(items, "shares")}</section>`;
   }
 
   async function fetchJson(url) {
