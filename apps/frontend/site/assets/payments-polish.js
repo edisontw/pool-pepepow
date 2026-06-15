@@ -1,5 +1,5 @@
 (function () {
-  const PAGE_SIZE = 10;
+  const PAGE_SIZE = 20;
   let paymentItems = [];
   let paymentPage = 0;
 
