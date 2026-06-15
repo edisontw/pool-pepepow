@@ -56,11 +56,6 @@
     return "https://explorer.pepepow.net/block/" + encodeURIComponent(String(value));
   }
 
-  function explorerAddressUrl(value) {
-    if (!value) return "";
-    return "https://explorer.pepepow.net/address/" + encodeURIComponent(String(value));
-  }
-
   function explorerLink(url) {
     if (!url) return "";
     return '<a class="explorer-link" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer" title="Explorer" aria-label="Explorer">↗</a>';
@@ -72,10 +67,10 @@
     return '<span class="hash-actions"><span class="hash-value mono-compact" title="' + escapeHtml(raw) + '">' + escapeHtml(shortText(raw, 10, 8)) + '</span>' + explorerLink(explorerBlockUrl(raw)) + '</span>';
   }
 
-  function addressValue(value) {
+  function addressText(value) {
     if (!value) return "-";
     const raw = String(value);
-    return '<span class="hash-actions"><span class="hash-value mono-compact" title="' + escapeHtml(raw) + '">' + escapeHtml(shortText(raw, 7, 5)) + '</span>' + explorerLink(explorerAddressUrl(raw)) + '</span>';
+    return '<span class="hash-value mono-compact" title="' + escapeHtml(raw) + '">' + escapeHtml(shortText(raw, 7, 5)) + '</span>';
   }
 
   function renderShareSummary(round) {
@@ -99,7 +94,7 @@
 
     return entries.map(function (item) {
       const score = item.score === null ? "" : ' <span class="muted">score ' + escapeHtml(formatNumber(item.score, 4)) + '</span>';
-      return '<div class="round-share-line">' + addressValue(item.wallet) + ': <strong>' + item.pct.toFixed(2) + '%</strong>' + score + '</div>';
+      return '<div class="round-share-line">' + addressText(item.wallet) + ': <strong>' + item.pct.toFixed(2) + '%</strong>' + score + '</div>';
     }).join("");
   }
 
@@ -107,11 +102,17 @@
     return round.submitTimestamp || round.foundAt || round.timestamp || round.createdAt || round.updatedAt || round.generatedAt;
   }
 
+  function sortByTimeDesc(items) {
+    return items.slice().sort(function (a, b) {
+      return String(roundTime(b) || "").localeCompare(String(roundTime(a) || ""));
+    });
+  }
+
   function renderTable(items) {
     if (!Array.isArray(items) || items.length === 0) {
       return '<div class="muted">No round attribution snapshot is currently available.</div>';
     }
-    const rows = items.slice(0, 50).map(function (round) {
+    const rows = sortByTimeDesc(items).slice(0, 50).map(function (round) {
       const status = statusLabel(round.roundStatus || round.lifecycleStatus || round.status);
       return '<tr>' +
         '<td data-label="Candidate">' + blockValue(round.candidateHash || round.roundId || "-") + '</td>' +
