@@ -4,6 +4,7 @@
   let cachedLeaderboardItems = [];
   let cachedShareLabel = "accepted shares";
   let cachedLastPoolBlockText = "";
+  let cachedLastPoolBlockHtml = "";
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -50,6 +51,10 @@
     return `https://explorer.pepepow.net/address/${encodeURIComponent(String(wallet || ""))}`;
   }
 
+  function minerLookupUrl(wallet) {
+    return `/miner.html?wallet=${encodeURIComponent(String(wallet || ""))}`;
+  }
+
   function numeric(...values) {
     for (const value of values) {
       const n = Number(value);
@@ -73,7 +78,21 @@
     if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) return `<div class="leaderboard-empty">No active data available.</div>`;
     return sorted.map((item, idx) => {
       const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
-      return `<div class="leaderboard-row"><span class="leaderboard-rank">#${idx + 1}</span><strong title="${escapeHtml(item.wallet)}">${escapeHtml(compactWallet(item.wallet))} <a class="explorer-link" href="${escapeHtml(explorerAddressUrl(item.wallet))}" target="_blank" rel="noopener noreferrer" aria-label="Open wallet in explorer">↗</a></strong><span>${escapeHtml(value)}</span></div>`;
+      const wallet = escapeHtml(item.wallet);
+      const compact = escapeHtml(compactWallet(item.wallet));
+      const lookupUrl = escapeHtml(minerLookupUrl(item.wallet));
+      const explorerUrl = escapeHtml(explorerAddressUrl(item.wallet));
+      return `<div class="leaderboard-row">
+        <div class="leaderboard-main">
+          <span class="leaderboard-rank">#${idx + 1}</span>
+          <strong class="leaderboard-wallet" title="${wallet}">${compact}</strong>
+          <span class="leaderboard-value">${escapeHtml(value)}</span>
+        </div>
+        <div class="leaderboard-actions" aria-label="Wallet actions for ${wallet}">
+          <a class="leaderboard-action" href="${lookupUrl}">Miner Lookup</a>
+          <a class="leaderboard-action" href="${explorerUrl}" target="_blank" rel="noopener noreferrer">Explorer ↗</a>
+        </div>
+      </div>`;
     }).join("");
   }
 
@@ -145,19 +164,26 @@
     });
   }
 
-  function setLastPoolBlockText(value) {
-    if (!value || value === "-") return;
+  function setLastPoolBlockSummary({ height, status, time }) {
     const node = document.getElementById("last-block-time");
     if (!node) return;
-    cachedLastPoolBlockText = value;
-    node.textContent = value;
-    node.dataset.poolObservedBlock = value;
+    const heightText = height > 0 ? formatNumber(height) : "Observed";
+    const statusText = String(status || "observed").replace(/_/g, " ");
+    const timeText = time || "-";
+    cachedLastPoolBlockText = height > 0 ? `${heightText} · ${statusText} · ${timeText}` : `${statusText} · ${timeText}`;
+    cachedLastPoolBlockHtml = `<span class="block-confirmed-summary"><span class="block-confirmed-height">${escapeHtml(heightText)}</span><span class="block-status-badge">${escapeHtml(statusText)}</span><span class="block-confirmed-time">${escapeHtml(timeText)}</span></span>`;
+    node.innerHTML = cachedLastPoolBlockHtml;
+    node.dataset.poolObservedBlock = cachedLastPoolBlockText;
   }
 
   function restoreLastPoolBlockText() {
     const node = document.getElementById("last-block-time");
-    if (!node || !cachedLastPoolBlockText) return;
-    if (!node.textContent || node.textContent.trim() === "-") node.textContent = cachedLastPoolBlockText;
+    if (!node || !cachedLastPoolBlockText || !cachedLastPoolBlockHtml) return;
+    const current = node.textContent ? node.textContent.trim() : "";
+    if (!current || current === "-" || current !== cachedLastPoolBlockText) {
+      node.innerHTML = cachedLastPoolBlockHtml;
+      node.dataset.poolObservedBlock = cachedLastPoolBlockText;
+    }
   }
 
   async function refreshLastObservedPoolBlock() {
@@ -172,7 +198,7 @@
       const height = numeric(latest.matchedHeight);
       const status = String(latest.lifecycleStatus || "observed").replace(/_/g, " ");
       const time = formatDate(latest.submitTimestamp);
-      setLastPoolBlockText(height > 0 ? `${formatNumber(height)} · ${status} · ${time}` : `${status} · ${time}`);
+      setLastPoolBlockSummary({ height, status, time });
     } catch (_error) {
       restoreLastPoolBlockText();
     }
