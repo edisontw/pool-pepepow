@@ -14,14 +14,23 @@
     return new Intl.NumberFormat(undefined, { maximumFractionDigits: digits == null ? 6 : digits }).format(n);
   }
 
+  function formatDate(value) {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString();
+  }
+
   function statusLabel(value) {
     if (!value) return "-";
     return String(value).replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
   }
 
-  function shortText(value) {
+  function shortText(value, front, back) {
     const raw = String(value || "");
-    return raw.length > 18 ? raw.slice(0, 8) + "…" + raw.slice(-6) : raw;
+    const f = front == null ? 8 : front;
+    const b = back == null ? 6 : back;
+    return raw.length > f + b + 1 ? raw.slice(0, f) + "…" + raw.slice(-b) : raw;
   }
 
   function readPercent(data) {
@@ -42,11 +51,38 @@
     return null;
   }
 
+  function explorerBlockUrl(value) {
+    if (!value) return "";
+    return "https://explorer.pepepow.net/block/" + encodeURIComponent(String(value));
+  }
+
+  function explorerAddressUrl(value) {
+    if (!value) return "";
+    return "https://explorer.pepepow.net/address/" + encodeURIComponent(String(value));
+  }
+
+  function explorerLink(url) {
+    if (!url) return "";
+    return '<a class="explorer-link" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer" title="Explorer" aria-label="Explorer">↗</a>';
+  }
+
+  function blockValue(value) {
+    if (value === null || value === undefined || value === "") return "-";
+    const raw = String(value);
+    return '<span class="hash-actions"><span class="hash-value mono-compact" title="' + escapeHtml(raw) + '">' + escapeHtml(shortText(raw, 10, 8)) + '</span>' + explorerLink(explorerBlockUrl(raw)) + '</span>';
+  }
+
+  function addressValue(value) {
+    if (!value) return "-";
+    const raw = String(value);
+    return '<span class="hash-actions"><span class="hash-value mono-compact" title="' + escapeHtml(raw) + '">' + escapeHtml(shortText(raw, 7, 5)) + '</span>' + explorerLink(explorerAddressUrl(raw)) + '</span>';
+  }
+
   function renderShareSummary(round) {
     const shares = round && round.shares && typeof round.shares === "object" ? round.shares : null;
     if (!shares || Object.keys(shares).length === 0) {
       const status = statusLabel(round.roundStatus || round.lifecycleStatus || round.status);
-      return '<span class="muted">No attributed shares in current snapshot · ' + escapeHtml(status) + '</span>';
+      return '<span class="muted">No attributed shares · ' + escapeHtml(status) + '</span>';
     }
 
     const entries = Object.entries(shares)
@@ -63,8 +99,12 @@
 
     return entries.map(function (item) {
       const score = item.score === null ? "" : ' <span class="muted">score ' + escapeHtml(formatNumber(item.score, 4)) + '</span>';
-      return '<div style="margin-bottom:.2rem;"><span title="' + escapeHtml(item.wallet) + '">' + escapeHtml(shortText(item.wallet)) + '</span>: <strong>' + item.pct.toFixed(2) + '%</strong>' + score + '</div>';
+      return '<div class="round-share-line">' + addressValue(item.wallet) + ': <strong>' + item.pct.toFixed(2) + '%</strong>' + score + '</div>';
     }).join("");
+  }
+
+  function roundTime(round) {
+    return round.submitTimestamp || round.foundAt || round.timestamp || round.createdAt || round.updatedAt || round.generatedAt;
   }
 
   function renderTable(items) {
@@ -72,18 +112,20 @@
       return '<div class="muted">No round attribution snapshot is currently available.</div>';
     }
     const rows = items.slice(0, 50).map(function (round) {
+      const status = statusLabel(round.roundStatus || round.lifecycleStatus || round.status);
       return '<tr>' +
-        '<td data-label="Candidate hash">' + escapeHtml(shortText(round.candidateHash || round.roundId || "-")) + '</td>' +
-        '<td data-label="Height">' + escapeHtml(round.matchedHeight || round.height || "-") + '</td>' +
-        '<td data-label="Round Status / Review State">' + escapeHtml(statusLabel(round.roundStatus || round.lifecycleStatus || round.status)) + '</td>' +
+        '<td data-label="Candidate">' + blockValue(round.candidateHash || round.roundId || "-") + '</td>' +
+        '<td data-label="Time">' + escapeHtml(formatDate(roundTime(round))) + '</td>' +
+        '<td data-label="Height">' + blockValue(round.matchedHeight || round.height || "-") + '</td>' +
+        '<td data-label="Status">' + escapeHtml(status) + '</td>' +
         '<td data-label="Shares">' + formatNumber(round.totalShareCount, 0) + '</td>' +
         '<td data-label="Score">' + formatNumber(round.totalShareScore, 4) + '</td>' +
         '<td data-label="Wallets">' + formatNumber(round.walletCount, 0) + '</td>' +
-        '<td data-label="Confirmations">' + formatNumber(round.confirmations, 0) + '</td>' +
-        '<td data-label="Observed Share %">' + renderShareSummary(round) + '</td>' +
+        '<td data-label="Confirms">' + formatNumber(round.confirmations, 0) + '</td>' +
+        '<td data-label="Top attribution">' + renderShareSummary(round) + '</td>' +
         '</tr>';
     }).join("");
-    return '<div class="table-wrap"><table><thead><tr><th>Candidate hash</th><th>Height</th><th>Round Status / Review State</th><th>Shares</th><th>Score</th><th>Wallets</th><th>Confirmations</th><th>Observed Share %</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return '<div class="table-wrap"><table class="round-attribution-table"><thead><tr><th>Candidate</th><th>Time</th><th>Height</th><th>Status</th><th>Shares</th><th>Score</th><th>Wallets</th><th>Confirms</th><th>Top attribution</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
 
   async function refreshRoundsTable() {
