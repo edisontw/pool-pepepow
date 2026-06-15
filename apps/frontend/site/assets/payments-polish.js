@@ -1,4 +1,8 @@
 (function () {
+  const PAGE_SIZE = 10;
+  let paymentItems = [];
+  let paymentPage = 0;
+
   function shortHash(value) {
     const raw = String(value || "");
     return raw.length > 20 ? `${raw.slice(0, 10)}…${raw.slice(-8)}` : raw;
@@ -18,6 +22,56 @@
     return new Intl.NumberFormat().format(value);
   }
 
+  function formatDate(value) {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString();
+  }
+
+  function explorerBlockUrl(value) {
+    if (value === null || value === undefined || value === "") return "";
+    return `https://explorer.pepepow.net/block/${encodeURIComponent(String(value))}`;
+  }
+
+  function explorerTxUrl(value) {
+    if (!value) return "";
+    return `https://explorer.pepepow.net/tx/${encodeURIComponent(String(value))}`;
+  }
+
+  function explorerAddressUrl(value) {
+    if (!value) return "";
+    return `https://explorer.pepepow.net/address/${encodeURIComponent(String(value))}`;
+  }
+
+  function isHash64(value) {
+    return typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value);
+  }
+
+  function isPepepowAddress(value) {
+    return typeof value === "string" && /^P[1-9A-HJ-NP-Za-km-z]{25,60}$/.test(value);
+  }
+
+  function explorerLink(url, label) {
+    if (!url) return "";
+    return `<a class="explorer-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(label || "Explorer")}" aria-label="${escapeHtml(label || "Explorer")}">↗</a>`;
+  }
+
+  function copyButton(value) {
+    if (!value) return "";
+    return `<button class="copy-mini" type="button" data-copy-value="${escapeHtml(value)}">Copy</button>`;
+  }
+
+  function valueWithActions(value, type) {
+    if (value === null || value === undefined || value === "") return "-";
+    const raw = String(value);
+    let url = "";
+    if (type === "txid" && isHash64(raw)) url = explorerTxUrl(raw);
+    if (type === "address" && isPepepowAddress(raw)) url = explorerAddressUrl(raw);
+    if (type === "block" && (isHash64(raw) || /^\d+$/.test(raw))) url = explorerBlockUrl(raw);
+    return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span>${copyButton(raw)}${explorerLink(url)}</span>`;
+  }
+
   function sourceCandidates(item) {
     const candidates = item.sourceCandidateIds || item.source_candidate_ids || item.candidates || [];
     return Array.isArray(candidates) ? candidates.filter(Boolean).map(String) : [];
@@ -25,15 +79,10 @@
 
   function candidateDisplay(item, candidatesByHeight) {
     const direct = item.candidateHash || item.candidate_hash || item.blockHash || item.block_hash || item.candidateId || item.candidate_id;
-    if (direct) {
-      return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(direct)}">${escapeHtml(shortHash(direct))}</span></span>`;
-    }
+    if (direct) return valueWithActions(direct, "block");
 
     const sources = sourceCandidates(item);
-    if (sources.length === 1) {
-      const raw = sources[0];
-      return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span></span>`;
-    }
+    if (sources.length === 1) return valueWithActions(sources[0], "block");
     if (sources.length > 1) {
       const title = sources.join("\n");
       return `<span class="payment-source-list" title="${escapeHtml(title)}"><strong>${sources.length} candidates</strong><code>${escapeHtml(shortHash(sources[0]))}</code></span>`;
@@ -50,6 +99,20 @@
     return "-";
   }
 
+  function blockDisplay(item) {
+    if (item.blockHeightRange) return escapeHtml(String(item.blockHeightRange));
+    if (Array.isArray(item.blockHeights) && item.blockHeights.length > 0) {
+      const sorted = item.blockHeights
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v))
+        .sort((a, b) => a - b);
+      if (sorted.length === 1) return valueWithActions(sorted[0], "block");
+      if (sorted.length > 1) return `${escapeHtml(String(sorted[0]))}&ndash;${escapeHtml(String(sorted[sorted.length - 1]))}`;
+    }
+    const height = item.blockHeight ?? item.height ?? item.matchedHeight ?? item.block_height;
+    return height !== null && height !== undefined && height !== "" ? valueWithActions(height, "block") : "-";
+  }
+
   function buildCandidateHeightMap(payloads) {
     const map = new Map();
     for (const payload of payloads) {
@@ -63,24 +126,40 @@
     return map;
   }
 
-  function polishPaymentsTable(items, candidatesByHeight) {
-    const table = document.querySelector("#payments-table table");
-    if (!table || !Array.isArray(items) || table.dataset.polished === "1") return;
-    table.dataset.polished = "1";
-    table.classList.add("payments-table-wide");
-    const rows = Array.from(table.querySelectorAll("tbody tr"));
-    rows.forEach((row, idx) => {
-      const item = items[idx];
-      if (!item) return;
-      const candidateCell = row.querySelector('td[data-label="Candidate hash"]');
-      if (candidateCell && candidateCell.textContent.trim() === "-") {
-        candidateCell.innerHTML = candidateDisplay(item, candidatesByHeight);
-      }
-      const amountCell = row.querySelector('td[data-label="Amount"]');
-      if (amountCell) {
-        amountCell.innerHTML = `<span class="payment-amount">${escapeHtml(formatNumber(item.amount))}</span>`;
-      }
-    });
+  function renderPaymentsTable(candidatesByHeight) {
+    const target = document.getElementById("payments-table");
+    if (!target) return;
+
+    if (!Array.isArray(paymentItems) || paymentItems.length === 0) {
+      target.innerHTML = '<div class="muted">No manual payment records are currently available in the public snapshot.</div>';
+      return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(paymentItems.length / PAGE_SIZE));
+    paymentPage = Math.min(Math.max(paymentPage, 0), totalPages - 1);
+    const start = paymentPage * PAGE_SIZE;
+    const visible = paymentItems.slice(start, start + PAGE_SIZE);
+
+    const rows = visible.map((item) => `<tr>
+      <td data-label="Wallet">${valueWithActions(item.wallet, "address")}</td>
+      <td data-label="Blocks">${blockDisplay(item)}</td>
+      <td data-label="Candidate hash">${candidateDisplay(item, candidatesByHeight)}</td>
+      <td data-label="Amount"><span class="payment-amount">${escapeHtml(formatNumber(item.amount))}</span></td>
+      <td data-label="Time">${escapeHtml(formatDate(item.paidAt || item.timestamp))}</td>
+      <td data-label="Confirms">${escapeHtml(formatNumber(item.confirmations))}</td>
+      <td data-label="TxID">${valueWithActions(item.txid, "txid")}</td>
+    </tr>`).join("");
+
+    target.innerHTML = `<div class="table-wrap"><table class="payments-table-wide" data-polished="1">
+      <thead><tr><th>Wallet</th><th>Blocks</th><th>Candidate hash</th><th>Amount</th><th>Time</th><th>Confirms</th><th>TxID</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="table-pagination" style="display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap;">
+      <span class="muted">Showing ${start + 1}-${Math.min(start + PAGE_SIZE, paymentItems.length)} of ${paymentItems.length}</span>
+      <button class="copy-mini" type="button" data-payment-page="${paymentPage - 1}" ${paymentPage <= 0 ? "disabled" : ""}>Prev</button>
+      <span class="muted">Page ${paymentPage + 1} / ${totalPages}</span>
+      <button class="copy-mini" type="button" data-payment-page="${paymentPage + 1}" ${paymentPage >= totalPages - 1 ? "disabled" : ""}>Next</button>
+    </div>`;
   }
 
   async function fetchJson(url) {
@@ -99,9 +178,18 @@
       fetchJson("/api/accepted-candidates"),
       fetchJson("/api/rounds")
     ]);
-    const items = Array.isArray(payments.items) ? payments.items : [];
+    paymentItems = Array.isArray(payments.items) ? payments.items : [];
+    paymentItems.sort((a, b) => String(b.paidAt || b.timestamp || "").localeCompare(String(a.paidAt || a.timestamp || "")));
     const candidatesByHeight = buildCandidateHeightMap([accepted, rounds]);
-    window.setTimeout(() => polishPaymentsTable(items, candidatesByHeight), 900);
+
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-payment-page]");
+      if (!button || button.disabled) return;
+      paymentPage = Number(button.getAttribute("data-payment-page"));
+      renderPaymentsTable(candidatesByHeight);
+    });
+
+    renderPaymentsTable(candidatesByHeight);
   }
 
   document.addEventListener("DOMContentLoaded", run);
