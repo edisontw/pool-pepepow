@@ -151,6 +151,9 @@
 
   async function fetchJson(url) {
     try {
+      if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
+        return await window.PepepowUI.fetchJson(url);
+      }
       const response = await fetch(url, { cache: "no-store" });
       return response.ok ? response.json() : { items: [] };
     } catch (_error) {
@@ -192,16 +195,6 @@
     });
 
     renderPaymentsTable();
-    window.setTimeout(renderPaymentsTable, 900);
-    window.setTimeout(renderPaymentsTable, 1800);
-
-    const target = document.getElementById("payments-table");
-    if (target) {
-      const observer = new MutationObserver(() => {
-        if (!rendering && needsPolish()) window.setTimeout(renderPaymentsTable, 0);
-      });
-      observer.observe(target, { childList: true, subtree: true });
-    }
   }
 
   document.addEventListener("DOMContentLoaded", run);

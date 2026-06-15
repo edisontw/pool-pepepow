@@ -174,9 +174,11 @@
   async function sampleWallet(apiBaseUrl, wallet) {
     if (!wallet) return;
     try {
-      const response = await fetch(`${apiBaseUrl}/miner/${encodeURIComponent(wallet)}`, { cache: "no-store" });
-      if (!response.ok) return;
-      const payload = await response.json();
+      const url = `${apiBaseUrl}/miner/${encodeURIComponent(wallet)}`;
+      const payload = window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
+        ? await window.PepepowUI.fetchJson(url)
+        : await fetch(url, { cache: "no-store" }).then((response) => response.ok ? response.json() : null);
+      if (!payload) return;
       const hashrate = payload && payload.summary && typeof payload.summary.hashrate === "number" ? payload.summary.hashrate : null;
       let series = loadSeries(wallet);
       series = appendPoint(series, hashrate);

@@ -142,9 +142,11 @@
   async function refreshPoolFoundBlocks() {
     if (document.body.dataset.page !== "blocks") return;
     try {
-      const response = await fetch("/api/accepted-candidates", { cache: "no-store" });
-      if (!response.ok) return;
-      const payload = await response.json();
+      const payload = window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
+        ? await window.PepepowUI.fetchJson("/api/accepted-candidates")
+        : await fetch("/api/accepted-candidates", { cache: "no-store" }).then(function (response) {
+          return response.ok ? response.json() : { items: [] };
+        });
       blockItems = Array.isArray(payload.items) ? payload.items : [];
       renderTable();
     } catch (_error) {
@@ -160,8 +162,9 @@
   });
 
   document.addEventListener("DOMContentLoaded", function () {
+    if (document.body.dataset.page !== "blocks") return;
     installStyles();
-    window.setTimeout(refreshPoolFoundBlocks, 500);
+    refreshPoolFoundBlocks();
     window.setInterval(refreshPoolFoundBlocks, REFRESH_MS);
   });
 })();

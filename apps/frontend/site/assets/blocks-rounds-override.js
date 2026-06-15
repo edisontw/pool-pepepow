@@ -189,9 +189,11 @@
   async function refreshRoundsTable() {
     if (document.body.dataset.page !== "blocks") return;
     try {
-      const response = await fetch("/api/rounds", { cache: "no-store" });
-      if (!response.ok) return;
-      const payload = await response.json();
+      const payload = window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
+        ? await window.PepepowUI.fetchJson("/api/rounds")
+        : await fetch("/api/rounds", { cache: "no-store" }).then(function (response) {
+          return response.ok ? response.json() : { items: [] };
+        });
       roundItems = Array.isArray(payload.items) ? payload.items : [];
       renderTable();
     } catch (_error) {
@@ -207,8 +209,9 @@
   });
 
   document.addEventListener("DOMContentLoaded", function () {
+    if (document.body.dataset.page !== "blocks") return;
     installStyles();
-    window.setTimeout(refreshRoundsTable, 800);
+    refreshRoundsTable();
     window.setInterval(refreshRoundsTable, REFRESH_MS);
   });
 })();

@@ -344,6 +344,9 @@
   }
 
   async function fetchJson(url) {
+    if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
+      return window.PepepowUI.fetchJson(url);
+    }
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) throw new Error("request failed");
     return response.json();

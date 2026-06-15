@@ -91,6 +91,9 @@
   }
 
   async function fetchJson(url) {
+    if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
+      return window.PepepowUI.fetchJson(url);
+    }
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) throw new Error("request failed");
     return response.json();
@@ -119,7 +122,7 @@
   }
 
   async function refreshLeaderboards() {
-    if (document.body.dataset.page !== "dashboard") return;
+    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
     try {
       const pool = await fetchJson("/api/pool/summary");
       const items = normalize(pool || {});
@@ -158,7 +161,7 @@
   }
 
   async function refreshLastObservedPoolBlock() {
-    if (document.body.dataset.page !== "dashboard") return;
+    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
     const node = document.getElementById("last-block-time");
     if (!node) return;
     try {

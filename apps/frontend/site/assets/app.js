@@ -8,6 +8,8 @@
   const FRONTEND_BUILD = "dashboard-fix-v7";
   console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
   const MINER_PAYMENTS_PAGE_SIZE = 10;
+  const API_CACHE_DEFAULT_TTL_MS = 30000;
+  const apiCache = new Map();
   let minerRecordedPayments = [];
   let minerRecordedPaymentsPage = 0;
 
@@ -154,7 +156,43 @@
     }
   }
 
-  async function fetchJson(url) {
+  function apiCacheTtl(url) {
+    if (/\/(payments|blocks|accepted-candidates|rounds)(\?|$)/.test(url)) return 60000;
+    if (/\/(health|status|stats|pool\/summary|network\/summary)(\?|$)/.test(url)) return 30000;
+    return API_CACHE_DEFAULT_TTL_MS;
+  }
+
+  async function fetchJson(url, options = {}) {
+    const ttl = typeof options.ttlMs === "number" ? options.ttlMs : apiCacheTtl(url);
+    const now = Date.now();
+    const cached = apiCache.get(url);
+    if (!options.force && cached && now - cached.t < ttl) {
+      if (cached.promise) return cached.promise;
+      return cached.data;
+    }
+
+    const promise = fetch(url, { cache: "no-store" }).then(async (response) => {
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const message =
+          payload && payload.error && payload.error.message
+            ? payload.error.message
+            : "Request failed";
+        throw new Error(message);
+      }
+
+      apiCache.set(url, { t: Date.now(), data: payload });
+      return payload;
+    }).catch((error) => {
+      apiCache.delete(url);
+      throw error;
+    });
+    apiCache.set(url, { t: now, promise });
+    return promise;
+  }
+
+  async function fetchUncachedJson(url) {
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json().catch(() => ({}));
 
@@ -437,6 +475,19 @@
       : "";
     return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>${note}</div>`;
   }
+
+  window.PepepowUI = {
+    fetchJson,
+    fetchUncachedJson,
+    formatDate,
+    formatHashrate,
+    formatNumber,
+    renderPaymentBlocks,
+    renderTable,
+    renderValueWithCopyAndExplorer,
+    setHtml,
+    setText
+  };
 
   async function fetchOptionalHealth(config) {
     try {
@@ -817,198 +868,6 @@
     );
   }
 
-  async function renderBlocks(config) {
-    const [blocks, candidates, rounds] = await Promise.all([
-      fetchJson(`${config.apiBaseUrl}/blocks`),
-      fetchJson(`${config.apiBaseUrl}/accepted-candidates`),
-      fetchJson(`${config.apiBaseUrl}/rounds`).catch(() => ({ items: [] }))
-    ]);
-    setHtml(
-      "blocks-table",
-      renderTable(blocks.items, [
-        { key: "height", label: "Height", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
-        { key: "hash", label: "Block hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
-        { key: "status", label: "Status", render: renderStatusLabel },
-        { key: "foundAt", label: "Time", render: formatDate },
-        { key: "confirmations", label: "Confirms", render: formatNumber }
-      ], "No network blocks tracked in this snapshot window yet.", { limit: 50 })
-    );
-    setHtml(
-      "accepted-candidates-table",
-      renderTable(candidates.items, [
-        { key: "jobId", label: "Job ID" },
-        { key: "submitTimestamp", label: "Time", render: formatDate },
-        { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
-        {
-          key: "lifecycleStatus",
-          label: "Lifecycle Status",
-          render: (val) => {
-            if (!val) return "-";
-            return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-          }
-        },
-        {
-          key: "matchedHeight",
-          label: "Height",
-          render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-")
-        },
-        {
-          key: "confirmations",
-          label: "Confirmations",
-          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
-        },
-        {
-          key: "maturityLabel",
-          label: "Chain maturity",
-          render: (val) => {
-            if (!val) return "-";
-            return val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-          }
-        }
-      ], "No accepted block candidates found in this snapshot window (chain observation only).")
-    );
-    setHtml(
-      "rounds-table",
-      renderTable(rounds.items, [
-        { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
-        {
-          key: "matchedHeight",
-          label: "Height",
-          render: (val) => (val ? renderValueWithCopyAndExplorer(val, "block") : "-")
-        },
-        {
-          key: "roundStatus",
-          label: "Round Status / Review State",
-          render: (val) => {
-            if (!val) return "-";
-            const formatted = val.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-            if (val === "pay" + "able") {
-              return "Observed Match (Manual Review)";
-            }
-            return formatted;
-          }
-        },
-        {
-          key: "totalShareCount",
-          label: "Shares",
-          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
-        },
-        {
-          key: "totalShareScore",
-          label: "Score",
-          render: (val) => (val !== null && val !== undefined ? Number(val).toFixed(4) : "-")
-        },
-        {
-          key: "walletCount",
-          label: "Wallets",
-          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
-        },
-        {
-          key: "confirmations",
-          label: "Confirmations",
-          render: (val) => (val !== null && val !== undefined ? formatNumber(val) : "-")
-        },
-        {
-          key: "shares",
-          label: "Observed Share %",
-          render: (sharesObj) => {
-            if (!sharesObj || typeof sharesObj !== "object") return "-";
-            const entries = Object.entries(sharesObj)
-              .filter(([, d]) => d && typeof d.sharePercent === "number")
-              .sort(([, a], [, b]) => b.sharePercent - a.sharePercent)
-              .slice(0, 3);
-            if (entries.length === 0) return "-";
-
-            const summaryText = entries
-              .map(([wallet, d]) => {
-                const pct = d.sharePercent.toFixed(2);
-                const short = wallet.length > 12 ? wallet.slice(0, 6) + "\u2026" + wallet.slice(-4) : wallet;
-                return `${escapeHtml(short)}\u00a0${pct}%`;
-              })
-              .join(" / ");
-
-            const detailLines = entries.map(([wallet, d]) => {
-              const pct = d.sharePercent.toFixed(2);
-              const score = typeof d.shareScore === "number" ? d.shareScore.toFixed(2) : "-";
-
-              let line = `<div style="margin-bottom: 0.15rem;">
-                ${renderValueWithCopyAndExplorer(wallet, "address")}:
-                <strong>${pct}%</strong> (Score: ${score})
-              </div>`;
-
-              if (d.workers && typeof d.workers === "object") {
-                const workersList = Object.entries(d.workers)
-                  .filter(([, w]) => w && typeof w.shareScore === "number")
-                  .sort(([, a], [, b]) => b.shareScore - a.shareScore);
-
-                if (workersList.length > 0) {
-                  const workerLines = workersList.slice(0, 2).map(([wName, wData]) => {
-                    const wPct = wData.sharePercent.toFixed(2);
-                    const wWalletPct = wData.walletSharePercent.toFixed(2);
-                    return `${escapeHtml(wName)}&nbsp;(${wPct}%&nbsp;total,&nbsp;${wWalletPct}%&nbsp;of&nbsp;wallet)`;
-                  }).join(", ");
-
-                  line += `<div style="padding-left: 0.75rem; font-size: 0.9em; opacity: 0.85;">
-                    &bull; Workers: ${workerLines}
-                  </div>`;
-                }
-              }
-              return line;
-            }).join("");
-
-            return `<div>
-              <div>${summaryText}</div>
-              <details style="margin-top: 0.35rem; font-size: 0.85em;">
-                <summary style="cursor: pointer; color: var(--accent-alt); font-weight: 500; outline: none; user-select: none;">Details</summary>
-                <div style="margin-top: 0.3rem; padding-left: 0.5rem; border-left: 2px solid var(--panel-border); line-height: 1.45;">
-                  ${detailLines}
-                </div>
-              </details>
-            </div>`;
-          }
-        }
-      ], "No active rounds or contribution data tracked in this snapshot.", { limit: 50 })
-    );
-  }
-
-  async function renderPayments(config) {
-    const [payments, pool] = await Promise.all([
-      fetchJson(`${config.apiBaseUrl}/payments`),
-      fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({}))
-    ]);
-    const feeText = typeof pool.feePercent === "number"
-      ? `Pool fee: ${pool.feePercent}%`
-      : "Pool fee: Fee shown when configured";
-    const minText = typeof pool.minPayout === "number"
-      ? `Minimum payout: ${formatNumber(pool.minPayout)} PEPEPOW`
-      : "Minimum payout shown when configured";
-    setHtml(
-      "payment-info",
-      `<span class="info-chip">Payment mode: manual/recorded</span><span class="info-chip">${feeText}</span><span class="info-chip">${minText}</span>`
-    );
-
-    const latest = Array.isArray(payments.items) ? payments.items[0] : null;
-    setHtml(
-      "latest-payment",
-      latest
-        ? `<h3>Most recent recorded payment</h3><div class="kv-list"><div><span>Time</span><strong>${formatDate(latest.paidAt)}</strong></div><div><span>Wallet</span><strong>${renderValueWithCopyAndExplorer(latest.wallet, "address")}</strong></div><div><span>Amount</span><strong>${formatNumber(latest.amount)}</strong></div><div><span>Blocks</span><strong>${renderPaymentBlocks(null, latest)}</strong></div><div><span>TxID</span><strong>${renderValueWithCopyAndExplorer(latest.txid, "txid")}</strong></div></div>`
-        : ""
-    );
-
-    setHtml(
-      "payments-table",
-      renderTable(payments.items, [
-        { key: "wallet", label: "Wallet", render: (val) => renderValueWithCopyAndExplorer(val, "address") },
-        { key: "blockHeight", label: "Blocks", render: renderPaymentBlocks },
-        { key: "candidateHash", label: "Candidate hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
-        { key: "amount", label: "Amount", render: formatNumber },
-        { key: "paidAt", label: "Time", render: formatDate },
-        { key: "confirmations", label: "Confirms", render: renderOptionalNumber },
-        { key: "txid", label: "TxID", render: (val) => renderValueWithCopyAndExplorer(val, "txid") }
-      ], "No manual payment records are currently available in the public snapshot.", { limit: 50 })
-    );
-  }
-
   async function lookupMiner(config, wallet) {
     // Fetch miner data plus supporting context in parallel
     const [result, pool, network, priceData, allPayments] = await Promise.all([
@@ -1161,13 +1020,9 @@
     const config = await loadRuntimeConfig();
 
     try {
-      if (page === "dashboard") {
+      if (page === "home" || page === "dashboard") {
         await renderDashboard(config);
         setupCopyButton("copy-stratum-btn", "stratum-endpoint");
-      } else if (page === "blocks") {
-        await renderBlocks(config);
-      } else if (page === "payments") {
-        await renderPayments(config);
       } else if (page === "miner") {
         await renderMiner(config);
       } else if (page === "connect") {
