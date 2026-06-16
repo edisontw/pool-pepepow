@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -171,6 +170,7 @@ def build_snapshot() -> dict[str, Any]:
     delta_received = None if previous_received is None or total_received is None else total_received - previous_received
     delta_balance = None if previous_balance is None or balance is None else balance - previous_balance
     delta_blocks = None if previous_height is None or height is None else height - previous_height
+    is_first_sample = previous_received is None and total_received is not None
 
     last_growth_at = previous.get("lastGrowthAt") if isinstance(previous.get("lastGrowthAt"), str) else None
     if delta_received is not None and delta_received > 0:
@@ -180,12 +180,12 @@ def build_snapshot() -> dict[str, Any]:
 
     no_growth_minutes = minutes_since(last_growth_at)
     status = "ok"
-    headline = "Wallet growth OK"
+    headline = "Baseline recorded" if is_first_sample else "Wallet growth OK"
     if total_received is None:
         status = "warning"
         headline = "Explorer format changed"
         warnings.append("Explorer address data did not include total received.")
-    elif no_growth_minutes is not None and no_growth_minutes >= WARNING_MINUTES:
+    elif not is_first_sample and no_growth_minutes is not None and no_growth_minutes >= WARNING_MINUTES:
         status = "warning"
         headline = "No recent wallet growth"
         warnings.append(f"Total received has not grown for about {no_growth_minutes:.0f} minutes.")
@@ -195,7 +195,9 @@ def build_snapshot() -> dict[str, Any]:
     if balance is None:
         warnings.append("Explorer balance unavailable.")
 
-    if delta_received is not None and delta_received > 0:
+    if is_first_sample:
+        summary = "First monitor sample recorded. The next run will show wallet growth delta."
+    elif delta_received is not None and delta_received > 0:
         summary = f"Pool wallet total received increased by {delta_received:,.3f} PEPEW since the previous monitor run."
     elif total_received is not None:
         summary = "Pool wallet total received is stable in this monitor window."
