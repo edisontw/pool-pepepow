@@ -18,6 +18,15 @@
     }).format(value);
   }
 
+  function formatWindow(hours, sampleHours) {
+    const labelHours = typeof hours === "number" && Number.isFinite(hours) ? hours : 24;
+    const label = Number.isInteger(labelHours) ? `${labelHours}h` : `${labelHours.toFixed(1)}h`;
+    if (typeof sampleHours === "number" && Number.isFinite(sampleHours) && sampleHours > 0 && sampleHours < labelHours * 0.75) {
+      return `last ${sampleHours.toFixed(sampleHours >= 10 ? 0 : 1)}h sample`;
+    }
+    return `last ${label}`;
+  }
+
   function formatAge(value) {
     if (!value) return "-";
     const date = new Date(value);
@@ -52,12 +61,16 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const status = typeof data.status === "string" ? data.status : "unknown";
-      const delta = typeof data.deltaTotalReceived === "number" ? data.deltaTotalReceived : null;
-      const totalReceived = typeof data.totalReceived === "number" ? data.totalReceived : null;
+      const windowDelta = typeof data.primaryWindowDeltaTotalReceived === "number" ? data.primaryWindowDeltaTotalReceived : null;
+      const windowHours = typeof data.primaryWindowHours === "number" ? data.primaryWindowHours : 24;
+      const sampleHours = typeof data.primaryWindowSampleHours === "number" ? data.primaryWindowSampleHours : null;
+      const fallbackDelta = typeof data.deltaTotalReceived === "number" ? data.deltaTotalReceived : null;
+      const displayDelta = windowDelta !== null ? windowDelta : fallbackDelta;
       const headline = data.headline || statusLabel(status);
       const summary = data.summary || "Pool wallet monitor has no summary yet.";
       const updatedAt = data.generatedAt || null;
       const explorerUrl = data.explorerWalletUrl || "https://explorer.pepepow.net/address/PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho";
+      const windowLabel = windowDelta !== null ? formatWindow(windowHours, sampleHours) : "latest sample";
 
       root.classList.remove("is-ok", "is-guarded", "is-alert");
       const cls = statusClass(status);
@@ -65,8 +78,8 @@
 
       setText("pool-wallet-watch-status", statusLabel(status));
       setText("pool-wallet-watch-headline", headline);
-      setText("pool-wallet-watch-main", delta !== null ? `${delta >= 0 ? "+" : ""}${formatPepew(delta)} PEPEW` : "No previous sample");
-      setText("pool-wallet-watch-sub", `Total received: ${formatPepew(totalReceived)} PEPEW · Updated ${formatAge(updatedAt)}`);
+      setText("pool-wallet-watch-main", displayDelta !== null ? `${displayDelta >= 0 ? "+" : ""}${formatPepew(displayDelta)} PEPEW` : "No previous sample");
+      setText("pool-wallet-watch-sub", `${windowLabel} · Updated ${formatAge(updatedAt)}`);
       setHtml("pool-wallet-watch-note", `${summary} <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer">Open explorer ↗</a>`);
     } catch (error) {
       root.classList.remove("is-ok", "is-guarded");
