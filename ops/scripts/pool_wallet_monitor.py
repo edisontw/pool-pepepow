@@ -9,16 +9,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 POOL_WALLET = os.environ.get(
     "PEPEPOW_POOL_MONITOR_WALLET",
     "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho",
 )
 EXPLORER_BASE = os.environ.get("PEPEPOW_POOL_MONITOR_EXPLORER", "https://explorer.pepepow.net").rstrip("/")
-RUNTIME_DIR = Path(os.environ.get("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR", ".runtime/live-stratum"))
-STATE_PATH = Path(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_STATE", RUNTIME_DIR / "pool-wallet-monitor-state.json"))
-SNAPSHOT_PATH = Path(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_OUTPUT", RUNTIME_DIR / "pool-wallet-monitor.json"))
+RUNTIME_DIR = Path(
+    os.environ.get("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR", str(REPO_ROOT / ".runtime/live-stratum"))
+)
+STATE_PATH = Path(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_STATE", str(RUNTIME_DIR / "pool-wallet-monitor-state.json")))
+SNAPSHOT_PATH = Path(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_OUTPUT", str(RUNTIME_DIR / "pool-wallet-monitor.json")))
 PUBLIC_SNAPSHOT_PATH = Path(
-    os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_PUBLIC_OUTPUT", "apps/frontend/site/pool-wallet-monitor.json")
+    os.environ.get(
+        "PEPEPOW_POOL_WALLET_MONITOR_PUBLIC_OUTPUT",
+        str(REPO_ROOT / "apps/frontend/site/pool-wallet-monitor.json"),
+    )
 )
 WARNING_MINUTES = float(os.environ.get("PEPEPOW_MONITOR_NO_GROWTH_WARNING_MINUTES", "180"))
 TIMEOUT_SECONDS = float(os.environ.get("PEPEPOW_MONITOR_HTTP_TIMEOUT_SECONDS", "8"))
