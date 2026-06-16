@@ -28,10 +28,22 @@ PUBLIC_SNAPSHOT_PATH = Path(
 )
 WARNING_MINUTES = float(os.environ.get("PEPEPOW_MONITOR_NO_GROWTH_WARNING_MINUTES", "180"))
 TIMEOUT_SECONDS = float(os.environ.get("PEPEPOW_MONITOR_HTTP_TIMEOUT_SECONDS", "8"))
+HISTORY_RETENTION_HOURS = float(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_HISTORY_HOURS", "72"))
+PRIMARY_WINDOW_HOURS = float(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_PRIMARY_WINDOW_HOURS", "24"))
+SECONDARY_WINDOW_HOURS = float(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_SECONDARY_WINDOW_HOURS", "48"))
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_time(iso_value: str | None) -> datetime | None:
+    if not iso_value:
+        return None
+    try:
+        return datetime.fromisoformat(iso_value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def as_number(value: Any) -> float | None:
@@ -112,13 +124,92 @@ def parse_address_payload(payload: Any) -> dict[str, Any]:
 
 
 def minutes_since(iso_value: str | None) -> float | None:
-    if not iso_value:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso_value.replace("Z", "+00:00"))
-    except ValueError:
+    dt = parse_time(iso_value)
+    if dt is None:
         return None
     return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 60.0)
+
+
+def normalize_history(previous: dict[str, Any], now_dt: datetime) -> list[dict[str, Any]]:
+    cutoff = now_dt.timestamp() - HISTORY_RETENTION_HOURS * 3600
+    rows: list[dict[str, Any]] = []
+    raw_rows = previous.get("history")
+    if isinstance(raw_rows, list):
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                continue
+            generated_at = row.get("generatedAt") if isinstance(row.get("generatedAt"), str) else None
+            total_received = as_number(row.get("totalReceived"))
+            balance = as_number(row.get("balance"))
+            height = as_number(row.get("currentBlockHeight"))
+            dt = parse_time(generated_at)
+            if dt is None or total_received is None or dt.timestamp() < cutoff:
+                continue
+            rows.append({
+                "generatedAt": generated_at,
+                "totalReceived": total_received,
+                "balance": balance,
+                "currentBlockHeight": height,
+            })
+    elif as_number(previous.get("totalReceived")) is not None and isinstance(previous.get("generatedAt"), str):
+        rows.append({
+            "generatedAt": previous.get("generatedAt"),
+            "totalReceived": as_number(previous.get("totalReceived")),
+            "balance": as_number(previous.get("balance")),
+            "currentBlockHeight": as_number(previous.get("currentBlockHeight")),
+        })
+    rows.sort(key=lambda item: item["generatedAt"])
+    return rows[-512:]
+
+
+def append_history(previous: dict[str, Any], sample: dict[str, Any], now_dt: datetime) -> list[dict[str, Any]]:
+    history = normalize_history(previous, now_dt)
+    if as_number(sample.get("totalReceived")) is None:
+        return history
+    if history and history[-1].get("generatedAt") == sample.get("generatedAt"):
+        history[-1] = sample
+    else:
+        history.append(sample)
+    cutoff = now_dt.timestamp() - HISTORY_RETENTION_HOURS * 3600
+    filtered = []
+    for row in history:
+        dt = parse_time(row.get("generatedAt") if isinstance(row.get("generatedAt"), str) else None)
+        if dt is not None and dt.timestamp() >= cutoff:
+            filtered.append(row)
+    return filtered[-512:]
+
+
+def window_delta(history: list[dict[str, Any]], total_received: float | None, now_dt: datetime, hours: float) -> dict[str, Any]:
+    result = {
+        "hours": hours,
+        "deltaTotalReceived": None,
+        "sampleStartAt": None,
+        "sampleEndAt": now_dt.isoformat().replace("+00:00", "Z"),
+        "sampleHours": 0.0,
+    }
+    if total_received is None or not history:
+        return result
+    cutoff = now_dt.timestamp() - hours * 3600
+    candidates = []
+    for row in history:
+        dt = parse_time(row.get("generatedAt") if isinstance(row.get("generatedAt"), str) else None)
+        received = as_number(row.get("totalReceived"))
+        if dt is None or received is None:
+            continue
+        if dt.timestamp() <= cutoff:
+            candidates.append((dt, row))
+    if candidates:
+        start_dt, start_row = candidates[-1]
+    else:
+        start_dt = parse_time(history[0].get("generatedAt") if isinstance(history[0].get("generatedAt"), str) else None)
+        start_row = history[0]
+    start_received = as_number(start_row.get("totalReceived"))
+    if start_dt is None or start_received is None:
+        return result
+    result["deltaTotalReceived"] = total_received - start_received
+    result["sampleStartAt"] = start_dt.isoformat().replace("+00:00", "Z")
+    result["sampleHours"] = max(0.0, (now_dt - start_dt).total_seconds() / 3600.0)
+    return result
 
 
 def load_optional_notes(delta_balance: float | None) -> list[str]:
@@ -134,7 +225,8 @@ def load_optional_notes(delta_balance: float | None) -> list[str]:
 
 
 def build_snapshot() -> dict[str, Any]:
-    now = utc_now()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat().replace("+00:00", "Z")
     address_url = f"{EXPLORER_BASE}/ext/getaddress/{POOL_WALLET}"
     balance_url = f"{EXPLORER_BASE}/ext/getbalance/{POOL_WALLET}"
     height_url = f"{EXPLORER_BASE}/api/getblockcount"
@@ -184,6 +276,16 @@ def build_snapshot() -> dict[str, Any]:
     delta_blocks = None if previous_height is None or height is None else height - previous_height
     is_first_sample = previous_received is None and total_received is not None
 
+    sample = {
+        "generatedAt": now,
+        "totalReceived": total_received,
+        "balance": balance,
+        "currentBlockHeight": height,
+    }
+    history = append_history(previous, sample, now_dt)
+    primary_window = window_delta(history, total_received, now_dt, PRIMARY_WINDOW_HOURS)
+    secondary_window = window_delta(history, total_received, now_dt, SECONDARY_WINDOW_HOURS)
+
     last_growth_at = previous.get("lastGrowthAt") if isinstance(previous.get("lastGrowthAt"), str) else None
     if delta_received is not None and delta_received > 0:
         last_growth_at = now
@@ -207,8 +309,13 @@ def build_snapshot() -> dict[str, Any]:
     if balance is None:
         warnings.append("Explorer balance unavailable.")
 
+    primary_delta = as_number(primary_window.get("deltaTotalReceived"))
+    primary_hours = as_number(primary_window.get("sampleHours")) or 0.0
     if is_first_sample:
         summary = "First monitor sample recorded. The next run will show wallet growth delta."
+    elif primary_delta is not None and primary_hours >= 1.0:
+        label = f"{int(PRIMARY_WINDOW_HOURS)}h" if PRIMARY_WINDOW_HOURS.is_integer() else f"{PRIMARY_WINDOW_HOURS:g}h"
+        summary = f"Pool wallet total received increased by {primary_delta:,.3f} PEPEW over the latest available {label} window."
     elif delta_received is not None and delta_received > 0:
         summary = f"Pool wallet total received increased by {delta_received:,.3f} PEPEW since the previous monitor run."
     elif total_received is not None:
@@ -234,6 +341,12 @@ def build_snapshot() -> dict[str, Any]:
         "previousTotalReceived": previous_received,
         "deltaBalance": delta_balance,
         "deltaTotalReceived": delta_received,
+        "primaryWindowHours": PRIMARY_WINDOW_HOURS,
+        "primaryWindowDeltaTotalReceived": primary_window.get("deltaTotalReceived"),
+        "primaryWindowSampleHours": primary_window.get("sampleHours"),
+        "secondaryWindowHours": SECONDARY_WINDOW_HOURS,
+        "secondaryWindowDeltaTotalReceived": secondary_window.get("deltaTotalReceived"),
+        "secondaryWindowSampleHours": secondary_window.get("sampleHours"),
         "lastGrowthAt": last_growth_at,
         "minutesSinceGrowth": no_growth_minutes,
         "warnings": warnings,
@@ -249,6 +362,7 @@ def build_snapshot() -> dict[str, Any]:
         "totalReceived": total_received,
         "totalSent": total_sent,
         "lastGrowthAt": last_growth_at,
+        "history": history,
     }
     atomic_write_json(STATE_PATH, state)
     write_snapshots(snapshot)
@@ -260,7 +374,8 @@ def main() -> int:
     print(f"status: {snapshot.get('status')}")
     print(f"headline: {snapshot.get('headline')}")
     print(f"wallet: {snapshot.get('wallet')}")
-    print(f"totalReceived: {snapshot.get('totalReceived')}")
+    print(f"primaryWindowHours: {snapshot.get('primaryWindowHours')}")
+    print(f"primaryWindowDeltaTotalReceived: {snapshot.get('primaryWindowDeltaTotalReceived')}")
     print(f"deltaTotalReceived: {snapshot.get('deltaTotalReceived')}")
     print(f"balance: {snapshot.get('balance')}")
     print(f"currentBlockHeight: {snapshot.get('currentBlockHeight')}")
