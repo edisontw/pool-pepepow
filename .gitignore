@@ -42,6 +42,9 @@ logs/
 *.pid.lock
 *.sock
 
+# Generated public runtime snapshots
+apps/frontend/site/pool-wallet-monitor.json
+
 # Temporary files
 tmp/
 temp/
