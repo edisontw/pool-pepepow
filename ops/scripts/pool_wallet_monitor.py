@@ -73,7 +73,7 @@ def fetch_json_or_text(url: str) -> Any:
         return raw.strip()
 
 
-def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+def atomic_write_json(path: Path, data: dict[str, Any], mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
@@ -81,11 +81,18 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
             json.dump(data, f, indent=2, sort_keys=True)
             f.write("\n")
         os.replace(temp_name, path)
+        if mode is not None:
+            os.chmod(path, mode)
     finally:
         try:
             os.unlink(temp_name)
         except FileNotFoundError:
             pass
+
+
+def write_snapshots(snapshot: dict[str, Any]) -> None:
+    atomic_write_json(SNAPSHOT_PATH, snapshot)
+    atomic_write_json(PUBLIC_SNAPSHOT_PATH, snapshot, 0o644)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -153,8 +160,7 @@ def build_snapshot() -> dict[str, Any]:
             "errors": [str(exc)],
             "warnings": ["Explorer API fetch failed."],
         }
-        atomic_write_json(SNAPSHOT_PATH, snapshot)
-        atomic_write_json(PUBLIC_SNAPSHOT_PATH, snapshot)
+        write_snapshots(snapshot)
         return snapshot
 
     balance = first_number(address_payload, ("balance", "currentBalance"))
@@ -245,8 +251,7 @@ def build_snapshot() -> dict[str, Any]:
         "lastGrowthAt": last_growth_at,
     }
     atomic_write_json(STATE_PATH, state)
-    atomic_write_json(SNAPSHOT_PATH, snapshot)
-    atomic_write_json(PUBLIC_SNAPSHOT_PATH, snapshot)
+    write_snapshots(snapshot)
     return snapshot
 
 
