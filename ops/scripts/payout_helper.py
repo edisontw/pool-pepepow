@@ -19,7 +19,7 @@ import subprocess
 import fcntl
 import socket
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +259,15 @@ def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
 FAILED_PAYMENT_ACTION_STATUSES = {"failed", "send_failed", "reserved"}
 SUCCESS_PAYMENT_ACTION_STATUSES = {"sent", "paid", "paid_manual", "manual_payment_recorded"}
 SUCCESS_PAYMENT_ACTIONS = {"manual_payment_recorded"}
+MANUAL_OPERATOR_BACKFILL_ACTION = "manual_operator_backfill_payment_recorded"
+MANUAL_OPERATOR_BACKFILL_REASON = "operator_approved_fixed_distribution_backfill_2026_06"
+MANUAL_OPERATOR_BACKFILL_BUCKET = "operatorApprovedBackfill"
+MANUAL_OPERATOR_BACKFILL_NOTE = "fixed split for current unattributed confirmed operator backfill bucket"
+MANUAL_OPERATOR_BACKFILL_DISTRIBUTION = [
+    ("PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd", Decimal("0.65")),
+    ("PNQf7byG1hYBzQHZEiPSK15DNr1YCkxpRd", Decimal("0.30")),
+    ("PAPHSQTH5y9dMmmTvUohmxKByWN8vrxvSS", Decimal("0.05")),
+]
 
 
 def action_represents_successful_payment(action: dict[str, Any]) -> bool:
@@ -382,6 +391,88 @@ def load_paid_payment_pairs(
                 if source_id:
                     paid_pairs.add((str(source_id), str(wallet)))
     return paid_pairs
+
+
+def load_manual_operator_backfill_paid_candidate_ids(actions_log_path: Path) -> set[str]:
+    """Load candidate ids covered by the fixed operator backfill rescue payout."""
+    groups: dict[tuple[str, str, tuple[str, ...]], set[str]] = {}
+    if not actions_log_path.exists():
+        return set()
+    try:
+        with actions_log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    act = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(act, dict) or not action_represents_successful_payment(act):
+                    continue
+                if act.get("action") != MANUAL_OPERATOR_BACKFILL_ACTION:
+                    continue
+                if act.get("reason") != MANUAL_OPERATOR_BACKFILL_REASON:
+                    continue
+                if act.get("sourceBucket") != MANUAL_OPERATOR_BACKFILL_BUCKET:
+                    continue
+                source_ids = act.get("sourceCandidateIds")
+                wallet = act.get("wallet")
+                timestamp = str(act.get("timestamp") or "")
+                total = str(act.get("operatorBackfillTotal") or "")
+                if not isinstance(source_ids, list) or not wallet or not timestamp or not total:
+                    continue
+                normalized_sources = tuple(_dedupe_preserve_order(str(source_id) for source_id in source_ids if source_id))
+                if not normalized_sources:
+                    continue
+                groups.setdefault((timestamp, total, normalized_sources), set()).add(str(wallet))
+    except Exception:
+        return set()
+
+    expected_wallets = {wallet for wallet, _pct in MANUAL_OPERATOR_BACKFILL_DISTRIBUTION}
+    paid_ids: set[str] = set()
+    for (_timestamp, _total, source_ids), wallets in groups.items():
+        if wallets == expected_wallets:
+            paid_ids.update(source_ids)
+    return paid_ids
+
+
+def has_partial_manual_operator_backfill_payment(actions_log_path: Path) -> bool:
+    """Return True when a fixed backfill payment was partially sent but not completed."""
+    if not actions_log_path.exists():
+        return False
+    expected_wallets = {wallet for wallet, _pct in MANUAL_OPERATOR_BACKFILL_DISTRIBUTION}
+    groups: dict[tuple[str, str, tuple[str, ...]], set[str]] = {}
+    try:
+        with actions_log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    act = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(act, dict) or not action_represents_successful_payment(act):
+                    continue
+                if act.get("action") != MANUAL_OPERATOR_BACKFILL_ACTION:
+                    continue
+                if act.get("reason") != MANUAL_OPERATOR_BACKFILL_REASON:
+                    continue
+                if act.get("sourceBucket") != MANUAL_OPERATOR_BACKFILL_BUCKET:
+                    continue
+                source_ids = act.get("sourceCandidateIds")
+                wallet = act.get("wallet")
+                timestamp = str(act.get("timestamp") or "")
+                total = str(act.get("operatorBackfillTotal") or "")
+                if not isinstance(source_ids, list) or not wallet or not timestamp or not total:
+                    continue
+                normalized_sources = tuple(_dedupe_preserve_order(str(source_id) for source_id in source_ids if source_id))
+                if normalized_sources:
+                    groups.setdefault((timestamp, total, normalized_sources), set()).add(str(wallet))
+    except Exception:
+        return False
+    return any(wallets and wallets != expected_wallets for wallets in groups.values())
 
 
 def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: str) -> bool:
@@ -768,6 +859,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
     actions_log_path = output_path.parent / "payment-actions.jsonl"
     payments_snapshot_path = output_path.parent / "payments-snapshot.json"
     paid_pairs = load_paid_payment_pairs(actions_log_path, output_path, payments_snapshot_path)
+    manual_operator_backfill_paid_ids = load_manual_operator_backfill_paid_candidate_ids(actions_log_path)
 
     wallet_carry_state: dict[str, dict[str, Any]] = {}
     for wallet, items in carry_map.items():
@@ -902,7 +994,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         followup_status = c.get("followup_status") or c.get("followupStatus")
         is_orphan = l_status == "orphan" or followup_status == "no-match-found"
 
-        is_already_paid = False
+        is_already_paid = bool(c_hash and c_hash in manual_operator_backfill_paid_ids)
         if c_hash in rounds_map:
             r_data = rounds_map[c_hash]
             shares = r_data.get("shares", {})
@@ -2076,6 +2168,49 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     if malformed_candidates or not carry_path.exists() or not payments_path.exists() or carry_audit_status != "ok":
         payout_review_status = "warning"
 
+    ready_payment_total = 0.0
+    auto_selector_payment_total = 0.0
+    auto_selector_payment_rows = 0
+    operator_backfill_payment_total = 0.0
+    operator_backfill_payment_rows = 0
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        weight_mode = str(c.get("weightMode") or c.get("weight_mode") or "")
+        candidate_is_fallback = (
+            c.get("fallbackWarning") is True
+            or c.get("operatorApprovedBackfill") is True
+            or weight_mode.endswith("_fallback")
+            or weight_mode.startswith("operator_")
+        )
+        payouts = c.get("payouts")
+        if not isinstance(payouts, list):
+            continue
+        for p in payouts:
+            if not isinstance(p, dict):
+                continue
+            payout_status = p.get("status")
+            try:
+                payout_amount = float(p.get("amount", 0.0))
+            except (ValueError, TypeError):
+                payout_amount = 0.0
+            payout_is_fallback = (
+                candidate_is_fallback
+                or p.get("fallbackWarning") is True
+                or p.get("operatorApprovedBackfill") is True
+            )
+            if payout_status == "pending_manual_payment":
+                ready_payment_total += payout_amount
+            if payout_is_fallback and p.get("operatorApprovedBackfill") is True:
+                operator_backfill_payment_total += payout_amount
+                operator_backfill_payment_rows += 1
+            if (
+                not payout_is_fallback
+                and payout_status in {"pending_manual_payment", "ready_for_wallet_send", "below_threshold", "below_threshold_carried"}
+            ):
+                auto_selector_payment_total += payout_amount
+                auto_selector_payment_rows += 1
+
     if as_json:
         # Load pool snapshot for network height and confirmations
         pool_snap = load_pool_snapshot()
@@ -2162,6 +2297,11 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                 "walletsWithCarry": wallets_with_carry,
                 "candidatePayoutsWithCarry": candidate_payouts_with_carry_count,
                 "candidateCarryAppliedAmount": candidate_carry_applied_amount,
+                "readyPaymentTotal": ready_payment_total,
+                "autoSelectorPaymentRows": auto_selector_payment_rows,
+                "autoSelectorPaymentTotal": auto_selector_payment_total,
+                "operatorBackfillPaymentRows": operator_backfill_payment_rows,
+                "operatorBackfillPaymentTotal": operator_backfill_payment_total,
                 "carryAuditStatus": carry_audit_status
             },
             "items": json_items
@@ -2199,26 +2339,16 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                             print(f"    - {wallet}: {pct}% (Count: {cnt}, Score: {score})")
             print("-"*80)
 
-    # Compute ready_payment_total: sum of pending_manual_payment payout amounts across all candidates
-    ready_payment_total = 0.0
-    for c in candidates:
-        if not isinstance(c, dict):
-            continue
-        payouts = c.get("payouts")
-        if isinstance(payouts, list):
-            for p in payouts:
-                if isinstance(p, dict) and p.get("status") == "pending_manual_payment":
-                    try:
-                        ready_payment_total += float(p.get("amount", 0.0))
-                    except (ValueError, TypeError):
-                        pass
-
     # blocked_candidates_count is computed earlier in the JSON branch; recompute for text branch
     _blocked_count = sum(1 for c in candidates if isinstance(c, dict) and c.get("status") == "blocked")
 
     print("Carry Status Summary")
     print("="*80)
     print(f"ready_payment_total: {ready_payment_total}")
+    print(f"auto_selector_payment_rows: {auto_selector_payment_rows}")
+    print(f"auto_selector_payment_total: {auto_selector_payment_total}")
+    print(f"operator_backfill_payment_rows: {operator_backfill_payment_rows}")
+    print(f"operator_backfill_payment_total: {operator_backfill_payment_total}")
     print(f"below_threshold_carry_total: {carry_total_amount}")
     print(f"wallet_carry_count: {len(wallets_with_carry)}")
     print(f"blocked_candidates: {_blocked_count}")
@@ -3235,6 +3365,299 @@ def payout_wallet_send_aggregated_once(
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def manual_operator_backfill_fixed_distribution(
+    candidates_path: Path,
+    actions_log_path: Path,
+    payments_snapshot_path: Path,
+    output_path: Path,
+) -> int:
+    """Send the one-time operator-approved fixed split for the manual backfill bucket."""
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    env = load_env_vars()
+    enabled_raw = env.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", "false")
+    max_sends_raw = env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+    real_enabled = enabled_raw.strip().lower() == "true"
+    warnings: list[str] = []
+    sent: list[dict[str, Any]] = []
+    status = "unknown"
+
+    try:
+        max_sends: int | None = int(max_sends_raw) if max_sends_raw is not None else None
+    except (TypeError, ValueError):
+        max_sends = None
+    try:
+        min_payout = Decimal(str(env.get("PEPEPOW_MIN_PAYOUT", "1000")))
+    except (InvalidOperation, ValueError):
+        min_payout = Decimal("1000")
+
+    def result_payload() -> dict[str, Any]:
+        return {
+            "generatedAt": generated_at,
+            "mode": "manual_operator_backfill_fixed_distribution",
+            "realWalletPayoutEnabled": real_enabled,
+            "maxSends": max_sends,
+            "minPayout": str(min_payout),
+            "status": status,
+            "sent": sent,
+            "sentCount": len(sent),
+            "totalSent": str(sum((Decimal(str(x.get("amount", "0"))) for x in sent), Decimal("0"))),
+            "warnings": warnings,
+        }
+
+    def finish(finish_status: str) -> int:
+        nonlocal status
+        status = finish_status
+        try:
+            atomic_write_json(output_path, result_payload())
+        except Exception as exc:
+            print(f"Error: Failed to write manual backfill result atomically: {exc}", file=sys.stderr)
+            return 1
+        print("Manual Operator Backfill Fixed Distribution Summary")
+        print("="*80)
+        print(f"status: {status}")
+        print(f"real_wallet_payout_enabled: {str(real_enabled).lower()}")
+        print(f"max_sends: {max_sends if max_sends is not None else 'invalid'}")
+        print(f"min_payout: {min_payout}")
+        print(f"sent_count: {len(sent)}")
+        for item in sent:
+            print(f"sent: {item.get('wallet')} {item.get('amount')} {item.get('txid')}")
+        print(f"artifact_path: {output_path}")
+        print("="*80)
+        return 0 if finish_status == "sent_recorded" else 1
+
+    if not real_enabled:
+        return finish("blocked_real_wallet_payout_disabled")
+    if max_sends != len(MANUAL_OPERATOR_BACKFILL_DISTRIBUTION):
+        return finish("blocked_invalid_send_budget")
+
+    try:
+        with candidates_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        warnings.append(f"Failed to read payout candidates: {exc}")
+        return finish("blocked_candidates_unreadable")
+
+    candidates = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(candidates, list):
+        return finish("blocked_candidates_unreadable")
+
+    source_ids: list[str] = []
+    total = Decimal("0")
+    row_count = 0
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        c_id = _candidate_id(candidate)
+        if not c_id:
+            continue
+        if candidate.get("blockedReason"):
+            continue
+        if candidate.get("status") != "ready_for_manual_review":
+            continue
+        if _candidate_lifecycle_status(candidate) != "confirmed":
+            continue
+        if candidate.get("coinbaseMatchesExpectedPoolWallet") is not True:
+            continue
+        if candidate.get("weightMode") != "operator_weighted_backfill":
+            continue
+        payouts = candidate.get("payouts")
+        if not isinstance(payouts, list):
+            continue
+        candidate_included = False
+        for payout in payouts:
+            if not isinstance(payout, dict):
+                continue
+            if payout.get("operatorApprovedBackfill") is not True:
+                continue
+            if payout.get("status") != "pending_manual_payment":
+                continue
+            try:
+                amount = Decimal(str(payout.get("amount")))
+            except (InvalidOperation, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            total += amount
+            row_count += 1
+            candidate_included = True
+        if candidate_included:
+            source_ids.append(c_id)
+
+    source_ids = _dedupe_preserve_order(source_ids)
+    if not source_ids or total <= 0:
+        return finish("blocked_no_operator_backfill_bucket")
+
+    q = Decimal("0.00000001")
+    distribution_items: list[dict[str, str]] = []
+    running = Decimal("0")
+    for i, (wallet, pct) in enumerate(MANUAL_OPERATOR_BACKFILL_DISTRIBUTION):
+        if i < len(MANUAL_OPERATOR_BACKFILL_DISTRIBUTION) - 1:
+            amount = (total * pct).quantize(q, rounding=ROUND_HALF_UP)
+            running += amount
+        else:
+            amount = (total - running).quantize(q, rounding=ROUND_HALF_UP)
+        if amount < min_payout:
+            return finish("blocked_below_min_payout")
+        send_amount = _normalize_payout_send_amount(amount)
+        if send_amount is None:
+            return finish("blocked_amount_mismatch")
+        distribution_items.append({
+            "wallet": wallet,
+            "percent": str((pct * Decimal("100")).normalize()),
+            "amount": send_amount,
+        })
+
+    if len(distribution_items) != max_sends:
+        return finish("blocked_invalid_send_budget")
+
+    already_paid_ids = load_manual_operator_backfill_paid_candidate_ids(actions_log_path)
+    if any(source_id in already_paid_ids for source_id in source_ids):
+        return finish("blocked_already_paid")
+    if has_partial_manual_operator_backfill_payment(actions_log_path):
+        return finish("blocked_partial_manual_backfill_payment_exists")
+
+    total_to_send = sum((Decimal(item["amount"]) for item in distribution_items), Decimal("0"))
+    balance_res = wallet_readonly_call("getbalance", [])
+    try:
+        wallet_balance = Decimal(str(balance_res)) if balance_res is not None else None
+    except (InvalidOperation, ValueError):
+        wallet_balance = None
+    if wallet_balance is None:
+        return finish("blocked_wallet_balance_unreadable")
+    if total_to_send > wallet_balance:
+        return finish("blocked_insufficient_balance")
+
+    for item in distribution_items:
+        address_res = wallet_readonly_call("validateaddress", [item["wallet"]])
+        if not (isinstance(address_res, dict) and address_res.get("isvalid") is True):
+            return finish("blocked_invalid_address")
+
+    distribution_metadata = [
+        {"wallet": item["wallet"], "percent": item["percent"], "amount": item["amount"]}
+        for item in distribution_items
+    ]
+    lock_path = payment_actions_lock_path(actions_log_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            locked_ids = load_manual_operator_backfill_paid_candidate_ids(actions_log_path)
+            if any(source_id in locked_ids for source_id in source_ids):
+                return finish("blocked_already_paid")
+            if has_partial_manual_operator_backfill_payment(actions_log_path):
+                return finish("blocked_partial_manual_backfill_payment_exists")
+
+            locked_env = load_env_vars()
+            locked_enabled = locked_env.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", "false").strip().lower() == "true"
+            try:
+                locked_max_sends = int(locked_env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS", ""))
+            except (TypeError, ValueError):
+                locked_max_sends = None
+            if not locked_enabled or locked_max_sends != len(distribution_items):
+                return finish("blocked_budget_exceeded")
+
+            cli_path = locked_env.get("PEPEPOW_WALLET_CLI") or "/home/ubuntu/PEPEPOW-cli"
+            if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
+                warnings.append("Wallet CLI unavailable or not executable")
+                return finish("blocked_wallet_cli_unavailable")
+
+            for item in distribution_items:
+                wallet = item["wallet"]
+                amount = item["amount"]
+                try:
+                    proc = subprocess.run(
+                        [cli_path, "sendtoaddress", wallet, amount],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                except Exception as exc:
+                    append_payment_action(actions_log_path, {
+                        "action": MANUAL_OPERATOR_BACKFILL_ACTION,
+                        "candidate_id": f"manual_operator_backfill:{wallet}:{generated_at}",
+                        "wallet": wallet,
+                        "amount": amount,
+                        "status": "failed",
+                        "error": str(exc) or "sendtoaddress_exception",
+                        "reason": MANUAL_OPERATOR_BACKFILL_REASON,
+                        "sourceBucket": MANUAL_OPERATOR_BACKFILL_BUCKET,
+                        "sourceCandidateIds": source_ids,
+                        "sourceCount": len(source_ids),
+                        "operatorBackfillRows": row_count,
+                        "operatorBackfillTotal": str(total),
+                        "timestamp": generated_at,
+                    })
+                    return finish("blocked_send_failed")
+
+                if proc.returncode != 0:
+                    append_payment_action(actions_log_path, {
+                        "action": MANUAL_OPERATOR_BACKFILL_ACTION,
+                        "candidate_id": f"manual_operator_backfill:{wallet}:{generated_at}",
+                        "wallet": wallet,
+                        "amount": amount,
+                        "status": "failed",
+                        "error": "sendtoaddress_failed",
+                        "stderr": proc.stderr.strip()[:500],
+                        "reason": MANUAL_OPERATOR_BACKFILL_REASON,
+                        "sourceBucket": MANUAL_OPERATOR_BACKFILL_BUCKET,
+                        "sourceCandidateIds": source_ids,
+                        "sourceCount": len(source_ids),
+                        "operatorBackfillRows": row_count,
+                        "operatorBackfillTotal": str(total),
+                        "timestamp": generated_at,
+                    })
+                    return finish("blocked_send_failed")
+
+                txid = proc.stdout.strip().splitlines()[0].strip() if proc.stdout.strip() else ""
+                if not re.match(r"^[A-Za-z0-9]{26,128}$", txid):
+                    append_payment_action(actions_log_path, {
+                        "action": MANUAL_OPERATOR_BACKFILL_ACTION,
+                        "candidate_id": f"manual_operator_backfill:{wallet}:{generated_at}",
+                        "wallet": wallet,
+                        "amount": amount,
+                        "status": "failed",
+                        "error": "invalid_txid",
+                        "reason": MANUAL_OPERATOR_BACKFILL_REASON,
+                        "sourceBucket": MANUAL_OPERATOR_BACKFILL_BUCKET,
+                        "sourceCandidateIds": source_ids,
+                        "sourceCount": len(source_ids),
+                        "operatorBackfillRows": row_count,
+                        "operatorBackfillTotal": str(total),
+                        "timestamp": generated_at,
+                    })
+                    return finish("blocked_send_failed")
+
+                action = {
+                    "action": MANUAL_OPERATOR_BACKFILL_ACTION,
+                    "candidate_id": f"manual_operator_backfill:{wallet}:{generated_at}",
+                    "wallet": wallet,
+                    "amount": amount,
+                    "txid": txid,
+                    "status": "sent",
+                    "reason": MANUAL_OPERATOR_BACKFILL_REASON,
+                    "distribution": distribution_metadata,
+                    "sourceBucket": MANUAL_OPERATOR_BACKFILL_BUCKET,
+                    "sourceCandidateIds": source_ids,
+                    "sourceCount": len(source_ids),
+                    "operatorBackfillRows": row_count,
+                    "operatorBackfillTotal": str(total),
+                    "operator": "manual",
+                    "note": MANUAL_OPERATOR_BACKFILL_NOTE,
+                    "timestamp": generated_at,
+                }
+                append_payment_action(actions_log_path, action)
+                sent.append({"wallet": wallet, "amount": amount, "txid": txid})
+
+            record_rc = generate_payments_snapshot(actions_log_path, payments_snapshot_path)
+            if record_rc != 0:
+                warnings.append("Payment sent but payments snapshot update failed")
+                return finish("sent_record_failed")
+            return finish("sent_recorded")
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 AUTO_PAYOUT_DEFAULT_ALLOWED_WALLETS = {"PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD"}
 
 
@@ -3701,6 +4124,15 @@ def main() -> int:
     parser_send_once.add_argument("--wallet", type=str, required=True, help="Wallet address to pay")
     parser_send_once.add_argument("--amount", type=float, required=True, help="Exact amount to pay")
 
+    parser_manual_backfill = subparsers.add_parser(
+        "manual-operator-backfill-fixed-distribution",
+        help="Send the one-time fixed distribution for the operator-approved backfill bucket",
+    )
+    parser_manual_backfill.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
+    parser_manual_backfill.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_manual_backfill.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
+    parser_manual_backfill.add_argument("--output", type=str, required=True, help="Path to output manual backfill result JSON")
+
     parser_preflight = subparsers.add_parser("payout-wallet-send-preflight", help="Preflight guarded wallet payout send without sending")
     parser_preflight.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_preflight.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
@@ -3789,6 +4221,13 @@ def main() -> int:
             args.candidate_id,
             args.wallet,
             args.amount,
+        )
+    elif args.command == "manual-operator-backfill-fixed-distribution":
+        return manual_operator_backfill_fixed_distribution(
+            Path(args.candidates),
+            Path(args.actions_log),
+            Path(args.payments_snapshot),
+            Path(args.output),
         )
     elif args.command == "payout-wallet-send-preflight":
         return payout_wallet_send_preflight(

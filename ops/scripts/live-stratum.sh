@@ -1348,7 +1348,13 @@ auto_payout_once_service() {
   followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-300}"
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
   one_shot_wallet_max_sends="1"
-  max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS:-5}"
+  if [[ -n "${PEPEPOW_AUTO_PAYOUT_MAX_SENDS+x}" ]]; then
+    max_sends="${PEPEPOW_AUTO_PAYOUT_MAX_SENDS}"
+  elif [[ -n "${PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS+x}" ]]; then
+    max_sends="${REAL_WALLET_PAYOUT_MAX_SENDS}"
+  else
+    max_sends="5"
+  fi
   allow_any_wallet="${PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET:-true}"
   allowed_wallets_env="${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS:-${PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLET-}}"
 

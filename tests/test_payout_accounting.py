@@ -940,6 +940,20 @@ class PayoutAccountingTests(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0)
 
+        # 7a. Test explicit real wallet max sends feeds auto-payout cap when auto cap is unset
+        env_real_cap = dict(env)
+        env_real_cap["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "50.5"
+        env_real_cap["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "17"
+        env_real_cap.pop("PEPEPOW_AUTO_PAYOUT_MAX_SENDS", None)
+        res = subprocess.run(
+            [str(sh_path), "auto-payout-once"],
+            env=env_real_cap,
+            capture_output=True,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("max_sends: 17", res.stdout)
+
         # 7b. Test valid configuration with PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS (passes validation and returns 0)
         env_valid_wallets = dict(env)
         env_valid_wallets["PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT"] = "50.5"
@@ -2778,6 +2792,7 @@ class PayoutAccountingTests(unittest.TestCase):
                         {
                             "wallet": "walletA",
                             "amount": 100.0,
+                            "status": "pending_manual_payment",
                             "baseAmount": 40.0,
                             "carryInAmount": 60.0,
                             "carrySourceCandidateIds": ["height-99"]
@@ -2972,9 +2987,26 @@ class PayoutAccountingTests(unittest.TestCase):
                         {
                             "wallet": "walletA",
                             "amount": 100.0,
+                            "status": "pending_manual_payment",
                             "baseAmount": 40.0,
                             "carryInAmount": 60.0,
                             "carrySourceCandidateIds": ["height-99"]
+                        }
+                    ]
+                },
+                {
+                    "candidate_hash": "hash_cand_2",
+                    "status": "ready_for_manual_review",
+                    "lifecycle_status": "confirmed",
+                    "height": 101,
+                    "weightMode": "operator_weighted_backfill",
+                    "payouts": [
+                        {
+                            "wallet": "walletA",
+                            "amount": 25.0,
+                            "status": "pending_manual_payment",
+                            "operatorApprovedBackfill": True,
+                            "fallbackWarning": True
                         }
                     ]
                 }
@@ -3023,7 +3055,11 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertIn("Payout Status: READY_FOR_MANUAL_REVIEW", output)
         self.assertIn("Carry Status Summary", output)
         # New compact format: ready_payment_total, below_threshold_carry_total, wallet_carry_count, blocked_candidates
-        self.assertIn("ready_payment_total:", output)
+        self.assertIn("ready_payment_total: 125.0", output)
+        self.assertIn("auto_selector_payment_rows: 1", output)
+        self.assertIn("auto_selector_payment_total: 100.0", output)
+        self.assertIn("operator_backfill_payment_rows: 1", output)
+        self.assertIn("operator_backfill_payment_total: 25.0", output)
         self.assertIn("below_threshold_carry_total: 15.5", output)
         self.assertIn("wallet_carry_count: 2", output)
         self.assertIn("blocked_candidates: 0", output)
@@ -3088,9 +3124,28 @@ class PayoutAccountingTests(unittest.TestCase):
                         {
                             "wallet": "walletA",
                             "amount": 100.0,
+                            "status": "pending_manual_payment",
                             "baseAmount": 40.0,
                             "carryInAmount": 60.0,
                             "carrySourceCandidateIds": ["height-99"]
+                        }
+                    ]
+                },
+                {
+                    "candidateId": "hash_cand_2",
+                    "candidate_hash": "hash_cand_2",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "lifecycle_status": "confirmed",
+                    "height": 101,
+                    "weightMode": "operator_weighted_backfill",
+                    "payouts": [
+                        {
+                            "wallet": "walletA",
+                            "amount": 25.0,
+                            "status": "pending_manual_payment",
+                            "operatorApprovedBackfill": True,
+                            "fallbackWarning": True
                         }
                     ]
                 }
@@ -3140,8 +3195,8 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertIn("generatedAt", res)
         summary = res["summary"]
-        self.assertEqual(summary["candidateItems"], 1)
-        self.assertEqual(summary["readyCandidates"], 1)
+        self.assertEqual(summary["candidateItems"], 2)
+        self.assertEqual(summary["readyCandidates"], 2)
         self.assertEqual(summary["blockedCandidates"], 0)
         self.assertEqual(summary["paymentRows"], 1)
         self.assertEqual(summary["carryItems"], 1)
@@ -3149,9 +3204,14 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(summary["walletsWithCarry"], ["walletB"])
         self.assertEqual(summary["candidatePayoutsWithCarry"], 1)
         self.assertEqual(summary["candidateCarryAppliedAmount"], 60.0)
+        self.assertEqual(summary["readyPaymentTotal"], 125.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 1)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 100.0)
+        self.assertEqual(summary["operatorBackfillPaymentRows"], 1)
+        self.assertEqual(summary["operatorBackfillPaymentTotal"], 25.0)
         self.assertEqual(summary["carryAuditStatus"], "ok")
 
-        self.assertEqual(len(res["items"]), 1)
+        self.assertEqual(len(res["items"]), 2)
         item = res["items"][0]
         self.assertEqual(item["candidateId"], "hash_cand_1")
         self.assertEqual(item["blockHeight"], 100)
