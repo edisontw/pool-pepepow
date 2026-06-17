@@ -790,7 +790,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_review.returncode, 0)
         self.assertIn("hashconfirmedeligibleblock0001", res_review.stdout)
         self.assertIn("BLOCKED", res_review.stdout)
-        self.assertIn("blocked_missing_miner_reward_output", res_review.stdout)
+        self.assertIn("blocked_coinbase_lookup_unavailable", res_review.stdout)
 
         # Test backward compatibility (old candidates format)
         payout_candidates_path = self.tmp_path / "payout-candidates.json"
@@ -1604,7 +1604,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 item = json.load(f)["items"][0]
 
             self.assertEqual(item["status"], "blocked")
-            self.assertEqual(item["blockedReason"], "blocked_missing_miner_reward_output")
+            self.assertEqual(item["blockedReason"], "blocked_coinbase_lookup_unavailable")
             self.assertEqual(item["coinbaseLookupStatus"], "error")
             self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
             self.assertEqual(item["coinbaseLookupStep"], "getblock")
@@ -1615,6 +1615,57 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertIsNone(item["minerRewardAmount"])
         finally:
             payout_helper.query_rpc = original_query_rpc
+
+    def test_coinbase_permission_error_is_lookup_unavailable_not_missing_reward(self):
+        original_query_rpc = payout_helper.query_rpc
+        original_query_rpc_result = payout_helper.query_rpc_result
+        candidate_id = "candpermissionerror000000001"
+        block_hash = "d" * 64
+
+        def mock_query_rpc_result(method, params, timeout=5):
+            if method == "getblock":
+                return {
+                    "ok": False,
+                    "method": method,
+                    "paramsSummary": payout_helper.summarize_rpc_params(params),
+                    "error": "exception",
+                    "exceptionType": "PermissionError",
+                    "exceptionMessage": "Operation not permitted",
+                }
+            return {"ok": False, "method": method, "paramsSummary": payout_helper.summarize_rpc_params(params), "error": "rpc_null_result"}
+
+        payout_helper.query_rpc = payout_helper._REAL_QUERY_RPC
+        payout_helper.query_rpc_result = mock_query_rpc_result
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["status"], "blocked")
+            self.assertEqual(item["blockedReason"], "blocked_coinbase_lookup_unavailable")
+            self.assertEqual(item["coinbaseLookupStatus"], "error")
+            self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
+            self.assertEqual(item["coinbaseLookupExceptionType"], "PermissionError")
+            self.assertIsNone(item["minerRewardAmount"])
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            payout_helper.query_rpc_result = original_query_rpc_result
 
     def test_getblock_rpc_json_error_records_code_message_and_step(self):
         original_query_rpc = payout_helper.query_rpc

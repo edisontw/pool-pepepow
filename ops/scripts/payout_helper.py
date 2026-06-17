@@ -936,7 +936,10 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             except (ValueError, TypeError):
                 miner_reward_val = 0.0
 
-            if miner_reward_val <= 0:
+            if coinbase_lookup_status == "error":
+                status = "blocked"
+                reason = "blocked_coinbase_lookup_unavailable"
+            elif miner_reward_val <= 0:
                 status = "blocked"
                 reason = "blocked_missing_miner_reward_output"
             elif coinbase_matches_expected_pool_wallet is False:
