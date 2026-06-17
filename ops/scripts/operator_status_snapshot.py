@@ -70,24 +70,34 @@ def aggregate_status(items: list[dict[str, str]]) -> str:
 
 def pool_health_item(summary: dict[str, Any], stale_seconds: float) -> dict[str, str]:
     try:
-        api_snapshots = summary.get("apiSnapshots") if isinstance(summary, dict) else None
-        api_available = bool(api_snapshots.get("available")) if isinstance(api_snapshots, dict) else False
-        age_values = []
-        for key in ("roundsSnapshot", "paymentsSnapshot"):
+        if not isinstance(summary, dict):
+            raise ValueError("invalid pool health summary")
+
+        def fresh_section(key: str) -> bool:
             section = summary.get(key)
-            if isinstance(section, dict):
-                age = section.get("ageSeconds")
-                if isinstance(age, (int, float)) and age >= 0:
-                    age_values.append(float(age))
-        if api_available and (not age_values or max(age_values) <= stale_seconds):
+            if not isinstance(section, dict) or not section.get("available"):
+                return False
+            age = section.get("ageSeconds")
+            return isinstance(age, (int, float)) and 0 <= float(age) <= stale_seconds
+
+        last_share = summary.get("lastAcceptedShare")
+        last_share_age = last_share.get("ageSeconds") if isinstance(last_share, dict) else None
+        last_share_fresh = isinstance(last_share_age, (int, float)) and 0 <= float(last_share_age) <= stale_seconds
+        core_fresh = fresh_section("roundsSnapshot") and last_share_fresh
+
+        api_snapshots = summary.get("apiSnapshots")
+        api_available = bool(api_snapshots.get("available")) if isinstance(api_snapshots, dict) else False
+        payments_fresh = fresh_section("paymentsSnapshot")
+
+        if core_fresh and payments_fresh and api_available:
             status = "ok"
             message = "Snapshots fresh"
-        elif api_available:
+        elif core_fresh:
             status = "warning"
-            message = "Snapshot delayed"
+            message = "Pool health review"
         else:
-            status = "unknown"
-            message = "Status unavailable"
+            status = "warning"
+            message = "Pool health review"
     except Exception:
         status = "unknown"
         message = "Status unavailable"
@@ -104,7 +114,27 @@ def wallet_watchdog_item(snapshot: dict[str, Any] | None) -> dict[str, str]:
     if status == "ok":
         message = "Wallet growth normal"
     elif status in {"warning", "error"}:
-        message = "Review wallet growth"
+        summary = str(snapshot.get("summary") or "").lower() if isinstance(snapshot, dict) else ""
+        errors = snapshot.get("errors") if isinstance(snapshot, dict) else None
+        error_text = " ".join(str(item).lower() for item in errors if isinstance(item, str)) if isinstance(errors, list) else ""
+        unexpected_increase = snapshot.get("unexpectedIncrease") if isinstance(snapshot, dict) else None
+        has_unexpected_increase = (
+            isinstance(unexpected_increase, (int, float))
+            and not isinstance(unexpected_increase, bool)
+            and unexpected_increase > 0
+        )
+        balance_unavailable = (
+            "could not read wallet balance" in summary
+            or "read operation timed out" in error_text
+            or "timed out" in error_text
+            or "explorer balance unavailable" in error_text
+        )
+        if has_unexpected_increase:
+            message = "Review wallet growth"
+        elif balance_unavailable:
+            message = "Wallet balance unavailable"
+        else:
+            message = "Wallet balance unavailable"
     else:
         message = "Status unavailable"
     return {

@@ -12,6 +12,71 @@ import payment_consistency_audit
 
 
 class OperatorStatusSnapshotTests(unittest.TestCase):
+    def test_pool_health_missing_pool_snapshot_with_fresh_core_is_warning_not_unknown(self):
+        item = status_snapshot.pool_health_item(
+            {
+                "roundsSnapshot": {
+                    "available": True,
+                    "ageSeconds": 10.0,
+                },
+                "paymentsSnapshot": {
+                    "available": True,
+                    "ageSeconds": 20.0,
+                },
+                "lastAcceptedShare": {
+                    "at": "2999-01-01T00:00:00Z",
+                    "ageSeconds": 15.0,
+                },
+                "apiSnapshots": {
+                    "available": False,
+                    "items": {
+                        "poolSnapshot": {
+                            "exists": False,
+                            "readable": False,
+                            "path": "/internal/pool-snapshot.json",
+                        },
+                        "roundsSnapshot": {"exists": True, "readable": True},
+                        "paymentsSnapshot": {"exists": True, "readable": True},
+                    },
+                },
+            },
+            stale_seconds=300.0,
+        )
+
+        self.assertEqual(item["status"], "warning")
+        self.assertEqual(item["message"], "Pool health review")
+
+    def test_wallet_watchdog_timeout_critical_is_balance_unavailable(self):
+        item = status_snapshot.wallet_watchdog_item(
+            {
+                "status": "critical",
+                "errors": ["The read operation timed out"],
+                "summary": "Pool wallet watchdog could not read wallet balance.",
+                "wallet": "secret-wallet",
+            }
+        )
+
+        self.assertEqual(item["status"], "error")
+        self.assertEqual(item["message"], "Wallet balance unavailable")
+
+    def test_wallet_watchdog_review_growth_requires_computed_increase(self):
+        summary_only = status_snapshot.wallet_watchdog_item(
+            {
+                "status": "warning",
+                "summary": "Unexpected wallet balance increase detected.",
+            }
+        )
+        computed_growth = status_snapshot.wallet_watchdog_item(
+            {
+                "status": "warning",
+                "summary": "Unexpected wallet balance increase detected.",
+                "unexpectedIncrease": 10.5,
+            }
+        )
+
+        self.assertEqual(summary_only["message"], "Wallet balance unavailable")
+        self.assertEqual(computed_growth["message"], "Review wallet growth")
+
     def test_payment_audit_rewrite_hint_only_is_warning(self):
         item = status_snapshot.payment_audit_item(
             {
@@ -51,6 +116,7 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
                 if filename == "pool-snapshot.json":
                     payload["network"] = {"height": 10}
                 if filename == "activity-snapshot.json":
+                    payload["meta"] = {"lastShareAt": now}
                     payload["miners"] = {}
                 if filename == "rounds-snapshot.json":
                     payload["rounds"] = []

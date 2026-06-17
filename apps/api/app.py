@@ -715,9 +715,12 @@ def _safe_public_message(value: Any, fallback: str) -> str:
     if text in {
         "Snapshots fresh",
         "Snapshot delayed",
+        "Pool health review",
         "Status unavailable",
         "Wallet growth normal",
         "Review wallet growth",
+        "Wallet balance unavailable",
+        "Explorer balance timeout",
         "Payments consistent",
         "Payment records need review",
     }:
