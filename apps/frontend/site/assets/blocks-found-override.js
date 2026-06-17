@@ -35,14 +35,14 @@
   }
 
   function statusLabel(value) {
-    if (!value) return "-";
+    if (!value) return "Candidate";
     return String(value).replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
   }
 
   function statusClass(value) {
-    const raw = String(value || "").toLowerCase();
+    const raw = String(value || "candidate").toLowerCase();
     if (raw.includes("orphan") || raw.includes("stale") || raw.includes("reject")) return "status-orphan";
-    if (raw.includes("immature") || raw.includes("waiting") || raw.includes("unconfirmed")) return "status-immature";
+    if (raw.includes("immature") || raw.includes("waiting") || raw.includes("unconfirmed") || raw.includes("chain_match")) return "status-immature";
     if (raw.includes("confirmed") || raw.includes("mature") || raw.includes("matched")) return "status-confirmed";
     return "status-candidate";
   }
@@ -78,30 +78,44 @@
 
   function heightValue(value) {
     if (value === null || value === undefined || value === "") return "-";
-    return '<span class="mono-compact">' + escapeHtml(String(value)) + '</span>';
+    return '<span class="mono-compact">' + escapeHtml(formatNumber(value)) + '</span>';
   }
 
   function itemTime(item) {
-    return firstValue(item.submitTimestamp, item.foundAt, item.timestamp, item.createdAt, item.updatedAt, item.generatedAt);
+    return firstValue(item.submitTimestamp, item.submit_timestamp, item.foundAt, item.found_at, item.timestamp, item.createdAt, item.created_at, item.updatedAt, item.updated_at, item.generatedAt, item.generated_at);
   }
 
   function itemHeight(item) {
-    return firstValue(item.matchedHeight, item.height, item.blockHeight, item.block_height);
+    return firstValue(
+      item.matchedHeight,
+      item.matched_height,
+      item.followupObservedHeight,
+      item.followup_observed_height,
+      item.blockHeight,
+      item.block_height,
+      item.height,
+      item.observedHeight,
+      item.observed_height
+    );
   }
 
   function itemConfirmations(item) {
-    return firstValue(item.confirmations, item.matchedConfirmations, item.blockConfirmations, item.chainConfirmations, item.confirmationCount);
+    return firstValue(item.confirmations, item.matchedConfirmations, item.matched_confirmations, item.blockConfirmations, item.block_confirmations, item.chainConfirmations, item.chain_confirmations, item.confirmationCount, item.confirmation_count);
   }
 
   function itemStatus(item) {
-    return firstValue(item.lifecycleStatus, item.status, item.maturityLabel, item.chainMaturity, item.reviewState);
+    const explicit = firstValue(item.lifecycleStatus, item.lifecycle_status, item.status, item.maturityLabel, item.maturity_label, item.chainMaturity, item.chain_maturity, item.reviewState, item.review_state, item.followupStatus, item.followup_status);
+    if (explicit) return explicit;
+    if (itemHeight(item) !== null) return "chain_match_found";
+    if (String(firstValue(item.submitblockDaemonResult, item.submitblock_daemon_result, item.daemonResult, item.daemon_result) || "").toLowerCase() === "success") return "submit_accepted";
+    return "candidate_recorded";
   }
 
   function installStyles() {
     if (document.getElementById("pool-found-blocks-style")) return;
     const style = document.createElement("style");
     style.id = "pool-found-blocks-style";
-    style.textContent = ".pool-block-status{display:inline-flex;align-items:center;padding:.22rem .55rem;border-radius:999px;font-size:.78rem;font-weight:800;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06)}.pool-block-status.status-confirmed{color:#81f7b0;border-color:rgba(129,247,176,.35);background:rgba(129,247,176,.12)}.pool-block-status.status-immature{color:#ffd45a;border-color:rgba(255,212,90,.38);background:rgba(255,212,90,.13)}.pool-block-status.status-orphan{color:#ff8a8a;border-color:rgba(255,138,138,.4);background:rgba(255,138,138,.13)}.pool-block-status.status-candidate{color:#8fd7ff;border-color:rgba(143,215,255,.35);background:rgba(143,215,255,.12)}.table-pagination{display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap}";
+    style.textContent = ".pool-block-status{display:inline-flex;align-items:center;padding:.22rem .55rem;border-radius:999px;font-size:.78rem;font-weight:800;border:1px solid rgba(255,255,255,.12)!important;background:rgba(255,255,255,.06)!important;color:rgba(235,245,255,.86)!important}.pool-block-status.status-confirmed{color:#81f7b0!important;border-color:rgba(129,247,176,.35)!important;background:rgba(129,247,176,.12)!important}.pool-block-status.status-immature{color:#ffd45a!important;border-color:rgba(255,212,90,.38)!important;background:rgba(255,212,90,.13)!important}.pool-block-status.status-orphan{color:#ff8a8a!important;border-color:rgba(255,138,138,.4)!important;background:rgba(255,138,138,.13)!important}.pool-block-status.status-candidate{color:#8fd7ff!important;border-color:rgba(143,215,255,.35)!important;background:rgba(143,215,255,.12)!important}.table-pagination{display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap}";
     document.head.appendChild(style);
   }
 
@@ -125,7 +139,7 @@
     const rows = visible.map(function (item) {
       return '<tr>' +
         '<td data-label="Time">' + escapeHtml(formatDate(itemTime(item))) + '</td>' +
-        '<td data-label="Candidate hash">' + candidateValue(firstValue(item.candidateHash, item.blockHash, item.hash)) + '</td>' +
+        '<td data-label="Candidate hash">' + candidateValue(firstValue(item.candidateHash, item.candidate_hash, item.matchedBlockHash, item.matched_block_hash, item.blockHash, item.block_hash, item.hash)) + '</td>' +
         '<td data-label="Height">' + heightValue(itemHeight(item)) + '</td>' +
         '<td data-label="Status">' + statusBadge(itemStatus(item)) + '</td>' +
         '<td data-label="Confirms">' + escapeHtml(formatNumber(itemConfirmations(item))) + '</td>' +
