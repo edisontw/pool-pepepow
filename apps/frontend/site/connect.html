@@ -17,6 +17,9 @@
       .brand-title h1 { margin: 0; }
       .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
       .page-grid > .panel.connect-hero { grid-column: 1 / -1; }
+      .quick-start-line { display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+      .quick-start-line .eyebrow { margin: 0; }
+      .connect-guide-button { flex: 0 0 auto; white-space: nowrap; margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem; line-height: 1.1; }
       @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
     </style>
   </head>
@@ -45,11 +48,13 @@
         <section class="panel connect-hero">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Quick start</p>
+              <div class="quick-start-line">
+                <p class="eyebrow">Quick start</p>
+                <a class="button connect-guide-button" href="https://pepepow.org/mining/" target="_blank" rel="noopener noreferrer">Full mining guide</a>
+              </div>
               <h2>Connect to PEPEPOW Lab Pool</h2>
               <p>Use your PEPEPOW wallet as the miner username. Add <code>.worker</code> if you want worker-level tracking.</p>
             </div>
-            <a class="button" href="https://pepepow.org/mining/" target="_blank" rel="noopener noreferrer">Full mining guide</a>
           </div>
           <div class="status-strip">
             <div><span>Endpoint</span><strong><code>pool.pepepow.net:39333</code></strong></div>
