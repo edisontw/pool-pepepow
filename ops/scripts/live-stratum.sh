@@ -1159,6 +1159,11 @@ pool_wallet_watchdog_service() {
   python3 "${SCRIPT_DIR}/pool_wallet_monitor.py" watchdog "$@"
 }
 
+pool_health_service() {
+  ensure_runtime_dir
+  python3 "${SCRIPT_DIR}/pool_health_summary.py" "$@"
+}
+
 payout_refresh_service() {
   ensure_runtime_dir
   candidate_followup_service candidate-followup --record
@@ -4142,6 +4147,10 @@ case "${SUBCOMMAND}" in
     shift
     pool_wallet_watchdog_service "$@"
     ;;
+  pool-health)
+    shift
+    pool_health_service "$@"
+    ;;
   payout-refresh)
     payout_refresh_service
     ;;
@@ -4222,7 +4231,7 @@ case "${SUBCOMMAND}" in
     print_paths
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payment-audit [--format human|json|both]|payout-wallet-dry-run|payout-wallet-send-once --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-wallet-send-preflight --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-review|payout-review-check|pool-wallet-watchdog [--format human|json|both]|payout-refresh|payout-backfill-preview|payout-backfill-send-once|auto-payout-once|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
+    echo "usage: $0 {start|stop|restart|systemd-restart|status|drill-status|submit-safety-audit|submit-arm-once|submit-arm-watch-once [seconds]|controlled-submit-drill-once [timeout] [poll_interval]|fresh-candidate-submit-watch-once [seconds]|submit-disarm|submit-watch-once [seconds]|latest-reject|candidate-events [count]|candidate-probability-audit [tail-lines]|post-fix-candidate-probability-audit [tail-lines]|share-target-variant-audit [tail-lines]|preimage-reconstruction-audit [tail-lines]|notify-submit-payload-audit [tail-lines]|header-convention-audit [tail-lines]|candidate-followup [count] [--record]|candidate-outcomes [count]|candidate-followup-events [count]|accepted-candidates|track-rounds|payout-candidates|payout-carry|payout-carry-audit|payment-audit [--format human|json|both]|payout-wallet-dry-run|payout-wallet-send-once --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-wallet-send-preflight --candidate-id <candidateId> --wallet <wallet> --amount <amount>|payout-review|payout-review-check|pool-wallet-watchdog [--format human|json|both]|pool-health [--format human|json|both]|payout-refresh|payout-backfill-preview|payout-backfill-send-once|auto-payout-once|record-payment <candidate_id> <wallet> <amount> <txid>|refresh-payment-confirmations|submit-evidence [count]|submit-evidence-find <candidate_hash> [tail_lines]|reconstruct-submit-outcome <candidate_hash> [tail_lines]|candidate-freshness-audit [tail_lines]|replay-evidence [count]|miner-hash-correlation <miner-log> [tail-lines]|single-submit-preimage-trace <miner-log> [tail-lines] [--status accepted|rejected] [--job-id <jobId>] [--nonce <nonceHex>]|nomp-parity-audit <miner-log> [tail-lines]|js-nomp-oracle <miner-log> [tail-lines]|logs|paths|runtime-retention [--apply]}" >&2
     exit 1
     ;;
 esac
