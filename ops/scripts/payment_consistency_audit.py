@@ -26,10 +26,20 @@ OK = "OK"
 MISSING_FROM_PAYMENTS_API = "MISSING_FROM_PAYMENTS_API"
 MISSING_FROM_MINER_API = "MISSING_FROM_MINER_API"
 DUPLICATE_TXID = "DUPLICATE_TXID"
+DUPLICATE_ACTION_RECORD = "DUPLICATE_ACTION_RECORD"
+DUPLICATE_ACTION_TXID_REWRITE_HINT = "DUPLICATE_ACTION_TXID_REWRITE_HINT"
 AMOUNT_MISMATCH = "AMOUNT_MISMATCH"
 WALLET_MISMATCH = "WALLET_MISMATCH"
 CONFIRMS_OR_HEIGHT_SUSPICIOUS = "CONFIRMS_OR_HEIGHT_SUSPICIOUS"
 STALE_ADDRESS_ATTRIBUTION_HINT = "STALE_ADDRESS_ATTRIBUTION_HINT"
+
+CARRY_METADATA_KEYS = {
+    "carrySourceCandidateIds",
+    "carry_source_candidate_ids",
+    "carrySourceCount",
+    "carry_source_count",
+}
+TIMESTAMP_KEYS = {"timestamp", "paidAt", "time", "createdAt"}
 
 
 @dataclass(frozen=True)
@@ -234,6 +244,48 @@ def tx_wallet_amount_key(record: PaymentRecord) -> tuple[str, str, str]:
     return (record.wallet, record.txid, amount)
 
 
+def normalized_duplicate_raw(record: PaymentRecord) -> dict[str, Any]:
+    ignored = CARRY_METADATA_KEYS | TIMESTAMP_KEYS
+    return {key: value for key, value in record.raw.items() if key not in ignored}
+
+
+def has_carry_metadata(record: PaymentRecord) -> bool:
+    return any(key in record.raw for key in CARRY_METADATA_KEYS)
+
+
+def duplicate_action_rewrite_issue(rows: list[PaymentRecord]) -> dict[str, Any] | None:
+    if len(rows) <= 1 or any(row.source != "payment_actions" for row in rows):
+        return None
+    wallets = {row.wallet for row in rows}
+    amounts = {format(row.amount, "f") if row.amount is not None else "" for row in rows}
+    candidates = {row.candidate_id for row in rows}
+    same_wallet = len(wallets) == 1
+    same_amount = len(amounts) == 1
+    same_candidate = len(candidates) == 1
+    if not (same_wallet and same_amount and same_candidate):
+        return None
+    if len({json.dumps(normalized_duplicate_raw(row), sort_keys=True) for row in rows}) != 1:
+        return None
+
+    timestamps = sorted(row.timestamp for row in rows if row.timestamp)
+    carry_metadata_present = any(has_carry_metadata(row) for row in rows)
+    category = DUPLICATE_ACTION_TXID_REWRITE_HINT if carry_metadata_present else DUPLICATE_ACTION_RECORD
+    return issue(
+        category,
+        "successful payment action txid appears on duplicate action records",
+        rows[0],
+        txid=rows[0].txid,
+        count=len(rows),
+        firstTimestamp=timestamps[0] if timestamps else "",
+        lastTimestamp=timestamps[-1] if timestamps else "",
+        recordIndexes=[row.source_index for row in rows],
+        sameWallet=same_wallet,
+        sameAmount=same_amount,
+        sameCandidate=same_candidate,
+        hasCarryMetadata=carry_metadata_present,
+    )
+
+
 def matching_records(record: PaymentRecord, candidates: list[PaymentRecord]) -> list[PaymentRecord]:
     out = []
     record_key = key(record)
@@ -321,20 +373,26 @@ def duplicate_issues(records: list[PaymentRecord]) -> list[dict[str, Any]]:
     for (source, txid), rows in sorted(by_txid.items()):
         unique_wallets = sorted({row.wallet for row in rows if row.wallet})
         if len(rows) > 1:
-            issues.append(
-                issue(
-                    DUPLICATE_TXID,
-                    "txid appears on multiple payment records",
-                    rows[0],
-                    txid=txid,
-                    count=len(rows),
-                    wallets=unique_wallets,
-                    sources=[source],
+            action_rewrite_issue = duplicate_action_rewrite_issue(rows)
+            if action_rewrite_issue is not None:
+                issues.append(action_rewrite_issue)
+            else:
+                issues.append(
+                    issue(
+                        DUPLICATE_TXID,
+                        "txid appears on multiple payment records",
+                        rows[0],
+                        txid=txid,
+                        count=len(rows),
+                        wallets=unique_wallets,
+                        sources=[source],
+                    )
                 )
-            )
     for exact_key, rows in sorted(by_exact.items()):
         source, wallet, txid, amount = exact_key
         if wallet and txid and amount and len(rows) > 1:
+            if duplicate_action_rewrite_issue(rows) is not None:
+                continue
             issues.append(
                 issue(
                     DUPLICATE_TXID,

@@ -110,6 +110,40 @@ class PaymentConsistencyAuditTests(unittest.TestCase):
         ]
         self.assertTrue(exact_issues)
 
+    def test_classifies_duplicate_action_rewrite_hint_for_carry_metadata_only(self):
+        first = {
+            "status": "sent",
+            "candidate_id": "cand1",
+            "wallet": "walletA",
+            "amount": 1.25,
+            "txid": "tx1",
+            "timestamp": "2026-06-13T00:00:00Z",
+        }
+        second = dict(first)
+        second["timestamp"] = "2026-06-13T00:01:00Z"
+        second["carrySourceCandidateIds"] = ["carry-cand"]
+        second["carrySourceCount"] = 1
+        self.write_actions([first, second])
+        self.write_payments([first])
+
+        result = self.run_audit()
+
+        self.assertIn(audit.DUPLICATE_ACTION_TXID_REWRITE_HINT, self.categories(result))
+        self.assertNotIn(audit.DUPLICATE_TXID, self.categories(result))
+        rewrite_issues = [
+            item
+            for item in result["issues"]
+            if item["category"] == audit.DUPLICATE_ACTION_TXID_REWRITE_HINT
+        ]
+        self.assertEqual(len(rewrite_issues), 1)
+        self.assertEqual(rewrite_issues[0]["firstTimestamp"], "2026-06-13T00:00:00Z")
+        self.assertEqual(rewrite_issues[0]["lastTimestamp"], "2026-06-13T00:01:00Z")
+        self.assertEqual(rewrite_issues[0]["recordIndexes"], [0, 1])
+        self.assertTrue(rewrite_issues[0]["sameWallet"])
+        self.assertTrue(rewrite_issues[0]["sameAmount"])
+        self.assertTrue(rewrite_issues[0]["sameCandidate"])
+        self.assertTrue(rewrite_issues[0]["hasCarryMetadata"])
+
     def test_detects_amount_and_wallet_mismatches(self):
         self.write_actions(
             [
