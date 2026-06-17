@@ -1,0 +1,3 @@
+.leaderboard-row{position:relative}
+.leaderboard-row .leaderboard-wallet{position:relative;z-index:3;display:inline-flex;align-items:center;text-decoration:none}
+.leaderboard-row .leaderboard-wallet:hover{text-decoration:underline}
