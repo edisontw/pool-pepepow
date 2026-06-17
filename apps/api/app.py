@@ -121,6 +121,12 @@ LOCAL_SERVICE_BASELINE = {
 HASHRATE_HISTORY_MAX_AGE_SECONDS = 24 * 60 * 60
 HASHRATE_HISTORY_MAX_POINTS = 1440
 HASHRATE_HISTORY_SAMPLE_MS = 60 * 1000
+OPERATOR_STATUS_ITEMS = (
+    ("pool_health", "Pool Health", "Status unavailable"),
+    ("wallet_watchdog", "Wallet Watchdog", "Status unavailable"),
+    ("payment_audit", "Payment Audit", "Status unavailable"),
+)
+PUBLIC_STATUSES = {"ok", "warning", "error", "unknown"}
 
 
 def create_app(config: AppConfig | None = None) -> Flask:
@@ -448,6 +454,21 @@ def create_app(config: AppConfig | None = None) -> Flask:
         items = items[:50]
         return jsonify({"items": items})
 
+    @app.get("/api/operator-status")
+    def operator_status():
+        import json
+        path = app_config.activity_snapshot_path.parent / "operator-status.json"
+        if not path.exists():
+            path = app_config.runtime_snapshot_path.parent / "operator-status.json"
+        if not path.exists():
+            return jsonify(_unknown_operator_status_payload())
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return jsonify(_unknown_operator_status_payload())
+        return jsonify(_sanitize_operator_status_payload(data))
+
     @app.get("/api/payments")
     def payments():
         import json
@@ -664,6 +685,78 @@ def _load_json_items(primary_path, fallback_path, item_key: str) -> list[dict[st
     if not isinstance(items, list):
         return []
     return [item for item in items if isinstance(item, dict)]
+
+
+def _unknown_operator_status_payload() -> dict[str, Any]:
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "status": "unknown",
+        "items": [
+            {
+                "key": key,
+                "label": label,
+                "status": "unknown",
+                "message": message,
+            }
+            for key, label, message in OPERATOR_STATUS_ITEMS
+        ],
+    }
+
+
+def _safe_public_status(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in PUBLIC_STATUSES else "unknown"
+
+
+def _safe_public_message(value: Any, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if text in {
+        "Snapshots fresh",
+        "Snapshot delayed",
+        "Status unavailable",
+        "Wallet growth normal",
+        "Review wallet growth",
+        "Payments consistent",
+        "Payment records need review",
+    }:
+        return text
+    return fallback
+
+
+def _sanitize_operator_status_payload(data: Any) -> dict[str, Any]:
+    unknown = _unknown_operator_status_payload()
+    if not isinstance(data, dict):
+        return unknown
+    by_key = {}
+    raw_items = data.get("items")
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if isinstance(item, dict) and isinstance(item.get("key"), str):
+                by_key[item["key"]] = item
+
+    items = []
+    for key, label, fallback_message in OPERATOR_STATUS_ITEMS:
+        item = by_key.get(key, {})
+        item_status = _safe_public_status(item.get("status") if isinstance(item, dict) else None)
+        items.append(
+            {
+                "key": key,
+                "label": label,
+                "status": item_status,
+                "message": _safe_public_message(
+                    item.get("message") if isinstance(item, dict) else None,
+                    fallback_message,
+                ),
+            }
+        )
+
+    return {
+        "generatedAt": data.get("generatedAt") if isinstance(data.get("generatedAt"), str) else unknown["generatedAt"],
+        "status": _safe_public_status(data.get("status")),
+        "items": items,
+    }
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:

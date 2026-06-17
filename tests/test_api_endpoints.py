@@ -492,6 +492,83 @@ class ApiEndpointTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["items"], [])
 
+    def test_operator_status_endpoint_sanitizes_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime_path = Path(tmp_dir) / "pool-snapshot.json"
+            runtime_payload = make_runtime_snapshot()
+            runtime_path.write_text(json.dumps(runtime_payload), encoding="utf-8")
+            operator_path = Path(tmp_dir) / "operator-status.json"
+            operator_path.write_text(
+                json.dumps(
+                    {
+                        "generatedAt": "2999-01-01T00:00:00Z",
+                        "status": "ok",
+                        "runtimeDir": "/var/lib/secret",
+                        "items": [
+                            {
+                                "key": "pool_health",
+                                "label": "Bad Label",
+                                "status": "ok",
+                                "message": "Snapshots fresh",
+                                "path": "/var/lib/secret/pool-snapshot.json",
+                            },
+                            {
+                                "key": "wallet_watchdog",
+                                "label": "Wallet Watchdog",
+                                "status": "warning",
+                                "message": "Review wallet growth",
+                                "errors": ["internal detail"],
+                            },
+                            {
+                                "key": "payment_audit",
+                                "label": "Payment Audit",
+                                "status": "error",
+                                "message": "Payment records need review",
+                                "issues": [{"txid": "secret"}],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            app = create_app(
+                make_config(
+                    runtime_path,
+                    FALLBACK_SNAPSHOT_PATH,
+                    activity_snapshot_path=Path(tmp_dir) / "activity-snapshot.json",
+                )
+            )
+            client = app.test_client()
+            response = client.get("/api/operator-status")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+
+        self.assertEqual(payload["generatedAt"], "2999-01-01T00:00:00Z")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual([item["label"] for item in payload["items"]], ["Pool Health", "Wallet Watchdog", "Payment Audit"])
+        self.assertEqual(payload["items"][0]["message"], "Snapshots fresh")
+        for item in payload["items"]:
+            self.assertEqual(set(item), {"key", "label", "status", "message"})
+        self.assertNotIn("runtimeDir", payload)
+
+    def test_operator_status_endpoint_missing_snapshot_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = create_app(
+                make_config(
+                    Path(tmp_dir) / "does-not-exist.json",
+                    FALLBACK_SNAPSHOT_PATH,
+                    activity_snapshot_path=Path(tmp_dir) / "activity-snapshot.json",
+                )
+            )
+            client = app.test_client()
+            response = client.get("/api/operator-status")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+        self.assertEqual(payload["status"], "unknown")
+        self.assertEqual(len(payload["items"]), 3)
+        self.assertEqual({item["status"] for item in payload["items"]}, {"unknown"})
+
     def test_miner_endpoint_returns_wallet_summary_and_workers(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             runtime_path = Path(tmp_dir) / "runtime.json"

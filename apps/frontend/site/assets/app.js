@@ -157,7 +157,7 @@
   }
 
   function apiCacheTtl(url) {
-    if (/\/(payments|blocks|accepted-candidates|rounds)(\?|$)/.test(url)) return 60000;
+    if (/\/(payments|blocks|accepted-candidates|rounds|operator-status)(\?|$)/.test(url)) return 60000;
     if (/\/(health|status|stats|pool\/summary|network\/summary)(\?|$)/.test(url)) return 30000;
     return API_CACHE_DEFAULT_TTL_MS;
   }
@@ -379,6 +379,41 @@
   function renderStatusLabel(value) {
     if (!value) return "-";
     return String(value).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function operatorStatusClass(status) {
+    const normalized = String(status || "unknown").toLowerCase();
+    if (normalized === "ok" || normalized === "warning" || normalized === "error") {
+      return normalized;
+    }
+    return "unknown";
+  }
+
+  function renderOperatorStatus(payload) {
+    const listNode = document.getElementById("operator-status-list");
+    if (!listNode) return;
+
+    const fallbackItems = [
+      { key: "pool_health", label: "Pool Health", status: "unknown", message: "Status unavailable" },
+      { key: "wallet_watchdog", label: "Wallet Watchdog", status: "unknown", message: "Status unavailable" },
+      { key: "payment_audit", label: "Payment Audit", status: "unknown", message: "Status unavailable" }
+    ];
+    const items = payload && Array.isArray(payload.items) ? payload.items : fallbackItems;
+
+    listNode.innerHTML = items.map((item) => {
+      const statusClass = operatorStatusClass(item.status);
+      return `<article class="operator-status-item">
+        <i class="operator-light is-${statusClass}" aria-hidden="true"></i>
+        <div><strong>${escapeHtml(item.label || "Status")}</strong><span>${escapeHtml(item.message || "Status unavailable")}</span></div>
+      </article>`;
+    }).join("");
+
+    const generated = document.getElementById("operator-status-generated");
+    if (generated) {
+      generated.textContent = payload && payload.generatedAt
+        ? `Updated ${formatDate(payload.generatedAt)}`
+        : "Status unavailable";
+    }
   }
 
   function renderMinerSummaryMetrics(metrics) {
@@ -766,20 +801,23 @@
     let network = {};
     let blocks = { items: [] };
     let payments = { items: [] };
+    let operatorStatus = null;
     let priceData = null;
 
     try {
-      const [poolRes, networkRes, blocksRes, paymentsRes, priceRes] = await Promise.all([
+      const [poolRes, networkRes, blocksRes, paymentsRes, operatorStatusRes, priceRes] = await Promise.all([
         fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({})),
         fetchJson(`${config.apiBaseUrl}/network/summary`).catch(() => ({})),
         fetchJson(`${config.apiBaseUrl}/blocks`).catch(() => ({ items: [] })),
         fetchJson(`${config.apiBaseUrl}/payments`).catch(() => ({ items: [] })),
+        fetchJson(`${config.apiBaseUrl}/operator-status`).catch(() => null),
         fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
       ]);
       pool = poolRes;
       network = networkRes;
       blocks = blocksRes;
       payments = paymentsRes;
+      operatorStatus = operatorStatusRes;
       priceData = priceRes;
     } catch (_err) {
       // Gracefully continue with defaults
@@ -801,6 +839,7 @@
     setText("network-difficulty", formatNumber(network.difficulty));
     setText("network-hashrate", formatHashrate(network.networkHashrate));
     setText("network-sync", network.synced ? "Synced" : "Syncing");
+    renderOperatorStatus(operatorStatus);
 
     const stratumEndpoint = pool.stratum ? `stratum+tcp://${pool.stratum.host}:${pool.stratum.port}` : "stratum+tcp://pool.pepepow.net:39333";
     setText("stratum-endpoint", stratumEndpoint);
