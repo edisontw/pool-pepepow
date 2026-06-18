@@ -593,6 +593,168 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertTrue(item["coinbaseMatchesExpectedPoolWallet"])
         self.assertEqual(len(item["payouts"]), 1)
 
+    def test_confirmed_candidate_cached_coinbase_outputs_ready_when_rpc_unavailable(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+
+        def unavailable_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params))
+            return None
+
+        payout_helper.query_rpc = unavailable_rpc
+        old_expected = os.environ.get("PEPEPOW_POOL_CORE_REWARD_ADDRESS")
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        try:
+            item = self._generate_single_candidate(
+                "hash_cached_coinbase_ready",
+                [
+                    {
+                        "value": 4387.5,
+                        "scriptPubKey": {
+                            "type": "pubkeyhash",
+                            "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                        },
+                    },
+                    {"value": 2362.5},
+                    {"value": 250.0},
+                ],
+            )
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_expected is None:
+                os.environ.pop("PEPEPOW_POOL_CORE_REWARD_ADDRESS", None)
+            else:
+                os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = old_expected
+
+        self.assertEqual(rpc_calls, [])
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertIsNone(item["reason"])
+        self.assertEqual(item["coinbaseLookupStatus"], "cached")
+        self.assertIsNone(item["coinbaseLookupError"])
+        self.assertEqual(item["minerRewardAmount"], 4387.5)
+        self.assertTrue(item["coinbaseMatchesExpectedPoolWallet"])
+
+    def test_confirmed_candidate_cached_coinbase_outputs_wrong_pool_wallet_blocks(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+
+        def unavailable_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params))
+            return None
+
+        payout_helper.query_rpc = unavailable_rpc
+        old_expected = os.environ.get("PEPEPOW_POOL_CORE_REWARD_ADDRESS")
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        try:
+            item = self._generate_single_candidate(
+                "hash_cached_coinbase_wrong_wallet",
+                [
+                    {
+                        "value": 4387.5,
+                        "scriptPubKey": {
+                            "type": "pubkeyhash",
+                            "addresses": ["PLigcFyT6QcrDfzbAMFdYvAnhuTp8RDpUq"],
+                        },
+                    },
+                    {"value": 2362.5},
+                    {"value": 250.0},
+                ],
+            )
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_expected is None:
+                os.environ.pop("PEPEPOW_POOL_CORE_REWARD_ADDRESS", None)
+            else:
+                os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = old_expected
+
+        self.assertEqual(rpc_calls, [])
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["reason"], "blocked_coinbase_reward_mismatch")
+        self.assertEqual(item["coinbaseLookupStatus"], "cached")
+        self.assertFalse(item["coinbaseMatchesExpectedPoolWallet"])
+        self.assertEqual(item["payouts"], [])
+
+    def test_confirmed_candidate_without_cached_data_rpc_unavailable_blocks_lookup(self):
+        original_query_rpc = payout_helper.query_rpc
+
+        def unavailable_rpc(method, params, timeout=5):
+            return None
+
+        payout_helper.query_rpc = unavailable_rpc
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": "hash_no_cached_coinbase",
+                    "blockHash": "block_no_cached_coinbase",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4580896,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": "hash_no_cached_coinbase",
+                    "total_share_score": 100.0,
+                    "total_share_count": 100,
+                    "shares": {"walletA": {"share_count": 100, "share_score": 100.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["reason"], "blocked_coinbase_lookup_unavailable")
+        self.assertEqual(item["coinbaseLookupStatus"], "error")
+        self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
+        self.assertIsNone(item["minerRewardAmount"])
+
+    def test_legacy_reward_only_fallback_does_not_force_pool_wallet_match(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+
+        def unavailable_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params))
+            return None
+
+        payout_helper.query_rpc = unavailable_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": "hash_legacy_reward_only",
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4580896,
+                    "reward": 4387.5,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": "hash_legacy_reward_only",
+                    "total_share_score": 100.0,
+                    "total_share_count": 100,
+                    "shares": {"walletA": {"share_count": 100, "share_score": 100.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+        self.assertEqual(rpc_calls, [])
+        self.assertEqual(item["status"], "ready_for_manual_review")
+        self.assertEqual(item["coinbaseLookupStatus"], "cached")
+        self.assertEqual(item["rewardSource"], "accepted_candidate_reward_fallback")
+        self.assertEqual(item["minerRewardAmount"], 4387.5)
+        self.assertIsNone(item["coinbaseMatchesExpectedPoolWallet"])
+
     def test_coinbase_miner_reward_detected_when_vout0(self):
         item = self._generate_single_candidate(
             "hash_miner_vout0",
@@ -764,8 +926,7 @@ class PayoutAccountingTests(unittest.TestCase):
                     "candidate_hash": "hashconfirmedeligibleblock0001",
                     "lifecycle_status": "confirmed",
                     "matched_height": 100,
-                    "submit_timestamp": "2026-06-06T12:00:00Z",
-                    "reward": 50000.0
+                    "submit_timestamp": "2026-06-06T12:00:00Z"
                 }
             ]
         }

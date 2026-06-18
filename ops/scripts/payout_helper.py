@@ -841,6 +841,70 @@ def fetch_coinbase_reward_from_daemon(
     return result
 
 
+def cached_coinbase_reward_from_candidate(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Return cached coinbase reward accounting from an accepted candidate."""
+    if not isinstance(candidate, dict):
+        return None
+
+    result: dict[str, Any] = {
+        "blockHash": candidate.get("blockHash") or candidate.get("block_hash"),
+        "resolvedBlockHash": candidate.get("resolvedBlockHash") or candidate.get("resolved_block_hash"),
+        "confirmations": candidate.get("confirmations"),
+        "coinbaseTxid": candidate.get("coinbaseTxid") or candidate.get("coinbase_txid"),
+        "resolvedCoinbaseTxid": candidate.get("resolvedCoinbaseTxid") or candidate.get("resolved_coinbase_txid"),
+        "coinbaseTotalReward": None,
+        "minerRewardOutputIndex": None,
+        "minerRewardAmount": None,
+        "masternodeRewardAmount": None,
+        "specialRewardAmount": None,
+        "coinbaseRewardAddresses": [],
+        "minerRewardAddresses": [],
+        "minerRewardScriptPubKey": None,
+        "expectedPoolRewardAddress": expected_pool_reward_address(),
+        "coinbaseMatchesExpectedPoolWallet": None,
+        "excludedCoinbaseOutputs": [],
+        "rewardSource": None,
+        "coinbaseLookupStatus": "cached",
+        "coinbaseLookupError": None,
+        "coinbaseLookupStep": None,
+        "coinbaseLookupMethod": None,
+        "coinbaseLookupParamsSummary": None,
+        "coinbaseLookupRpcErrorCode": None,
+        "coinbaseLookupRpcErrorMessage": None,
+        "coinbaseLookupHttpStatus": None,
+        "coinbaseLookupExceptionType": None,
+        "coinbaseLookupExceptionMessage": None,
+    }
+
+    if result["blockHash"] is None:
+        c_hash = candidate.get("candidate_hash")
+        if isinstance(c_hash, str) and re.fullmatch(r"[0-9a-fA-F]{64}", c_hash):
+            result["blockHash"] = c_hash
+    if result["resolvedBlockHash"] is None:
+        result["resolvedBlockHash"] = result["blockHash"]
+
+    coinbase_outputs = candidate.get("coinbase_outputs")
+    if isinstance(coinbase_outputs, list):
+        result.update(detect_coinbase_miner_reward(coinbase_outputs))
+        result["coinbaseLookupStatus"] = "cached"
+        result["coinbaseLookupError"] = None
+        return result
+
+    reward = candidate.get("reward")
+    if reward is None:
+        return None
+    try:
+        miner_reward_amount = float(reward)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(miner_reward_amount) or miner_reward_amount <= 0:
+        return None
+
+    result["minerRewardAmount"] = miner_reward_amount
+    result["rewardSource"] = "accepted_candidate_reward_fallback"
+    return result
+
+
 def fetch_block_info_from_daemon(block_hash: str) -> tuple[int | None, float | None]:
     block_data = query_rpc("getblock", [block_hash, True])
     if isinstance(block_data, dict):
@@ -1004,11 +1068,13 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         excluded_coinbase_outputs = []
         reward_source = None
         if l_status == "confirmed":
-            coinbase_reward = fetch_coinbase_reward_from_daemon(
-                height,
-                candidate_block_hash,
-                allow_height_fallback=not bool(explicit_block_hash),
-            )
+            coinbase_reward = cached_coinbase_reward_from_candidate(c)
+            if coinbase_reward is None:
+                coinbase_reward = fetch_coinbase_reward_from_daemon(
+                    height,
+                    candidate_block_hash,
+                    allow_height_fallback=not bool(explicit_block_hash),
+                )
             daemon_confirmations = coinbase_reward.get("confirmations")
             block_hash = coinbase_reward.get("blockHash") or block_hash
             resolved_block_hash = coinbase_reward.get("resolvedBlockHash")
@@ -1216,8 +1282,17 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                     is_wallet_valid = isinstance(fallback_wallet, str) and bool(re.match(r"^[A-Za-z0-9]{26,128}$", fallback_wallet))
                     
                     if (
-                        candidate_confirmations is not None
-                        and candidate_confirmations >= min_conf_env
+                        (
+                            (
+                                candidate_confirmations is not None
+                                and candidate_confirmations >= min_conf_env
+                            )
+                            or (
+                                candidate_confirmations is None
+                                and coinbase_lookup_status == "cached"
+                                and coinbase_matches_expected_pool_wallet is True
+                            )
+                        )
                         and coinbase_matches_expected_pool_wallet is True
                         and not is_already_paid
                         and fallback_wallet
