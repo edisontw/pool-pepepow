@@ -120,6 +120,29 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.output_path.open("r", encoding="utf-8") as f:
             return json.load(f)["items"][0]
 
+    def _payout_review_summary(self, candidates_data, payments_data=None):
+        import io
+
+        candidates_file = self.tmp_path / "payout-candidates-review-test.json"
+        carry_file = self.tmp_path / "payout-carry-review-test.json"
+        payments_file = self.tmp_path / "payments-review-test.json"
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump({"items": []}, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump(payments_data or {"items": []}, f)
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.payout_review(candidates_file, carry_file, payments_file, as_json=True)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(rc, 0)
+        return json.loads(output)["summary"]
+
     def test_payout_candidates_empty_missing_files(self):
         # Missing files should not crash and generate empty list
         rc = payout_helper.generate_payout_candidates(
@@ -3249,6 +3272,117 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_warn["status"], "warning")
         self.assertEqual(res_warn["summary"]["carryItems"], 0)
         self.assertEqual(res_warn["summary"]["carryTotalAmount"], 0.0)
+
+    def test_payout_review_counts_ready_manual_pending_rows_for_auto_selector(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_counted",
+                    "candidate_hash": "hash_ready_review_counted",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "payouts": [
+                        {"wallet": "walletA", "amount": 75.25, "status": "pending_manual_payment"},
+                        {"wallet": "walletB", "amount": 24.75, "status": "pending_manual_payment"},
+                    ],
+                }
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 100.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 2)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 100.0)
+
+    def test_payout_review_excludes_already_paid_candidate_wallet(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_paid",
+                    "candidate_hash": "hash_ready_review_paid",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "payouts": [
+                        {"wallet": "walletA", "amount": 50.0, "status": "pending_manual_payment"},
+                    ],
+                }
+            ]
+        }
+        payments_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_paid",
+                    "wallet": "walletA",
+                    "amount": 50.0,
+                    "status": "paid_manual",
+                    "txid": "txid_ready_review_paid",
+                }
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data, payments_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 0)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+
+    def test_payout_review_excludes_operator_backfill_fallback_candidate(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_operator",
+                    "candidate_hash": "hash_ready_review_operator",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "weightMode": "operator_single_miner_backfill",
+                    "operatorApprovedBackfill": True,
+                    "fallbackWarning": True,
+                    "payouts": [
+                        {
+                            "wallet": "walletA",
+                            "amount": 50.0,
+                            "status": "pending_manual_payment",
+                            "operatorApprovedBackfill": True,
+                            "fallbackWarning": True,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 0)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+
+    def test_payout_review_excludes_coinbase_mismatch_blocked_candidate(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_mismatch",
+                    "candidate_hash": "hash_ready_review_mismatch",
+                    "status": "blocked",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": False,
+                    "blockedReason": "blocked_coinbase_reward_mismatch",
+                    "reason": "blocked_coinbase_reward_mismatch",
+                    "payouts": [
+                        {"wallet": "walletA", "amount": 50.0, "status": "pending_manual_payment"},
+                    ],
+                }
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 0)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
 
     def test_payout_review_check_ready(self):
         """ready label emitted when there is at least one ready candidate."""

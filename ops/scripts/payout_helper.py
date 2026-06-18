@@ -268,6 +268,66 @@ MANUAL_OPERATOR_BACKFILL_DISTRIBUTION = [
     ("PNQf7byG1hYBzQHZEiPSK15DNr1YCkxpRd", Decimal("0.30")),
     ("PAPHSQTH5y9dMmmTvUohmxKByWN8vrxvSS", Decimal("0.05")),
 ]
+NORMAL_READY_CANDIDATE_STATUSES = {"ready_for_manual_review", "eligible"}
+NORMAL_READY_PAYOUT_STATUSES = {"pending_manual_payment", "ready_for_wallet_send"}
+
+
+def normal_ready_payout_row(
+    candidate: dict[str, Any],
+    payout: dict[str, Any],
+    paid_pairs: set[tuple[str, str]] | None = None,
+) -> tuple[bool, Decimal | None, str | None]:
+    """Return whether a candidate payout row is a normal ready payment row."""
+    if not isinstance(candidate, dict):
+        return False, None, "malformed_candidate"
+    if not isinstance(payout, dict):
+        return False, None, "malformed_payout"
+
+    c_id = _candidate_id(candidate)
+    wallet = str(payout.get("wallet") or "")
+    candidate_status = str(candidate.get("status") or "")
+    if candidate_status not in NORMAL_READY_CANDIDATE_STATUSES:
+        return False, None, f"candidate_status_{candidate_status or 'missing'}"
+
+    payout_status = str(payout.get("status") or "")
+    if payout_status not in NORMAL_READY_PAYOUT_STATUSES:
+        return False, None, f"payout_status_{payout_status or 'missing'}"
+
+    try:
+        amount = Decimal(str(payout.get("amount")))
+    except (InvalidOperation, ValueError):
+        return False, None, "amount_invalid"
+    if not amount.is_finite() or amount <= 0:
+        return False, None, "amount_invalid"
+
+    lifecycle_status = _candidate_lifecycle_status(candidate)
+    if lifecycle_status and lifecycle_status != "confirmed":
+        return False, None, f"lifecycle_status_{lifecycle_status}"
+
+    if candidate.get("operatorApprovedBackfill") is True or payout.get("operatorApprovedBackfill") is True:
+        return False, None, "operator_backfill"
+    if candidate.get("fallbackWarning") is True or payout.get("fallbackWarning") is True:
+        return False, None, "fallback_payout"
+
+    weight_mode = str(candidate.get("weightMode") or candidate.get("weight_mode") or "")
+    if weight_mode.endswith("_fallback"):
+        return False, None, "fallback_payout"
+    if weight_mode.startswith("operator_"):
+        return False, None, "operator_backfill"
+
+    if candidate.get("coinbaseMatchesExpectedPoolWallet") is False:
+        return False, None, "blocked_coinbase_reward_mismatch"
+
+    blocked_reason = candidate.get("blockedReason")
+    if blocked_reason is None:
+        blocked_reason = candidate.get("reason")
+    if blocked_reason:
+        return False, None, str(blocked_reason)
+
+    if paid_pairs and c_id and wallet and (c_id, wallet) in paid_pairs:
+        return False, None, "blocked_already_paid"
+
+    return True, amount, None
 
 
 def action_represents_successful_payment(action: dict[str, Any]) -> bool:
@@ -2175,6 +2235,11 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     auto_selector_payment_rows = 0
     operator_backfill_payment_total = 0.0
     operator_backfill_payment_rows = 0
+    paid_pairs = load_paid_payment_pairs(
+        payments_path.parent / "__payout_review_actions_not_read.jsonl",
+        candidates_path,
+        payments_path,
+    )
     for c in candidates:
         if not isinstance(c, dict):
             continue
@@ -2201,17 +2266,15 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                 or p.get("fallbackWarning") is True
                 or p.get("operatorApprovedBackfill") is True
             )
-            if payout_status == "pending_manual_payment" and not payout_is_fallback:
-                ready_payment_total += payout_amount
+            is_normal_ready, normal_amount, _normal_skip_reason = normal_ready_payout_row(c, p, paid_pairs)
+            if is_normal_ready and normal_amount is not None:
+                normal_amount_float = float(normal_amount)
+                ready_payment_total += normal_amount_float
+                auto_selector_payment_total += normal_amount_float
+                auto_selector_payment_rows += 1
             if payout_is_fallback and p.get("operatorApprovedBackfill") is True:
                 operator_backfill_payment_total += payout_amount
                 operator_backfill_payment_rows += 1
-            if (
-                not payout_is_fallback
-                and payout_status in {"pending_manual_payment", "ready_for_wallet_send", "below_threshold", "below_threshold_carried"}
-            ):
-                auto_selector_payment_total += payout_amount
-                auto_selector_payment_rows += 1
 
     if as_json:
         # Load pool snapshot for network height and confirmations
