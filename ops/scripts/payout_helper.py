@@ -1607,6 +1607,8 @@ def generate_payments_snapshot(
             confirmations = min(confirmations_list)
         elif existing_confirmations is not None and _has_payment_block_context(existing_item):
             confirmations = existing_confirmations
+        else:
+            confirmations = 1
         if confirmations is not None:
             item["confirmations"] = confirmations
 
@@ -2199,7 +2201,7 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                 or p.get("fallbackWarning") is True
                 or p.get("operatorApprovedBackfill") is True
             )
-            if payout_status == "pending_manual_payment":
+            if payout_status == "pending_manual_payment" and not payout_is_fallback:
                 ready_payment_total += payout_amount
             if payout_is_fallback and p.get("operatorApprovedBackfill") is True:
                 operator_backfill_payment_total += payout_amount
@@ -3688,6 +3690,13 @@ def auto_payout_once(
         .lower()
         == "true"
     )
+    operator_backfill_enabled = (
+        env.get("PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "")
+        .strip()
+        .lower()
+        == "true"
+    )
+    operator_backfill_wallet = env.get("PEPEPOW_OPERATOR_BACKFILL_WALLET", "").strip()
     if not allowed_wallets and not allow_any_wallet:
         env_wallets = os.getenv("PEPEPOW_AUTO_PAYOUT_ALLOWED_WALLETS")
         if env_wallets:
@@ -3783,7 +3792,7 @@ def auto_payout_once(
         "PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS",
     ]}
     try:
-        paid_pairs = load_paid_payment_pairs(actions_log_path)
+        paid_pairs = load_paid_payment_pairs(actions_log_path, candidates_path, payments_snapshot_path)
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 skipped_count += 1
@@ -3823,13 +3832,24 @@ def auto_payout_once(
                 wallet = str(payout.get("wallet") or "")
                 amount_raw = payout.get("amount")
                 weight_mode = str(candidate.get("weightMode") or candidate.get("weight_mode") or "")
+                payout_is_operator_backfill = (
+                    payout.get("operatorApprovedBackfill") is True
+                    or weight_mode.startswith("operator_")
+                )
                 if not allow_fallback_payouts and (
                     payout.get("fallbackWarning") is True
-                    or payout.get("operatorApprovedBackfill") is True
+                    or payout_is_operator_backfill
                     or weight_mode.endswith("_fallback")
-                    or weight_mode.startswith("operator_")
                 ):
                     append_skip(c_id, wallet, amount_raw, "fallback_payout_not_allowed")
+                    continue
+                if payout_is_operator_backfill and not (
+                    operator_backfill_enabled
+                    and allow_any_wallet
+                    and operator_backfill_wallet
+                    and wallet == operator_backfill_wallet
+                ):
+                    append_skip(c_id, wallet, amount_raw, "operator_backfill_not_armed")
                     continue
                 if not allow_any_wallet and allowed_wallets and wallet not in allowed_wallets:
                     append_skip(c_id, wallet, amount_raw, "wallet_not_allowed")
@@ -3962,7 +3982,9 @@ def auto_payout_once(
                 })
                 continue
 
-            if any(payment_already_recorded(actions_log_path, source_id, wallet) for source_id in source_ids):
+            if any((source_id, wallet) in paid_pairs for source_id in source_ids) or any(
+                payment_already_recorded(actions_log_path, source_id, wallet) for source_id in source_ids
+            ):
                 append_wallet_skip(wallet, send_amount, source_ids, "blocked_already_paid")
                 per_wallet_aggregates.append({
                     "wallet": wallet,

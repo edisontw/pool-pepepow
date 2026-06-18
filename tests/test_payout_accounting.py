@@ -3055,7 +3055,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertIn("Payout Status: READY_FOR_MANUAL_REVIEW", output)
         self.assertIn("Carry Status Summary", output)
         # New compact format: ready_payment_total, below_threshold_carry_total, wallet_carry_count, blocked_candidates
-        self.assertIn("ready_payment_total: 125.0", output)
+        self.assertIn("ready_payment_total: 100.0", output)
         self.assertIn("auto_selector_payment_rows: 1", output)
         self.assertIn("auto_selector_payment_total: 100.0", output)
         self.assertIn("operator_backfill_payment_rows: 1", output)
@@ -3204,7 +3204,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(summary["walletsWithCarry"], ["walletB"])
         self.assertEqual(summary["candidatePayoutsWithCarry"], 1)
         self.assertEqual(summary["candidateCarryAppliedAmount"], 60.0)
-        self.assertEqual(summary["readyPaymentTotal"], 125.0)
+        self.assertEqual(summary["readyPaymentTotal"], 100.0)
         self.assertEqual(summary["autoSelectorPaymentRows"], 1)
         self.assertEqual(summary["autoSelectorPaymentTotal"], 100.0)
         self.assertEqual(summary["operatorBackfillPaymentRows"], 1)
@@ -3582,10 +3582,17 @@ class CarryFocusedTests(unittest.TestCase):
         self.actions_log = self.tmp_path / "payment-actions.jsonl"
         self.snapshot_path = self.tmp_path / "payments-snapshot.json"
         self.original_query_rpc = payout_helper.query_rpc
+        self.old_runtime_dir = os.environ.get("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR")
+        os.environ["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(self.tmp_path)
+        (self.tmp_path / "launch.env").write_text("", encoding="utf-8")
         payout_helper.query_rpc = self._mock_coinbase_rpc
 
     def tearDown(self):
         payout_helper.query_rpc = self.original_query_rpc
+        if self.old_runtime_dir is None:
+            os.environ.pop("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR", None)
+        else:
+            os.environ["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = self.old_runtime_dir
         self.tmp_dir.cleanup()
 
     def _accepted_candidates_by_height(self):
@@ -4956,7 +4963,134 @@ class AutoPayoutOnceTests(unittest.TestCase):
         result = self._read_result()
         self.assertEqual(result["sendInvocations"], 1)
         self.assertEqual(result["sentCount"], 1)
-        self.assertEqual(result["items"][0]["sourceCount"], 2)
+        aggregate_items = [item for item in result["items"] if item.get("action") == "aggregate_send_once"]
+        self.assertEqual(aggregate_items[0]["sourceCount"], 1)
+        self.assertEqual(aggregate_items[0]["sourceCandidateIds"], ["candautoallowfallback000001"])
+        self.assertIn("operator_backfill_not_armed", [item.get("reason") for item in result["items"]])
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_allows_operator_backfill_only_when_explicitly_armed(self, mock_send):
+        mock_send.side_effect = self._sent_side_effect
+        wallet = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        candidate_id = "candautoarmedbackfill000001"
+        self._write_candidates([
+            self._candidate(
+                candidate_id,
+                wallet=wallet,
+                weightMode="operator_single_miner_backfill",
+                payout_extra={"operatorApprovedBackfill": True},
+            )
+        ])
+
+        with unittest.mock.patch.dict(os.environ, {
+            "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET": "true",
+            "PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS": "true",
+            "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED": "true",
+            "PEPEPOW_OPERATOR_BACKFILL_WALLET": wallet,
+        }):
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None,
+                min_payout=1000.0,
+                max_sends=1,
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_send.call_count, 1)
+        result = self._read_result()
+        self.assertEqual(result["sendInvocations"], 1)
+        self.assertEqual(result["items"][0]["sourceCandidateIds"], [candidate_id])
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_already_paid_from_payments_snapshot(self, mock_send):
+        candidate_id = "candautosnapshotpaid00000001"
+        self._write_candidates([self._candidate(candidate_id)])
+        self.payments_snapshot.write_text(json.dumps({
+            "items": [{
+                "candidateId": candidate_id,
+                "wallet": self.allowed_wallet,
+                "amount": 1000.0,
+                "txid": "txidsnapshotpaid000000000001",
+                "status": "sent",
+            }]
+        }), encoding="utf-8")
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_already_paid")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_operator_backfill_already_paid_from_payments_snapshot(self, mock_send):
+        wallet = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        candidate_id = "candautosnapshotbackfillpaid1"
+        self._write_candidates([
+            self._candidate(
+                candidate_id,
+                wallet=wallet,
+                weightMode="operator_single_miner_backfill",
+                payout_extra={"operatorApprovedBackfill": True},
+            )
+        ])
+        self.payments_snapshot.write_text(json.dumps({
+            "items": [{
+                "candidateId": candidate_id,
+                "wallet": wallet,
+                "amount": 1000.0,
+                "txid": "txidsnapshotbackfillpaid0001",
+                "status": "sent",
+            }]
+        }), encoding="utf-8")
+
+        with unittest.mock.patch.dict(os.environ, {
+            "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET": "true",
+            "PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS": "true",
+            "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED": "true",
+            "PEPEPOW_OPERATOR_BACKFILL_WALLET": wallet,
+        }):
+            rc = payout_helper.auto_payout_once(
+                self.candidates_path,
+                self.actions_log,
+                self.payments_snapshot,
+                self.output_path,
+                allowed_wallets=None,
+                min_payout=1000.0,
+                max_sends=1,
+            )
+
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_already_paid")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_excludes_unsafe_candidate_states(self, mock_send):
+        self._write_candidates([
+            self._candidate("candautosafeorphan00000001", lifecycleStatus="orphan", blockedReason="orphan_block"),
+            self._candidate("candautosafeimmature000001", lifecycleStatus="immature", blockedReason="immature_block"),
+            self._candidate("candautosafeunconfirmed001", lifecycleStatus="submitted"),
+            self._candidate(
+                "candautosafemismatch000001",
+                coinbaseMatchesExpectedPoolWallet=False,
+                blockedReason="blocked_coinbase_reward_mismatch",
+            ),
+            self._candidate(
+                "candautosafemissingreward001",
+                blockedReason="blocked_missing_miner_reward_output",
+            ),
+        ])
+
+        rc = self._run(max_sends=5)
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        reasons = [item.get("reason") for item in self._read_result()["items"]]
+        self.assertIn("lifecycle_status_orphan", reasons)
+        self.assertIn("lifecycle_status_immature", reasons)
+        self.assertIn("lifecycle_status_submitted", reasons)
+        self.assertIn("blocked_coinbase_reward_mismatch", reasons)
+        self.assertIn("blocked_missing_miner_reward_output", reasons)
 
     @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
     def test_auto_payout_same_wallet_sends_one_summed_transaction(self, mock_send):
@@ -6002,10 +6136,17 @@ class FallbackPayoutTests(unittest.TestCase):
         self.actions_log = self.tmp_path / "payment-actions.jsonl"
         self.snapshot_path = self.tmp_path / "payments-snapshot.json"
         self.original_query_rpc = payout_helper.query_rpc
+        self.old_runtime_dir = os.environ.get("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR")
+        os.environ["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(self.tmp_path)
+        (self.tmp_path / "launch.env").write_text("", encoding="utf-8")
         payout_helper.query_rpc = self._mock_coinbase_rpc
 
     def tearDown(self):
         payout_helper.query_rpc = self.original_query_rpc
+        if self.old_runtime_dir is None:
+            os.environ.pop("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR", None)
+        else:
+            os.environ["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = self.old_runtime_dir
         self.tmp_dir.cleanup()
 
     def _accepted_candidates_by_height(self):
@@ -6984,7 +7125,7 @@ class FallbackPayoutTests(unittest.TestCase):
         os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
         os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
         os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
-        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "false"
+        os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET"] = "true"
         os.environ["PEPEPOW_AUTO_PAYOUT_ALLOW_FALLBACK_PAYOUTS"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
         os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
