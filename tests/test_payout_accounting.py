@@ -1769,6 +1769,143 @@ class PayoutAccountingTests(unittest.TestCase):
             else:
                 os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
 
+    def test_coinbase_lookup_retries_transient_getblock_permission_error(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+        candidate_id = "candretrypermission000000001"
+        block_hash = "blockretrypermission000000001"
+
+        def mock_query_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params, timeout))
+            if method == "getblock":
+                self.assertEqual(params, [block_hash, True])
+                if len([call for call in rpc_calls if call[0] == "getblock"]) == 1:
+                    raise PermissionError("daemon still opening block")
+                return {"confirmations": 12, "tx": ["coinbaseretrypermission0001"]}
+            if method == "getrawtransaction":
+                self.assertEqual(params, ["coinbaseretrypermission0001", 1])
+                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        old_retries = os.environ.get("PEPEPOW_PAYOUT_RPC_RETRIES")
+        old_timeout = os.environ.get("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ.pop("PEPEPOW_PAYOUT_RPC_RETRIES", None)
+        os.environ.pop("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", None)
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "ok")
+            self.assertIsNone(item["coinbaseLookupError"])
+            self.assertEqual(item["minerRewardAmount"], 4387.5)
+            self.assertEqual([call[0] for call in rpc_calls], ["getblock", "getblock", "getrawtransaction"])
+            self.assertTrue(all(call[2] == 15.0 for call in rpc_calls))
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+            if old_retries is None:
+                os.environ.pop("PEPEPOW_PAYOUT_RPC_RETRIES", None)
+            else:
+                os.environ["PEPEPOW_PAYOUT_RPC_RETRIES"] = old_retries
+            if old_timeout is None:
+                os.environ.pop("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS"] = old_timeout
+
+    def test_coinbase_lookup_uses_getblock_verbose2_when_raw_transaction_unavailable(self):
+        original_query_rpc = payout_helper.query_rpc
+        rpc_calls = []
+        candidate_id = "candverbose2fallback0000001"
+        block_hash = "blockverbose2fallback0000001"
+
+        def mock_query_rpc(method, params, timeout=5):
+            rpc_calls.append((method, params, timeout))
+            if method == "getblock" and params == [block_hash, True]:
+                return {"confirmations": 12, "tx": ["coinbaseverbose2fallback001"]}
+            if method == "getrawtransaction":
+                self.assertEqual(params, ["coinbaseverbose2fallback001", 1])
+                return None
+            if method == "getblock" and params == [block_hash, 2]:
+                return {
+                    "confirmations": 12,
+                    "tx": [{
+                        "txid": "coinbaseverbose2fallback001",
+                        "vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}],
+                    }],
+                }
+            return None
+
+        payout_helper.query_rpc = mock_query_rpc
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        old_retries = os.environ.get("PEPEPOW_PAYOUT_RPC_RETRIES")
+        old_timeout = os.environ.get("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_PAYOUT_RPC_RETRIES"] = "1"
+        os.environ.pop("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", None)
+        try:
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump({"accepted_candidates": [{
+                    "candidate_hash": candidate_id,
+                    "blockHash": block_hash,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 4581315,
+                }]}, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": candidate_id,
+                    "total_share_score": 10.0,
+                    "total_share_count": 10,
+                    "shares": {"walletA": {"share_count": 10, "share_score": 10.0}},
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            self.assertEqual(rc, 0)
+            with self.output_path.open("r", encoding="utf-8") as f:
+                item = json.load(f)["items"][0]
+
+            self.assertEqual(item["coinbaseLookupStatus"], "ok")
+            self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward_block_verbose2_fallback")
+            self.assertEqual(item["minerRewardAmount"], 4387.5)
+            self.assertEqual(item["resolvedCoinbaseTxid"], "coinbaseverbose2fallback001")
+            self.assertEqual([call[0] for call in rpc_calls], ["getblock", "getrawtransaction", "getrawtransaction", "getblock"])
+        finally:
+            payout_helper.query_rpc = original_query_rpc
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+            if old_retries is None:
+                os.environ.pop("PEPEPOW_PAYOUT_RPC_RETRIES", None)
+            else:
+                os.environ["PEPEPOW_PAYOUT_RPC_RETRIES"] = old_retries
+            if old_timeout is None:
+                os.environ.pop("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS"] = old_timeout
+
     def test_coinbase_rpc_failure_emits_lookup_diagnostics(self):
         original_query_rpc = payout_helper.query_rpc
         candidate_id = "candrpcfailure0000000000001"
@@ -2045,7 +2182,11 @@ class PayoutAccountingTests(unittest.TestCase):
 
         payout_helper.query_rpc = mock_query_rpc
         old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        old_retries = os.environ.get("PEPEPOW_PAYOUT_RPC_RETRIES")
+        old_timeout = os.environ.get("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS")
         os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ.pop("PEPEPOW_PAYOUT_RPC_RETRIES", None)
+        os.environ.pop("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", None)
         try:
             with self.accepted_path.open("w", encoding="utf-8") as f:
                 json.dump({"accepted_candidates": [{
@@ -2071,13 +2212,22 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertEqual(item["coinbaseLookupError"], "getblock_failed")
             self.assertEqual(item["resolvedBlockHash"], block_hash)
             self.assertTrue(rpc_calls)
-            self.assertTrue(all(call[2] == 5 for call in rpc_calls))
+            self.assertEqual(len(rpc_calls), 3)
+            self.assertTrue(all(call[2] == 15.0 for call in rpc_calls))
         finally:
             payout_helper.query_rpc = original_query_rpc
             if old_min is None:
                 os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
             else:
                 os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+            if old_retries is None:
+                os.environ.pop("PEPEPOW_PAYOUT_RPC_RETRIES", None)
+            else:
+                os.environ["PEPEPOW_PAYOUT_RPC_RETRIES"] = old_retries
+            if old_timeout is None:
+                os.environ.pop("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS"] = old_timeout
 
     def test_payout_candidates_already_paid(self):
         accepted_data = {

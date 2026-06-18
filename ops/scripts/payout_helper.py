@@ -225,21 +225,56 @@ def daemon_readonly_call(method: str, params: list[Any]) -> Any:
     return result
 
 
-def daemon_readonly_lookup(method: str, params: list[Any]) -> tuple[Any, dict[str, Any]]:
+def daemon_readonly_lookup(method: str, params: list[Any], timeout: float = 5) -> tuple[Any, dict[str, Any]]:
     """Read daemon chain data and return compact diagnostics for failures."""
     if query_rpc is not _REAL_QUERY_RPC:
         meta = {"method": method, "paramsSummary": summarize_rpc_params(params)}
         try:
-            result = query_rpc(method, params, timeout=5)
+            result = query_rpc(method, params, timeout=timeout)
         except Exception as exc:
             return None, {**meta, "error": "exception", "exceptionType": type(exc).__name__, "exceptionMessage": str(exc)}
         if result is None:
             return None, {**meta, "error": "rpc_null_result"}
         return result, meta
-    rpc_result = query_rpc_result(method, params, timeout=5)
+    rpc_result = query_rpc_result(method, params, timeout=timeout)
     if rpc_result.get("ok"):
         return rpc_result.get("result"), rpc_result
     return None, rpc_result
+
+
+def payout_rpc_retry_settings() -> tuple[int, float]:
+    """Return bounded retry/timeout settings for payout-only daemon reads."""
+    try:
+        retries = int(os.getenv("PEPEPOW_PAYOUT_RPC_RETRIES", "2"))
+    except (TypeError, ValueError):
+        retries = 2
+    try:
+        timeout = float(os.getenv("PEPEPOW_PAYOUT_RPC_TIMEOUT_SECONDS", "15"))
+    except (TypeError, ValueError):
+        timeout = 15.0
+    return max(0, min(retries, 3)), max(1.0, min(timeout, 60.0))
+
+
+def daemon_lookup_failure_is_transient(meta: dict[str, Any] | None) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    if meta.get("exceptionType") in {"PermissionError", "TimeoutError", "timeout"}:
+        return True
+    return meta.get("error") in {"timeout", "connection_failure", "rpc_null_result"}
+
+
+def payout_coinbase_lookup(method: str, params: list[Any]) -> tuple[Any, dict[str, Any]]:
+    retries, timeout = payout_rpc_retry_settings()
+    attempts = retries + 1
+    last_meta: dict[str, Any] = {"method": method, "paramsSummary": summarize_rpc_params(params)}
+    for attempt in range(attempts):
+        result, meta = daemon_readonly_lookup(method, params, timeout=timeout)
+        last_meta = meta
+        if result is not None:
+            return result, meta
+        if attempt >= retries or not daemon_lookup_failure_is_transient(meta):
+            break
+    return None, last_meta
 
 
 def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
@@ -783,7 +818,7 @@ def fetch_coinbase_reward_from_daemon(
     used_candidate_hash = block_hash is not None
 
     if block_hash is None:
-        block_hash, lookup_meta = daemon_readonly_lookup("getblockhash", [height_int])
+        block_hash, lookup_meta = payout_coinbase_lookup("getblockhash", [height_int])
         block_hash = valid_hash(block_hash)
     if block_hash is None:
         set_lookup_failure("getblockhash_failed", "getblockhash", locals().get("lookup_meta"))
@@ -791,15 +826,15 @@ def fetch_coinbase_reward_from_daemon(
 
     result["blockHash"] = block_hash
     result["resolvedBlockHash"] = block_hash
-    block_data, block_lookup_meta = daemon_readonly_lookup("getblock", [block_hash, True])
+    block_data, block_lookup_meta = payout_coinbase_lookup("getblock", [block_hash, True])
     if not isinstance(block_data, dict) and used_candidate_hash and allow_height_fallback:
-        fallback_block_hash, fallback_meta = daemon_readonly_lookup("getblockhash", [height_int])
+        fallback_block_hash, fallback_meta = payout_coinbase_lookup("getblockhash", [height_int])
         fallback_block_hash = valid_hash(fallback_block_hash)
         if fallback_block_hash and fallback_block_hash != block_hash:
             block_hash = fallback_block_hash
             result["blockHash"] = block_hash
             result["resolvedBlockHash"] = block_hash
-            block_data, block_lookup_meta = daemon_readonly_lookup("getblock", [block_hash, True])
+            block_data, block_lookup_meta = payout_coinbase_lookup("getblock", [block_hash, True])
     if not isinstance(block_data, dict):
         set_lookup_failure("getblock_failed", "getblock", block_lookup_meta)
         return result
@@ -825,9 +860,26 @@ def fetch_coinbase_reward_from_daemon(
 
     result["coinbaseTxid"] = coinbase_txid
     result["resolvedCoinbaseTxid"] = coinbase_txid
-    coinbase_tx, tx_lookup_meta = daemon_readonly_lookup("getrawtransaction", [coinbase_txid, 1])
+    coinbase_tx, tx_lookup_meta = payout_coinbase_lookup("getrawtransaction", [coinbase_txid, 1])
     if not isinstance(coinbase_tx, dict):
-        set_lookup_failure("getrawtransaction_failed", "getrawtransaction", tx_lookup_meta)
+        block_verbose2, block_verbose2_meta = payout_coinbase_lookup("getblock", [block_hash, 2])
+        if isinstance(block_verbose2, dict):
+            verbose2_tx_list = block_verbose2.get("tx")
+            if isinstance(verbose2_tx_list, list) and verbose2_tx_list:
+                verbose2_coinbase_tx = verbose2_tx_list[0]
+                if isinstance(verbose2_coinbase_tx, dict):
+                    verbose2_txid = verbose2_coinbase_tx.get("txid") or verbose2_coinbase_tx.get("hash")
+                    if isinstance(verbose2_txid, str) and verbose2_txid:
+                        result["coinbaseTxid"] = verbose2_txid
+                        result["resolvedCoinbaseTxid"] = verbose2_txid
+                    verbose2_vout = verbose2_coinbase_tx.get("vout")
+                    if isinstance(verbose2_vout, list):
+                        result.update(detect_coinbase_miner_reward(verbose2_vout))
+                        result["rewardSource"] = "coinbase_detected_miner_split_reward_block_verbose2_fallback"
+                        result["coinbaseLookupStatus"] = "ok"
+                        result["coinbaseLookupError"] = None
+                        return result
+        set_lookup_failure("getrawtransaction_failed", "getrawtransaction", tx_lookup_meta or block_verbose2_meta)
         return result
 
     vout_list = coinbase_tx.get("vout")
