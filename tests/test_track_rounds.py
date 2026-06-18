@@ -640,6 +640,78 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertEqual(round_item["attribution_status"], "ok")
         self.assertIsNone(round_item["attribution_reason"])
 
+    def test_confirmed_round_receives_shares_from_rotated_segment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cand_path = root / "accepted-candidates.json"
+            share_log = root / "share-events.jsonl"
+            act_path = root / "activity-snapshot.json"
+            out_path = root / "rounds-snapshot.json"
+            rotated_log = root / (
+                "share-events."
+                "00000000000000000001-00000000000000000002.jsonl"
+            )
+
+            with cand_path.open("w", encoding="utf-8") as f:
+                json.dump({
+                    "accepted_candidates": [
+                        {
+                            "candidate_hash": "hash-prev",
+                            "lifecycle_status": "confirmed",
+                            "matched_height": 999,
+                            "submit_timestamp": "2026-06-05T17:55:00Z",
+                            "confirmations": 151,
+                        },
+                        {
+                            "candidate_hash": "hash-window",
+                            "lifecycle_status": "confirmed",
+                            "matched_height": 1000,
+                            "submit_timestamp": "2026-06-05T18:00:00Z",
+                            "confirmations": 150,
+                        },
+                    ]
+                }, f)
+            with rotated_log.open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "wallet": "walletWindow",
+                    "timestamp": "2026-06-05T17:56:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 2.5},
+                }) + "\n")
+            with share_log.open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "wallet": "walletLater",
+                    "timestamp": "2026-06-05T18:05:00Z",
+                    "accepted": True,
+                    "submit": {"difficulty": 1.0},
+                }) + "\n")
+            with act_path.open("w", encoding="utf-8") as f:
+                json.dump({"meta": {"assumedShareDifficulty": 0.001}}, f)
+
+            orig_argv = sys.argv
+            sys.argv = [
+                "track_rounds.py",
+                "--accepted-candidates", str(cand_path),
+                "--share-log", str(share_log),
+                "--activity-snapshot", str(act_path),
+                "--output", str(out_path),
+            ]
+            try:
+                exit_code = track_rounds.main()
+                self.assertEqual(exit_code, 0)
+            finally:
+                sys.argv = orig_argv
+
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+            round_item = data["rounds"][1]
+            self.assertEqual(data["shareLogLinesRead"], 2)
+            self.assertEqual(data["shareLogSegmentCount"], 2)
+            self.assertEqual(round_item["candidate_hash"], "hash-window")
+            self.assertEqual(round_item["total_share_count"], 1)
+            self.assertEqual(round_item["shares"]["walletWindow"]["share_score"], 2.5)
+            self.assertEqual(round_item["attribution_status"], "ok")
+            self.assertIsNone(round_item["attribution_reason"])
+
     def test_empty_confirmed_round_old_timestamp_marks_tail_too_short(self):
         data = self._run_track(
             candidates_data={

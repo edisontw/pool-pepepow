@@ -6683,6 +6683,85 @@ class FallbackPayoutTests(unittest.TestCase):
                       "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT", "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
                 os.environ.pop(k, None)
 
+    def test_confirmed_candidate_with_round_shares_uses_normal_payout_when_backfill_armed(self):
+        weights = {
+            "PNQf7byG1hYBzQHZEiPSK15DNr1YCkxpRd": 7.34,
+            "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd": 6.44,
+            "PNGXtPDSgVTFxzn8BAJezHtQADioW96DW4": 1.0,
+        }
+        os.environ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS"] = "10"
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        os.environ["PEPEPOW_POOL_FEE_PERCENT"] = "1.0"
+        os.environ["PEPEPOW_POOL_CORE_REWARD_ADDRESS"] = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED"] = "true"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WALLET"] = "PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_WEIGHTS_JSON"] = json.dumps(weights)
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_REASON"] = "operator_approved_unattributed_confirmed_rewards"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT"] = "300"
+        os.environ["PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"] = "310"
+        try:
+            accepted_data = {
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hashbackfillhasshares000000001",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 302,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash"
+                                }
+                            },
+                            {"value": 2362.5},
+                            {"value": 250.0}
+                        ]
+                    }
+                ]
+            }
+            with self.accepted_path.open("w", encoding="utf-8") as f:
+                json.dump(accepted_data, f)
+            with self.rounds_path.open("w", encoding="utf-8") as f:
+                json.dump({"rounds": [{
+                    "candidate_hash": "hashbackfillhasshares000000001",
+                    "total_share_score": 3.0,
+                    "total_share_count": 3,
+                    "shares": {
+                        "walletNormalA": {"share_count": 1, "share_score": 1.0},
+                        "walletNormalB": {"share_count": 2, "share_score": 2.0},
+                    }
+                }]}, f)
+
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+            self.assertEqual(rc, 0)
+
+            with self.output_path.open("r", encoding="utf-8") as f:
+                res = json.load(f)
+
+            item = res["items"][0]
+            self.assertEqual(item["status"], "ready_for_manual_review")
+            self.assertIsNone(item["reason"])
+            self.assertEqual(item["weightMode"], "share_difficulty_sum")
+            self.assertEqual(item["roundShareTotal"], 3.0)
+            payouts_by_wallet = {p["wallet"]: p for p in item["payouts"]}
+            self.assertEqual(set(payouts_by_wallet), {"walletNormalA", "walletNormalB"})
+            for payout in payouts_by_wallet.values():
+                self.assertNotIn("fallbackReason", payout)
+                self.assertIsNot(payout.get("operatorApprovedBackfill"), True)
+            self.assertAlmostEqual(payouts_by_wallet["walletNormalA"]["amount"], 4343.625 / 3.0)
+            self.assertAlmostEqual(payouts_by_wallet["walletNormalB"]["amount"], 4343.625 * 2.0 / 3.0)
+        finally:
+            for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_FEE_PERCENT",
+                      "PEPEPOW_POOL_CORE_REWARD_ADDRESS", "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED",
+                      "PEPEPOW_OPERATOR_BACKFILL_WALLET", "PEPEPOW_OPERATOR_BACKFILL_WEIGHTS_JSON",
+                      "PEPEPOW_OPERATOR_BACKFILL_REASON", "PEPEPOW_OPERATOR_BACKFILL_MIN_HEIGHT",
+                      "PEPEPOW_OPERATOR_BACKFILL_MAX_HEIGHT"]:
+                os.environ.pop(k, None)
+
     def test_operator_weighted_backfill_missing_share_data(self):
         weights = {
             "PNQf7byG1hYBzQHZEiPSK15DNr1YCkxpRd": 7.34,

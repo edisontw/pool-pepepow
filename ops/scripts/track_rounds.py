@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,57 @@ def tail_file(file_path: Path, max_lines: int) -> list[str]:
         if len(lines) > max_lines:
             lines = lines[-max_lines:]
     return [line.decode("utf-8", errors="replace") for line in lines if line]
+
+
+def share_log_segments(active_log_path: Path) -> list[Path]:
+    parent = active_log_path.parent
+    if not parent.exists():
+        return []
+
+    pattern = re.compile(
+        rf"^{re.escape(active_log_path.stem)}\."
+        r"(?P<first>\d{20})-(?P<last>\d{20})"
+        rf"{re.escape(active_log_path.suffix)}$"
+    )
+    rotated: list[tuple[int, int, str, Path]] = []
+    for path in parent.iterdir():
+        if not path.is_file():
+            continue
+        match = pattern.fullmatch(path.name)
+        if match is None:
+            continue
+        rotated.append(
+            (
+                int(match.group("first")),
+                int(match.group("last")),
+                path.name,
+                path,
+            )
+        )
+
+    paths = [item[3] for item in sorted(rotated)]
+    if active_log_path.exists():
+        paths.append(active_log_path)
+    return paths
+
+
+def tail_share_log_segments(active_log_path: Path, max_lines: int) -> tuple[list[str], int]:
+    if max_lines <= 0:
+        return [], 0
+
+    selected: list[str] = []
+    segments = share_log_segments(active_log_path)
+    for path in reversed(segments):
+        remaining = max_lines - len(selected)
+        if remaining <= 0:
+            break
+        segment_lines = tail_file(path, remaining)
+        if segment_lines:
+            selected = segment_lines + selected
+
+    if len(selected) > max_lines:
+        selected = selected[-max_lines:]
+    return selected, len(segments)
 
 
 def main() -> int:
@@ -141,10 +193,14 @@ def main() -> int:
     # Read and parse shares from tail of share-events.jsonl
     shares: list[dict[str, Any]] = []
     tail_lines: list[str] = []
+    share_log_segment_count = 0
     if args.share_log:
         share_log_path = Path(args.share_log)
-        if share_log_path.exists():
-            tail_lines = tail_file(share_log_path, max_share_lines)
+        if share_log_path.exists() or share_log_path.parent.exists():
+            tail_lines, share_log_segment_count = tail_share_log_segments(
+                share_log_path,
+                max_share_lines,
+            )
             for line in tail_lines:
                 line = line.strip()
                 if not line:
@@ -444,6 +500,7 @@ def main() -> int:
         .isoformat()
         .replace("+00:00", "Z"),
         "shareLogLinesRead": len(tail_lines),
+        "shareLogSegmentCount": share_log_segment_count,
         "parsedAcceptedShares": len(shares),
         "earliestShareTimestamp": (
             earliest_share_ts.isoformat().replace("+00:00", "Z")
