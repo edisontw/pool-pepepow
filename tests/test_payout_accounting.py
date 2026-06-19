@@ -3604,8 +3604,12 @@ class PayoutAccountingTests(unittest.TestCase):
         summary = self._payout_review_summary(candidates_data)
 
         self.assertEqual(summary["readyPaymentTotal"], 100.0)
+        self.assertEqual(summary["normalAutoReadyRows"], 2)
+        self.assertEqual(summary["normalAutoReadyTotal"], 100.0)
         self.assertEqual(summary["autoSelectorPaymentRows"], 2)
         self.assertEqual(summary["autoSelectorPaymentTotal"], 100.0)
+        self.assertEqual(summary["manualReviewOnlyRows"], 0)
+        self.assertEqual(summary["malformedReadyRows"], 0)
 
     def test_payout_review_excludes_already_paid_candidate_wallet(self):
         candidates_data = {
@@ -3637,8 +3641,12 @@ class PayoutAccountingTests(unittest.TestCase):
         summary = self._payout_review_summary(candidates_data, payments_data)
 
         self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["normalAutoReadyRows"], 0)
+        self.assertEqual(summary["normalAutoReadyTotal"], 0.0)
         self.assertEqual(summary["autoSelectorPaymentRows"], 0)
         self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+        self.assertEqual(summary["manualReviewOnlyRows"], 0)
+        self.assertEqual(summary["malformedReadyRows"], 0)
 
     def test_payout_review_excludes_operator_backfill_fallback_candidate(self):
         candidates_data = {
@@ -3668,8 +3676,85 @@ class PayoutAccountingTests(unittest.TestCase):
         summary = self._payout_review_summary(candidates_data)
 
         self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["normalAutoReadyRows"], 0)
+        self.assertEqual(summary["normalAutoReadyTotal"], 0.0)
         self.assertEqual(summary["autoSelectorPaymentRows"], 0)
         self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+        self.assertEqual(summary["manualReviewOnlyRows"], 1)
+        self.assertEqual(summary["manualReviewOnlyTotal"], 50.0)
+        self.assertEqual(summary["manualReviewOnlyReasons"], {"operator_backfill": 1})
+        self.assertEqual(summary["malformedReadyRows"], 0)
+
+    def test_payout_review_exposes_fallback_ready_as_manual_review_only(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_fallback",
+                    "candidate_hash": "hash_ready_review_fallback",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "weightMode": "missing_round_candidate_wallet_fallback",
+                    "fallbackWarning": True,
+                    "payouts": [
+                        {
+                            "wallet": "walletA",
+                            "amount": 50.0,
+                            "status": "pending_manual_payment",
+                            "fallbackWarning": True,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["normalAutoReadyRows"], 0)
+        self.assertEqual(summary["normalAutoReadyTotal"], 0.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 0)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+        self.assertEqual(summary["manualReviewOnlyRows"], 1)
+        self.assertEqual(summary["manualReviewOnlyTotal"], 50.0)
+        self.assertEqual(summary["manualReviewOnlyReasons"], {"fallback_payout": 1})
+        self.assertEqual(summary["malformedReadyRows"], 0)
+
+    def test_payout_review_exposes_malformed_ready_without_positive_payouts(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_empty",
+                    "candidate_hash": "hash_ready_review_empty",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "payouts": [],
+                },
+                {
+                    "candidateId": "hash_ready_review_zero",
+                    "candidate_hash": "hash_ready_review_zero",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "payouts": [
+                        {"wallet": "walletA", "amount": 0.0, "status": "pending_manual_payment"},
+                    ],
+                },
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["normalAutoReadyRows"], 0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 0)
+        self.assertEqual(summary["manualReviewOnlyRows"], 0)
+        self.assertEqual(summary["malformedReadyRows"], 2)
+        self.assertEqual(summary["malformedReadyReasons"], {
+            "no_positive_ready_payouts": 1,
+            "payouts_empty": 1,
+        })
 
     def test_payout_review_excludes_coinbase_mismatch_blocked_candidate(self):
         candidates_data = {

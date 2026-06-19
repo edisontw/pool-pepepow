@@ -2360,6 +2360,11 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     ready_payment_total = 0.0
     auto_selector_payment_total = 0.0
     auto_selector_payment_rows = 0
+    manual_review_only_payment_total = 0.0
+    manual_review_only_payment_rows = 0
+    manual_review_only_reasons: dict[str, int] = {}
+    malformed_ready_rows = 0
+    malformed_ready_reasons: dict[str, int] = {}
     operator_backfill_payment_total = 0.0
     operator_backfill_payment_rows = 0
     paid_pairs = load_paid_payment_pairs(
@@ -2371,6 +2376,8 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
         if not isinstance(c, dict):
             continue
         weight_mode = str(c.get("weightMode") or c.get("weight_mode") or "")
+        candidate_status = str(c.get("status") or "")
+        candidate_is_ready = candidate_status in NORMAL_READY_CANDIDATE_STATUSES
         candidate_is_fallback = (
             c.get("fallbackWarning") is True
             or c.get("operatorApprovedBackfill") is True
@@ -2379,29 +2386,53 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
         )
         payouts = c.get("payouts")
         if not isinstance(payouts, list):
+            if candidate_is_ready:
+                malformed_ready_rows += 1
+                malformed_ready_reasons["payouts_missing"] = malformed_ready_reasons.get("payouts_missing", 0) + 1
             continue
+        if candidate_is_ready and not payouts:
+            malformed_ready_rows += 1
+            malformed_ready_reasons["payouts_empty"] = malformed_ready_reasons.get("payouts_empty", 0) + 1
+            continue
+        candidate_positive_ready_rows = 0
+        candidate_normal_ready_rows = 0
         for p in payouts:
             if not isinstance(p, dict):
+                if candidate_is_ready:
+                    malformed_ready_rows += 1
+                    malformed_ready_reasons["malformed_payout"] = malformed_ready_reasons.get("malformed_payout", 0) + 1
                 continue
             payout_status = p.get("status")
             try:
                 payout_amount = float(p.get("amount", 0.0))
             except (ValueError, TypeError):
                 payout_amount = 0.0
+            if candidate_is_ready and payout_status in NORMAL_READY_PAYOUT_STATUSES and payout_amount > 0:
+                candidate_positive_ready_rows += 1
             payout_is_fallback = (
                 candidate_is_fallback
                 or p.get("fallbackWarning") is True
                 or p.get("operatorApprovedBackfill") is True
             )
-            is_normal_ready, normal_amount, _normal_skip_reason = normal_ready_payout_row(c, p, paid_pairs)
+            is_normal_ready, normal_amount, normal_skip_reason = normal_ready_payout_row(c, p, paid_pairs)
             if is_normal_ready and normal_amount is not None:
                 normal_amount_float = float(normal_amount)
                 ready_payment_total += normal_amount_float
                 auto_selector_payment_total += normal_amount_float
                 auto_selector_payment_rows += 1
+                candidate_normal_ready_rows += 1
+            elif candidate_is_ready and payout_status in NORMAL_READY_PAYOUT_STATUSES and payout_amount > 0:
+                reason = normal_skip_reason or "unknown"
+                if reason in {"fallback_payout", "operator_backfill"}:
+                    manual_review_only_payment_total += payout_amount
+                    manual_review_only_payment_rows += 1
+                    manual_review_only_reasons[reason] = manual_review_only_reasons.get(reason, 0) + 1
             if payout_is_fallback and p.get("operatorApprovedBackfill") is True:
                 operator_backfill_payment_total += payout_amount
                 operator_backfill_payment_rows += 1
+        if candidate_is_ready and candidate_positive_ready_rows == 0 and candidate_normal_ready_rows == 0:
+            malformed_ready_rows += 1
+            malformed_ready_reasons["no_positive_ready_payouts"] = malformed_ready_reasons.get("no_positive_ready_payouts", 0) + 1
 
     if as_json:
         # Load pool snapshot for network height and confirmations
@@ -2490,8 +2521,15 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                 "candidatePayoutsWithCarry": candidate_payouts_with_carry_count,
                 "candidateCarryAppliedAmount": candidate_carry_applied_amount,
                 "readyPaymentTotal": ready_payment_total,
+                "normalAutoReadyRows": auto_selector_payment_rows,
+                "normalAutoReadyTotal": auto_selector_payment_total,
                 "autoSelectorPaymentRows": auto_selector_payment_rows,
                 "autoSelectorPaymentTotal": auto_selector_payment_total,
+                "manualReviewOnlyRows": manual_review_only_payment_rows,
+                "manualReviewOnlyTotal": manual_review_only_payment_total,
+                "manualReviewOnlyReasons": dict(sorted(manual_review_only_reasons.items())),
+                "malformedReadyRows": malformed_ready_rows,
+                "malformedReadyReasons": dict(sorted(malformed_ready_reasons.items())),
                 "operatorBackfillPaymentRows": operator_backfill_payment_rows,
                 "operatorBackfillPaymentTotal": operator_backfill_payment_total,
                 "carryAuditStatus": carry_audit_status
@@ -2537,8 +2575,15 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     print("Carry Status Summary")
     print("="*80)
     print(f"ready_payment_total: {ready_payment_total}")
+    print(f"normal_auto_ready_rows: {auto_selector_payment_rows}")
+    print(f"normal_auto_ready_total: {auto_selector_payment_total}")
     print(f"auto_selector_payment_rows: {auto_selector_payment_rows}")
     print(f"auto_selector_payment_total: {auto_selector_payment_total}")
+    print(f"manual_review_only_rows: {manual_review_only_payment_rows}")
+    print(f"manual_review_only_total: {manual_review_only_payment_total}")
+    print(f"manual_review_only_reasons: {json.dumps(dict(sorted(manual_review_only_reasons.items())), sort_keys=True)}")
+    print(f"malformed_ready_rows: {malformed_ready_rows}")
+    print(f"malformed_ready_reasons: {json.dumps(dict(sorted(malformed_ready_reasons.items())), sort_keys=True)}")
     print(f"operator_backfill_payment_rows: {operator_backfill_payment_rows}")
     print(f"operator_backfill_payment_total: {operator_backfill_payment_total}")
     print(f"below_threshold_carry_total: {carry_total_amount}")
