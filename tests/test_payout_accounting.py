@@ -145,9 +145,17 @@ class PayoutAccountingTests(unittest.TestCase):
 
     def test_payout_candidates_empty_missing_files(self):
         # Missing files should not crash and generate empty list
-        rc = payout_helper.generate_payout_candidates(
-            self.accepted_path, self.rounds_path, self.output_path
-        )
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
         self.assertEqual(rc, 0)
         self.assertTrue(self.output_path.exists())
 
@@ -233,9 +241,17 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.rounds_path.open("w", encoding="utf-8") as f:
             json.dump(rounds_data, f)
 
-        rc = payout_helper.generate_payout_candidates(
-            self.accepted_path, self.rounds_path, self.output_path
-        )
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
         self.assertEqual(rc, 0)
         self.assertTrue(self.output_path.exists())
 
@@ -321,9 +337,17 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.rounds_path.open("w", encoding="utf-8") as f:
             json.dump(rounds_data, f)
 
-        rc = payout_helper.generate_payout_candidates(
-            self.accepted_path, self.rounds_path, self.output_path
-        )
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
         self.assertEqual(rc, 0)
 
         with self.output_path.open("r", encoding="utf-8") as f:
@@ -364,9 +388,17 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.rounds_path.open("w", encoding="utf-8") as f:
             json.dump(rounds_data, f)
 
-        rc = payout_helper.generate_payout_candidates(
-            self.accepted_path, self.rounds_path, self.output_path
-        )
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
         self.assertEqual(rc, 0)
 
         with self.output_path.open("r", encoding="utf-8") as f:
@@ -1335,9 +1367,17 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.rounds_path.open("w", encoding="utf-8") as f:
             json.dump(rounds_data, f)
 
-        rc = payout_helper.generate_payout_candidates(
-            self.accepted_path, self.rounds_path, self.output_path
-        )
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
         self.assertEqual(rc, 0)
 
         with self.output_path.open("r", encoding="utf-8") as f:
@@ -1361,7 +1401,6 @@ class PayoutAccountingTests(unittest.TestCase):
 
         # Pool-snapshot rewards are not authoritative for PEPEPOW payout accounting;
         # the confirmed block's coinbase vout[0] is used instead.
-        import os
         pool_snapshot_path = self.tmp_path / "pool-snapshot.json"
         pool_snapshot_data = {
             "blocks": [
@@ -1417,9 +1456,17 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.rounds_path.open("w", encoding="utf-8") as f:
             json.dump(rounds_data_snap, f)
 
-        rc = payout_helper.generate_payout_candidates(
-            self.accepted_path, self.rounds_path, self.output_path
-        )
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc = payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            )
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
         self.assertEqual(rc, 0)
 
         with self.output_path.open("r", encoding="utf-8") as f:
@@ -1616,9 +1663,17 @@ class PayoutAccountingTests(unittest.TestCase):
             with self.rounds_path.open("w", encoding="utf-8") as f:
                 json.dump(rounds_data, f)
 
-            rc = payout_helper.generate_payout_candidates(
-                self.accepted_path, self.rounds_path, self.output_path
-            )
+            old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+            os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+            try:
+                rc = payout_helper.generate_payout_candidates(
+                    self.accepted_path, self.rounds_path, self.output_path
+                )
+            finally:
+                if old_min is None:
+                    os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+                else:
+                    os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
             self.assertEqual(rc, 0)
 
             with self.output_path.open("r", encoding="utf-8") as f:
@@ -4298,7 +4353,8 @@ class CarryFocusedTests(unittest.TestCase):
             items = data["items"]
             self.assertEqual(len(items), 1)
             cand = items[0]
-            self.assertEqual(cand["status"], "ready_for_manual_review")
+            self.assertEqual(cand["status"], "carried_below_threshold")
+            self.assertEqual(cand["blockedReason"], "below_threshold_carried")
             self.assertEqual(len(cand["payouts"]), 1)
             p = cand["payouts"][0]
             self.assertEqual(p["wallet"], "walletXYZ0000000000000000000001")
@@ -4306,8 +4362,72 @@ class CarryFocusedTests(unittest.TestCase):
                              "Amount below min_payout must be marked below_threshold_carried")
             self.assertAlmostEqual(p["carryInAmount"], 0.0)
             self.assertLess(p["amount"], 1000.0)
+
+            rc_carry = payout_helper.generate_carry_snapshot(self.output_path, self.carry_path)
+            self.assertEqual(rc_carry, 0)
+            with self.carry_path.open("r", encoding="utf-8") as f:
+                carry = json.load(f)
+            self.assertEqual(len(carry["items"]), 1)
+            self.assertEqual(carry["items"][0]["wallet"], "walletXYZ0000000000000000000001")
+
+            payments_path = self.tmp_path / "payments-snapshot.json"
+            with payments_path.open("w", encoding="utf-8") as f:
+                json.dump({"items": []}, f)
+            summary = self._payout_review_summary(data, carry)
+            self.assertEqual(summary["malformedReadyRows"], 0)
+            self.assertEqual(summary["normalAutoReadyRows"], 0)
+            self.assertEqual(summary["normalAutoReadyTotal"], 0.0)
+            self.assertEqual(summary["carryAuditStatus"], "ok")
         finally:
             os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+
+    def _payout_review_summary(self, candidates_data, carry_data):
+        import io
+
+        candidates_file = self.tmp_path / "payout-candidates-review-test.json"
+        carry_file = self.tmp_path / "payout-carry-review-test.json"
+        payments_file = self.tmp_path / "payments-review-test.json"
+        with candidates_file.open("w", encoding="utf-8") as f:
+            json.dump(candidates_data, f)
+        with carry_file.open("w", encoding="utf-8") as f:
+            json.dump(carry_data, f)
+        with payments_file.open("w", encoding="utf-8") as f:
+            json.dump({"items": []}, f)
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            rc = payout_helper.payout_review(candidates_file, carry_file, payments_file, as_json=True)
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+        self.assertEqual(rc, 0)
+        return json.loads(output)["summary"]
+
+    def test_ready_candidate_without_positive_payouts_is_blocked(self):
+        ready_status, ready_reason = self._classify_ready_for_test([])
+        self.assertEqual(ready_status, "blocked")
+        self.assertEqual(ready_reason, "blocked_invalid_ready_payout_structure")
+
+        zero_status, zero_reason = self._classify_ready_for_test([
+            {"wallet": "walletZERO000000000000000001", "amount": 0.0, "status": "pending_manual_payment"}
+        ])
+        self.assertEqual(zero_status, "blocked")
+        self.assertEqual(zero_reason, "blocked_no_positive_payouts")
+
+    def test_positive_pending_payment_stays_ready_for_review(self):
+        status, reason = self._classify_ready_for_test([
+            {"wallet": "walletREADY00000000000000001", "amount": 1000.0, "status": "pending_manual_payment"}
+        ])
+        self.assertEqual(status, "ready_for_manual_review")
+        self.assertIsNone(reason)
+
+    def _classify_ready_for_test(self, payouts):
+        return payout_helper.classify_candidate_payout_readiness(
+            "ready_for_manual_review",
+            None,
+            payouts,
+        )
 
     def test_same_run_one_below_threshold_payout_stays_carried(self):
         import os

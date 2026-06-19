@@ -307,6 +307,60 @@ NORMAL_READY_CANDIDATE_STATUSES = {"ready_for_manual_review", "eligible"}
 NORMAL_READY_PAYOUT_STATUSES = {"pending_manual_payment", "ready_for_wallet_send"}
 
 
+def ready_payout_amount(payout: dict[str, Any]) -> Decimal | None:
+    if not isinstance(payout, dict):
+        return None
+    if str(payout.get("status") or "") not in NORMAL_READY_PAYOUT_STATUSES:
+        return None
+    try:
+        amount = Decimal(str(payout.get("amount")))
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite() or amount <= 0:
+        return None
+    return amount
+
+
+def classify_candidate_payout_readiness(
+    status: str,
+    reason: str | None,
+    payouts: list[Any],
+) -> tuple[str, str | None]:
+    if status not in NORMAL_READY_CANDIDATE_STATUSES:
+        return status, reason
+
+    has_positive_ready_payout = any(
+        ready_payout_amount(payout) is not None
+        for payout in payouts
+        if isinstance(payout, dict)
+    )
+    if has_positive_ready_payout:
+        return status, reason
+
+    positive_carry_rows = 0
+    positive_amount_rows = 0
+    for payout in payouts:
+        if not isinstance(payout, dict):
+            continue
+        try:
+            amount = Decimal(str(payout.get("amount")))
+        except (InvalidOperation, ValueError):
+            continue
+        if not amount.is_finite() or amount <= 0:
+            continue
+        positive_amount_rows += 1
+        if str(payout.get("status") or "") in {"below_threshold", "below_threshold_carried"}:
+            positive_carry_rows += 1
+
+    if positive_carry_rows and positive_carry_rows == positive_amount_rows:
+        return "carried_below_threshold", "below_threshold_carried"
+    if not payouts:
+        return "blocked", "blocked_invalid_ready_payout_structure"
+    if positive_amount_rows == 0:
+        return "blocked", "blocked_no_positive_payouts"
+    return "blocked", "blocked_invalid_ready_payout_structure"
+
+
 def normal_ready_payout_row(
     candidate: dict[str, Any],
     payout: dict[str, Any],
@@ -324,15 +378,11 @@ def normal_ready_payout_row(
     if candidate_status not in NORMAL_READY_CANDIDATE_STATUSES:
         return False, None, f"candidate_status_{candidate_status or 'missing'}"
 
-    payout_status = str(payout.get("status") or "")
-    if payout_status not in NORMAL_READY_PAYOUT_STATUSES:
-        return False, None, f"payout_status_{payout_status or 'missing'}"
-
-    try:
-        amount = Decimal(str(payout.get("amount")))
-    except (InvalidOperation, ValueError):
-        return False, None, "amount_invalid"
-    if not amount.is_finite() or amount <= 0:
+    amount = ready_payout_amount(payout)
+    if amount is None:
+        payout_status = str(payout.get("status") or "")
+        if payout_status not in NORMAL_READY_PAYOUT_STATUSES:
+            return False, None, f"payout_status_{payout_status or 'missing'}"
         return False, None, "amount_invalid"
 
     lifecycle_status = _candidate_lifecycle_status(candidate)
@@ -1520,6 +1570,8 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                                     "carrySourceCount": output_carry_source_count,
                                     "carrySourceCandidateIds": output_carry_source_ids
                                 })
+
+        status, reason = classify_candidate_payout_readiness(status, reason, payouts)
 
         shares_info = {}
         if c_hash in rounds_map:
