@@ -449,6 +449,13 @@ def load_paid_payment_pairs(
                 wallet = item.get("wallet")
                 if c_id and wallet:
                     paid_pairs.add((str(c_id), str(wallet)))
+                if wallet:
+                    for key in ("sourceCandidateIds", "carrySourceCandidateIds"):
+                        source_ids = item.get(key)
+                        if isinstance(source_ids, list):
+                            for source_id in source_ids:
+                                if source_id:
+                                    paid_pairs.add((str(source_id), str(wallet)))
 
     if not paid_pairs or candidates_path is None or not candidates_path.exists():
         return paid_pairs
@@ -2367,6 +2374,30 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     malformed_ready_reasons: dict[str, int] = {}
     operator_backfill_payment_total = 0.0
     operator_backfill_payment_rows = 0
+    auto_skipped_rows_by_reason: dict[str, int] = {}
+    auto_already_paid_rows = 0
+    auto_below_min_rows = 0
+    auto_preview_groups: dict[str, dict[str, Any]] = {}
+    env = load_env_vars()
+    try:
+        auto_min_payout = float(
+            env.get("PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT")
+            or env.get("PEPEPOW_MIN_PAYOUT")
+            or "1000"
+        )
+    except (TypeError, ValueError):
+        auto_min_payout = 1000.0
+    try:
+        auto_max_sends = int(
+            env.get("PEPEPOW_AUTO_PAYOUT_MAX_SENDS")
+            or env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
+            or "5"
+        )
+    except (TypeError, ValueError):
+        auto_max_sends = 5
+    auto_real_wallet_payout_enabled = (
+        env.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", "false").strip().lower() == "true"
+    )
     paid_pairs = load_paid_payment_pairs(
         payments_path.parent / "__payout_review_actions_not_read.jsonl",
         candidates_path,
@@ -2421,8 +2452,15 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                 auto_selector_payment_total += normal_amount_float
                 auto_selector_payment_rows += 1
                 candidate_normal_ready_rows += 1
+                wallet = str(p.get("wallet") or "")
+                group = auto_preview_groups.setdefault(wallet, {"total": 0.0, "rows": 0})
+                group["total"] += normal_amount_float
+                group["rows"] += 1
             elif candidate_is_ready and payout_status in NORMAL_READY_PAYOUT_STATUSES and payout_amount > 0:
                 reason = normal_skip_reason or "unknown"
+                auto_skipped_rows_by_reason[reason] = auto_skipped_rows_by_reason.get(reason, 0) + 1
+                if reason == "blocked_already_paid":
+                    auto_already_paid_rows += 1
                 if reason in {"fallback_payout", "operator_backfill"}:
                     manual_review_only_payment_total += payout_amount
                     manual_review_only_payment_rows += 1
@@ -2433,6 +2471,15 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
         if candidate_is_ready and candidate_positive_ready_rows == 0 and candidate_normal_ready_rows == 0:
             malformed_ready_rows += 1
             malformed_ready_reasons["no_positive_ready_payouts"] = malformed_ready_reasons.get("no_positive_ready_payouts", 0) + 1
+
+    auto_send_candidate_wallets = []
+    for wallet, group in sorted(auto_preview_groups.items()):
+        total = float(group.get("total") or 0.0)
+        rows = int(group.get("rows") or 0)
+        if total >= auto_min_payout:
+            auto_send_candidate_wallets.append(wallet)
+        else:
+            auto_below_min_rows += rows
 
     if as_json:
         # Load pool snapshot for network height and confirmations
@@ -2523,6 +2570,13 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
                 "readyPaymentTotal": ready_payment_total,
                 "normalAutoReadyRows": auto_selector_payment_rows,
                 "normalAutoReadyTotal": auto_selector_payment_total,
+                "autoSendCandidateWallets": auto_send_candidate_wallets,
+                "skippedRowsByReason": dict(sorted(auto_skipped_rows_by_reason.items())),
+                "alreadyPaidRows": auto_already_paid_rows,
+                "belowMinRows": auto_below_min_rows,
+                "walletBalanceReadable": None,
+                "realWalletPayoutEnabled": auto_real_wallet_payout_enabled,
+                "maxSends": auto_max_sends,
                 "autoSelectorPaymentRows": auto_selector_payment_rows,
                 "autoSelectorPaymentTotal": auto_selector_payment_total,
                 "manualReviewOnlyRows": manual_review_only_payment_rows,
@@ -2577,6 +2631,13 @@ def payout_review(candidates_path: Path, carry_path: Path, payments_path: Path, 
     print(f"ready_payment_total: {ready_payment_total}")
     print(f"normal_auto_ready_rows: {auto_selector_payment_rows}")
     print(f"normal_auto_ready_total: {auto_selector_payment_total}")
+    print(f"auto_send_candidate_wallets: {json.dumps(auto_send_candidate_wallets, sort_keys=True)}")
+    print(f"skipped_rows_by_reason: {json.dumps(dict(sorted(auto_skipped_rows_by_reason.items())), sort_keys=True)}")
+    print(f"already_paid_rows: {auto_already_paid_rows}")
+    print(f"below_min_rows: {auto_below_min_rows}")
+    print("wallet_balance_readable: unknown")
+    print(f"real_wallet_payout_enabled: {str(auto_real_wallet_payout_enabled).lower()}")
+    print(f"max_sends: {auto_max_sends}")
     print(f"auto_selector_payment_rows: {auto_selector_payment_rows}")
     print(f"auto_selector_payment_total: {auto_selector_payment_total}")
     print(f"manual_review_only_rows: {manual_review_only_payment_rows}")

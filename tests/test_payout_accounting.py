@@ -3608,6 +3608,13 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(summary["normalAutoReadyTotal"], 100.0)
         self.assertEqual(summary["autoSelectorPaymentRows"], 2)
         self.assertEqual(summary["autoSelectorPaymentTotal"], 100.0)
+        self.assertEqual(summary["autoSendCandidateWallets"], [])
+        self.assertEqual(summary["skippedRowsByReason"], {})
+        self.assertEqual(summary["alreadyPaidRows"], 0)
+        self.assertEqual(summary["belowMinRows"], 2)
+        self.assertIsNone(summary["walletBalanceReadable"])
+        self.assertIn("realWalletPayoutEnabled", summary)
+        self.assertIn("maxSends", summary)
         self.assertEqual(summary["manualReviewOnlyRows"], 0)
         self.assertEqual(summary["malformedReadyRows"], 0)
 
@@ -3645,6 +3652,47 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(summary["normalAutoReadyTotal"], 0.0)
         self.assertEqual(summary["autoSelectorPaymentRows"], 0)
         self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+        self.assertEqual(summary["alreadyPaidRows"], 1)
+        self.assertEqual(summary["skippedRowsByReason"], {"blocked_already_paid": 1})
+        self.assertEqual(summary["manualReviewOnlyRows"], 0)
+        self.assertEqual(summary["malformedReadyRows"], 0)
+
+    def test_payout_review_excludes_aggregate_source_paid_candidate_wallet(self):
+        candidates_data = {
+            "items": [
+                {
+                    "candidateId": "hash_ready_review_aggregate_paid",
+                    "candidate_hash": "hash_ready_review_aggregate_paid",
+                    "status": "ready_for_manual_review",
+                    "lifecycleStatus": "confirmed",
+                    "coinbaseMatchesExpectedPoolWallet": True,
+                    "payouts": [
+                        {"wallet": "walletA", "amount": 50.0, "status": "pending_manual_payment"},
+                    ],
+                }
+            ]
+        }
+        payments_data = {
+            "items": [
+                {
+                    "wallet": "walletA",
+                    "amount": 50.0,
+                    "txid": "txid_ready_review_aggregate_paid",
+                    "sourceCandidateIds": ["hash_ready_review_aggregate_paid"],
+                    "sourceCount": 1,
+                }
+            ]
+        }
+
+        summary = self._payout_review_summary(candidates_data, payments_data)
+
+        self.assertEqual(summary["readyPaymentTotal"], 0.0)
+        self.assertEqual(summary["normalAutoReadyRows"], 0)
+        self.assertEqual(summary["normalAutoReadyTotal"], 0.0)
+        self.assertEqual(summary["autoSelectorPaymentRows"], 0)
+        self.assertEqual(summary["autoSelectorPaymentTotal"], 0.0)
+        self.assertEqual(summary["alreadyPaidRows"], 1)
+        self.assertEqual(summary["skippedRowsByReason"], {"blocked_already_paid": 1})
         self.assertEqual(summary["manualReviewOnlyRows"], 0)
         self.assertEqual(summary["malformedReadyRows"], 0)
 
@@ -5547,6 +5595,32 @@ class AutoPayoutOnceTests(unittest.TestCase):
                 "status": "sent",
             }]
         }), encoding="utf-8")
+
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        mock_send.assert_not_called()
+        self.assertEqual(self._read_result()["items"][0]["reason"], "blocked_already_paid")
+
+    @unittest.mock.patch("payout_helper.payout_wallet_send_aggregated_once")
+    def test_auto_payout_skips_aggregate_source_paid_from_payments_snapshot(self, mock_send):
+        candidate_id = "candautoaggregatesnapshotpaid01"
+        self._write_candidates([self._candidate(candidate_id)])
+        self.payments_snapshot.write_text(json.dumps({
+            "items": [{
+                "wallet": self.allowed_wallet,
+                "amount": 1000.0,
+                "txid": "txidaggregatesnapshotpaid001",
+                "sourceCandidateIds": [candidate_id],
+                "sourceCount": 1,
+            }]
+        }), encoding="utf-8")
+
+        paid_pairs = payout_helper.load_paid_payment_pairs(
+            self.actions_log,
+            self.candidates_path,
+            self.payments_snapshot,
+        )
+        self.assertIn((candidate_id, self.allowed_wallet), paid_pairs)
 
         rc = self._run()
         self.assertEqual(rc, 0)
