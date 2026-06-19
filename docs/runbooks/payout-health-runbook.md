@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document records the current payout recovery baseline and the low-token operating rules for future payout checks. It is intended to prevent repeated broad debugging, full test runs, large runtime scans, and unnecessary manual payout actions.
+This document records the current payout recovery baseline and the low-token operating rules for future payout checks. It is intended to prevent repeated broad debugging, full test runs, large runtime scans, unnecessary manual payout actions, and confusion between raw candidate status and actual payable rows.
 
 ## Current Payout Baseline
 
@@ -26,7 +26,14 @@ The operator-approved backfill is a rescue tool only. It must not be treated as 
 
 Auto payment is enabled and should handle normal ready payouts.
 
-Do not manually send small ready payouts unless auto payment is confirmed broken.
+Current expected live payout flags:
+
+```text
+real_wallet_payout_enabled: true
+max_sends: 200
+```
+
+Do not disable these flags just because there are no currently ready rows. They are the current operating baseline unless the operator explicitly changes them.
 
 Normal payout should only pay candidates that pass existing guards:
 
@@ -42,9 +49,84 @@ Normal payout should only pay candidates that pass existing guards:
 * MAX_SENDS enforced
 * txid recorded
 
+## One-Screen Decision Rule
+
+Use `payout-review` as the source of truth. Do not use raw outer candidate status alone to decide whether payment is stuck.
+
+### OK / No Action
+
+No payout action is needed when all are true:
+
+```text
+ready_payment_total: 0.0
+normal_auto_ready_rows: 0
+normal_auto_ready_total: 0.0
+manual_review_only_rows: 0
+malformed_ready_rows: 0
+carry_audit_status: ok
+```
+
+`already_paid_rows > 0` is also OK when the skip reason is:
+
+```text
+skipped_rows_by_reason: {"blocked_already_paid": N}
+```
+
+That means source rows are already covered by aggregate or recorded payments.
+
+### Ignore for Payment Decisions
+
+Do not treat these by themselves as payout backlog:
+
+```text
+ready_for_manual_review: N
+ready_count: N
+ready_amount: 0.0
+```
+
+Raw `ready_for_manual_review` is an outer candidate status. It may include rows that are already paid, carried below threshold, manual-review-only, or otherwise not payable. The actionable fields are `normal_auto_ready_rows`, `normal_auto_ready_total`, `manual_review_only_rows`, and `malformed_ready_rows`.
+
+### Auto Payment Expected
+
+If:
+
+```text
+normal_auto_ready_rows > 0
+normal_auto_ready_total > 0
+```
+
+let the auto payment path process it. Do not manually pay immediately.
+
+Only investigate if the values remain non-zero after multiple auto-payout cycles.
+
+### Code Fix Needed
+
+Patch classification/reporting only if any are true:
+
+```text
+malformed_ready_rows > 0
+carry_audit_status != ok
+normal_auto_ready_rows > 0 but the same rows are already paid
+```
+
+Do not change payout eligibility or wallet flags unless there is a clear safety or accounting bug.
+
+### Manual Review / Backfill Warning
+
+Investigate, but do not immediately backfill, when:
+
+```text
+manual_review_only_rows > 0
+missing_share_data >= 20
+blocked_missing_miner_reward_output increases in recent confirmed rows
+blocked_coinbase_reward_mismatch increases in recent confirmed rows
+```
+
+First classify whether the candidates are real confirmed unpaid rewards, stale leftovers, already paid rows, missing attribution, or non-pool coinbase outputs.
+
 ## Health Check Frequency
 
-Run payout health check every 30–60 minutes.
+Run payout health check every 30-60 minutes when actively monitoring.
 
 The health check should refresh snapshots only:
 
@@ -55,59 +137,27 @@ The health check should refresh snapshots only:
 ./ops/scripts/live-stratum.sh payout-review
 ```
 
-Then summarize:
-
-* total candidates
-* confirmed coinbase match count
-* unpaid_ready count
-* unpaid_ready_amount
-* unpaid_blocked_missing_round_or_share count
-* coinbase_mismatch_confirmed count
-* orphan / immature / unconfirmed counts
-
-## Alert Rules
-
-### No action
-
-No action is needed when:
+For routine monitoring, the minimum fields to record are:
 
 ```text
-unpaid_ready < 5
-coinbase_mismatch_confirmed == 0
-missing attribution is stable and low
+ready_payment_total
+normal_auto_ready_rows
+normal_auto_ready_total
+manual_review_only_rows
+malformed_ready_rows
+already_paid_rows
+skipped_rows_by_reason
+below_threshold_carry_total
+wallet_carry_count
+blocked_candidates
+carry_audit_status
+real_wallet_payout_enabled
+max_sends
 ```
 
-### Normal auto payment expected
+Optional blocked-reason summary is useful only if one of the decision rules above triggers.
 
-If:
-
-```text
-unpaid_ready >= 1
-```
-
-do not manually pay immediately. Let the auto payment timer process it.
-
-Only intervene if unpaid_ready keeps increasing across multiple timer cycles.
-
-### Missing attribution warning
-
-If:
-
-```text
-unpaid_blocked_missing_round_or_share >= 20
-```
-
-report a warning. Do not immediately backfill.
-
-First classify whether the candidates are:
-
-* real confirmed unpaid rewards
-* orphan / -1 confirmations
-* stale leftovers
-* missing wallet attribution
-* already paid but not reflected in summary
-
-### Manual backfill rescue
+## Manual Backfill Rescue
 
 Operator-approved backfill may be used only when all are true:
 
@@ -121,7 +171,7 @@ Operator-approved backfill may be used only when all are true:
 * not coinbase mismatch
 * operator explicitly approves target wallet
 
-Use:
+Use only for a confirmed rescue case:
 
 ```bash
 PEPEPOW_ENABLE_REAL_WALLET_PAYOUT=true \
@@ -169,15 +219,20 @@ Done:
 Changed:
 Test:
 Result:
-- unpaid_ready:
-- unpaid_ready_amount:
-- unpaid_blocked_missing_round_or_share:
-- coinbase_mismatch_confirmed:
+- ready_payment_total:
+- normal_auto_ready_rows:
+- normal_auto_ready_total:
+- manual_review_only_rows:
+- malformed_ready_rows:
+- already_paid_rows:
+- skipped_rows_by_reason:
+- carry_audit_status:
+- real_wallet_payout_enabled:
+- max_sends:
 - action needed:
 Next:
 ```
 
 ## Current Standing Rule
 
-If auto payment is enabled, do not manually pay small ready items.
-Manual intervention is only for growing backlog, coinbase mismatch, or confirmed missing-attribution buildup.
+If auto payment is enabled, do not manually pay small ready items. Manual intervention is only for growing normal-auto backlog, coinbase mismatch, confirmed missing-attribution buildup, or classifier/audit warnings.
