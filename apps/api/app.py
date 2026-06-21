@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import urllib.request
-import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
@@ -14,100 +14,6 @@ from waitress import serve
 
 from config import AppConfig, load_config
 from store import SnapshotRecord, SnapshotStore, SnapshotUnavailableError
-
-
-def parse_price_defensively(data: Any) -> float | None:
-    if not data:
-        return None
-    if isinstance(data, list):
-        if len(data) > 0:
-            data = data[0]
-        else:
-            return None
-    if not isinstance(data, dict):
-        return None
-
-    # Unpack nested ticker/data if present
-    if "ticker" in data and isinstance(data["ticker"], dict):
-        data = data["ticker"]
-    elif "data" in data and isinstance(data["data"], dict):
-        data = data["data"]
-
-    for key in ["last_price", "last", "price"]:
-        if key in data and data[key] is not None:
-            try:
-                return float(data[key])
-            except (ValueError, TypeError):
-                pass
-
-    # Try bid/ask midpoint
-    bid = None
-    ask = None
-    for key in ["bid", "buy"]:
-        if key in data and data[key] is not None:
-            try:
-                bid = float(data[key])
-                break
-            except (ValueError, TypeError):
-                pass
-    for key in ["ask", "sell"]:
-        if key in data and data[key] is not None:
-            try:
-                ask = float(data[key])
-                break
-            except (ValueError, TypeError):
-                pass
-
-    if bid is not None and ask is not None:
-        return (bid + ask) / 2.0
-
-    return None
-
-
-class PriceCache:
-    def __init__(self, cache_ttl_seconds: int = 120) -> None:
-        self.cache_ttl_seconds = cache_ttl_seconds
-        self.price: float | None = None
-        self.updated_at: str | None = None
-        self.last_fetch_success: float = 0.0
-        self.last_fetch_attempt: float = 0.0
-        self.lock = threading.Lock()
-
-    def get_price_info(self) -> dict[str, Any]:
-        now = time.time()
-        with self.lock:
-            should_fetch = (now - self.last_fetch_success >= self.cache_ttl_seconds) and (now - self.last_fetch_attempt >= 10.0)
-            if should_fetch:
-                self.last_fetch_attempt = now
-
-        if should_fetch:
-            try:
-                req = urllib.request.Request(
-                    "https://api.nonkyc.io/api/v2/ticker/PEPEW_USDT",
-                    headers={"User-Agent": "pepepow-pool-api/0.1.0"}
-                )
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    raw_data = response.read().decode("utf-8")
-                    data = json.loads(raw_data)
-                    new_price = parse_price_defensively(data)
-                    if new_price is not None:
-                        new_updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                        with self.lock:
-                            self.price = new_price
-                            self.updated_at = new_updated_at
-                            self.last_fetch_success = now
-            except Exception as e:
-                print(f"Error fetching PEPEW price from NonKYC: {e}")
-
-        with self.lock:
-            return {
-                "symbol": "PEPEW_USDT",
-                "price": self.price,
-                "source": "nonkyc",
-                "updatedAt": self.updated_at,
-                "cacheSeconds": self.cache_ttl_seconds
-            }
-
 
 
 LOCAL_SERVICE_BASELINE = {
@@ -129,6 +35,95 @@ OPERATOR_STATUS_ITEMS = (
 PUBLIC_STATUSES = {"ok", "warning", "error", "unknown"}
 
 
+def parse_price_defensively(data: Any) -> float | None:
+    if not data:
+        return None
+    if isinstance(data, list):
+        if not data:
+            return None
+        data = data[0]
+    if not isinstance(data, dict):
+        return None
+
+    if isinstance(data.get("ticker"), dict):
+        data = data["ticker"]
+    elif isinstance(data.get("data"), dict):
+        data = data["data"]
+
+    for key in ("last_price", "last", "price"):
+        if data.get(key) is not None:
+            try:
+                return float(data[key])
+            except (TypeError, ValueError):
+                pass
+
+    bid = None
+    ask = None
+    for key in ("bid", "buy"):
+        if data.get(key) is not None:
+            try:
+                bid = float(data[key])
+                break
+            except (TypeError, ValueError):
+                pass
+    for key in ("ask", "sell"):
+        if data.get(key) is not None:
+            try:
+                ask = float(data[key])
+                break
+            except (TypeError, ValueError):
+                pass
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+    return None
+
+
+class PriceCache:
+    def __init__(self, cache_ttl_seconds: int = 120) -> None:
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self.price: float | None = None
+        self.updated_at: str | None = None
+        self.last_fetch_success = 0.0
+        self.last_fetch_attempt = 0.0
+        self.lock = threading.Lock()
+
+    def get_price_info(self) -> dict[str, Any]:
+        now = time.time()
+        with self.lock:
+            should_fetch = (
+                now - self.last_fetch_success >= self.cache_ttl_seconds
+                and now - self.last_fetch_attempt >= 10.0
+            )
+            if should_fetch:
+                self.last_fetch_attempt = now
+
+        if should_fetch:
+            try:
+                req = urllib.request.Request(
+                    "https://api.nonkyc.io/api/v2/ticker/PEPEW_USDT",
+                    headers={"User-Agent": "pepepow-pool-api/0.1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                new_price = parse_price_defensively(data)
+                if new_price is not None:
+                    with self.lock:
+                        self.price = new_price
+                        self.updated_at = _now_iso()
+                        self.last_fetch_success = now
+            except Exception as exc:
+                print(f"Error fetching PEPEW price from NonKYC: {exc}")
+
+        with self.lock:
+            return {
+                "symbol": "PEPEW_USDT",
+                "price": self.price,
+                "source": "nonkyc",
+                "updatedAt": self.updated_at,
+                "cacheSeconds": self.cache_ttl_seconds,
+            }
+
+
 def create_app(config: AppConfig | None = None) -> Flask:
     app_config = config or load_config()
     app = Flask(__name__)
@@ -145,14 +140,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     wallet_pattern = re.compile(app_config.allowed_wallet_pattern)
 
     def json_error(status: HTTPStatus, message: str):
-        response = jsonify(
-            {
-                "error": {
-                    "code": status.value,
-                    "message": message,
-                }
-            }
-        )
+        response = jsonify({"error": {"code": status.value, "message": message}})
         response.status_code = status.value
         return response
 
@@ -175,12 +163,11 @@ def create_app(config: AppConfig | None = None) -> Flask:
     @app.get("/api/health")
     def health():
         record = get_snapshot_record()
-        status = "ok" if not record.degraded else "degraded"
         return jsonify(
             {
                 "service": app_config.app_name,
                 "localServiceBaseline": LOCAL_SERVICE_BASELINE,
-                "status": status,
+                "status": "ok" if not record.degraded else "degraded",
                 "version": app_config.version,
                 "mode": "snapshot",
                 "generatedAt": record.generated_at,
@@ -191,36 +178,24 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "daemonReachable": bool(record.meta.get("daemonReachable", False)),
                 "blockFeedKind": record.meta.get("blockFeedKind", "unknown"),
                 "chainState": record.meta.get("chainState", "unknown"),
-                "chainVerificationProgress": record.meta.get(
-                    "chainVerificationProgress"
-                ),
+                "chainVerificationProgress": record.meta.get("chainVerificationProgress"),
                 "activityMode": record.meta.get("activityMode"),
                 "activityDataSource": record.meta.get("activityDataSource"),
                 "activityDataStatus": record.meta.get("activityDataStatus"),
                 "activityWindowSeconds": record.meta.get("activityWindowSeconds"),
                 "activityLastShareAt": record.meta.get("activityLastShareAt"),
                 "activityWarningCount": record.meta.get("activityWarningCount"),
-                "activityDerivedFromShares": record.meta.get(
-                    "activityDerivedFromShares"
-                ),
+                "activityDerivedFromShares": record.meta.get("activityDerivedFromShares"),
                 "blockchainVerified": record.meta.get("blockchainVerified"),
                 "templateModeConfigured": record.meta.get("templateModeConfigured"),
                 "templateModeEffective": record.meta.get("templateModeEffective"),
-                "templateDaemonRpcStatus": record.meta.get(
-                    "templateDaemonRpcStatus"
-                ),
-                "templateDaemonRpcReachable": record.meta.get(
-                    "templateDaemonRpcReachable"
-                ),
+                "templateDaemonRpcStatus": record.meta.get("templateDaemonRpcStatus"),
+                "templateDaemonRpcReachable": record.meta.get("templateDaemonRpcReachable"),
                 "templateFetchStatus": record.meta.get("templateFetchStatus"),
                 "templateLastAttemptAt": record.meta.get("templateLastAttemptAt"),
                 "templateLastSuccessAt": record.meta.get("templateLastSuccessAt"),
-                "templateLatestTemplateAgeSeconds": record.meta.get(
-                    "templateLatestTemplateAgeSeconds"
-                ),
-                "templateLatestTemplateAnchor": record.meta.get(
-                    "templateLatestTemplateAnchor"
-                ),
+                "templateLatestTemplateAgeSeconds": record.meta.get("templateLatestTemplateAgeSeconds"),
+                "templateLatestTemplateAnchor": record.meta.get("templateLatestTemplateAnchor"),
                 "templateLastError": record.meta.get("templateLastError"),
                 "activeJobCount": record.meta.get("activeJobCount"),
                 "assumedShareDifficulty": record.meta.get("assumedShareDifficulty"),
@@ -228,54 +203,22 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "submitValidationMode": record.meta.get("submitValidationMode"),
                 "submitHashValidCount": record.meta.get("submitHashValidCount"),
                 "submitHashInvalidCount": record.meta.get("submitHashInvalidCount"),
-                "submitDuplicateWindowSize": record.meta.get(
-                    "submitDuplicateWindowSize"
-                ),
-                "submitCandidatePossibleCount": record.meta.get(
-                    "submitCandidatePossibleCount"
-                ),
-                "shareHashValidationMode": record.meta.get(
-                    "shareHashValidationMode"
-                ),
-                "realSubmitblockEnabled": record.meta.get(
-                    "realSubmitblockEnabled"
-                ),
-                "realSubmitblockSendBudget": record.meta.get(
-                    "realSubmitblockSendBudget"
-                ),
-                "realSubmitblockSendBudgetRemaining": record.meta.get(
-                    "realSubmitblockSendBudgetRemaining"
-                ),
-                "realSubmitblockAttemptCount": record.meta.get(
-                    "realSubmitblockAttemptCount"
-                ),
-                "realSubmitblockSentCount": record.meta.get(
-                    "realSubmitblockSentCount"
-                ),
-                "realSubmitblockErrorCount": record.meta.get(
-                    "realSubmitblockErrorCount"
-                ),
-                "realSubmitblockLastStatus": record.meta.get(
-                    "realSubmitblockLastStatus"
-                ),
-                "realSubmitblockLastAttemptAt": record.meta.get(
-                    "realSubmitblockLastAttemptAt"
-                ),
-                "realSubmitblockLastError": record.meta.get(
-                    "realSubmitblockLastError"
-                ),
-                "submitClassificationCounts": record.meta.get(
-                    "submitClassificationCounts"
-                ),
-                "submitRejectReasonCounts": record.meta.get(
-                    "submitRejectReasonCounts"
-                ),
-                "submitTargetValidationCounts": record.meta.get(
-                    "submitTargetValidationCounts"
-                ),
-                "submitShareHashValidationCounts": record.meta.get(
-                    "submitShareHashValidationCounts"
-                ),
+                "submitDuplicateWindowSize": record.meta.get("submitDuplicateWindowSize"),
+                "submitCandidatePossibleCount": record.meta.get("submitCandidatePossibleCount"),
+                "shareHashValidationMode": record.meta.get("shareHashValidationMode"),
+                "realSubmitblockEnabled": record.meta.get("realSubmitblockEnabled"),
+                "realSubmitblockSendBudget": record.meta.get("realSubmitblockSendBudget"),
+                "realSubmitblockSendBudgetRemaining": record.meta.get("realSubmitblockSendBudgetRemaining"),
+                "realSubmitblockAttemptCount": record.meta.get("realSubmitblockAttemptCount"),
+                "realSubmitblockSentCount": record.meta.get("realSubmitblockSentCount"),
+                "realSubmitblockErrorCount": record.meta.get("realSubmitblockErrorCount"),
+                "realSubmitblockLastStatus": record.meta.get("realSubmitblockLastStatus"),
+                "realSubmitblockLastAttemptAt": record.meta.get("realSubmitblockLastAttemptAt"),
+                "realSubmitblockLastError": record.meta.get("realSubmitblockLastError"),
+                "submitClassificationCounts": record.meta.get("submitClassificationCounts"),
+                "submitRejectReasonCounts": record.meta.get("submitRejectReasonCounts"),
+                "submitTargetValidationCounts": record.meta.get("submitTargetValidationCounts"),
+                "submitShareHashValidationCounts": record.meta.get("submitShareHashValidationCounts"),
                 "runtimeSnapshotPath": str(app_config.runtime_snapshot_path),
                 "fallbackSnapshotPath": str(app_config.fallback_snapshot_path),
                 "activitySnapshotPath": str(app_config.activity_snapshot_path),
@@ -287,38 +230,40 @@ def create_app(config: AppConfig | None = None) -> Flask:
     def pool_summary():
         record = get_snapshot_record()
         payload = dict(record.data["pool"])
-        payload["dataStatus"] = record.data_status
-        payload["placeholderFields"] = _placeholder_fields(record.data)
-        payload["snapshotSource"] = record.source
-        payload["generatedAt"] = record.generated_at
-        payload["activityMode"] = record.meta.get("activityMode")
-        payload["activityDataStatus"] = record.meta.get("activityDataStatus")
-        payload["activityWindowSeconds"] = record.meta.get("activityWindowSeconds")
-        payload["activityDerivedFromShares"] = record.meta.get(
-            "activityDerivedFromShares"
+        payload.update(
+            {
+                "dataStatus": record.data_status,
+                "placeholderFields": _placeholder_fields(record.data),
+                "snapshotSource": record.source,
+                "generatedAt": record.generated_at,
+                "activityMode": record.meta.get("activityMode"),
+                "activityDataStatus": record.meta.get("activityDataStatus"),
+                "activityWindowSeconds": record.meta.get("activityWindowSeconds"),
+                "activityDerivedFromShares": record.meta.get("activityDerivedFromShares"),
+                "blockchainVerified": record.meta.get("blockchainVerified"),
+                "templateModeEffective": record.meta.get("templateModeEffective"),
+                "activeJobCount": record.meta.get("activeJobCount"),
+                "assumedShareDifficulty": record.meta.get("assumedShareDifficulty"),
+                "hashratePolicy": record.meta.get("hashratePolicy"),
+            }
         )
-        payload["blockchainVerified"] = record.meta.get("blockchainVerified")
-        payload["templateModeEffective"] = record.meta.get("templateModeEffective")
-        payload["activeJobCount"] = record.meta.get("activeJobCount")
-        payload["assumedShareDifficulty"] = record.meta.get(
-            "assumedShareDifficulty"
-        )
-        payload["hashratePolicy"] = record.meta.get("hashratePolicy")
         return jsonify(payload)
 
     @app.get("/api/network/summary")
     def network_summary():
         record = get_snapshot_record()
         payload = dict(record.data["network"])
-        payload["dataStatus"] = record.data_status
-        payload["placeholderFields"] = _placeholder_fields(record.data)
-        payload["snapshotSource"] = record.source
-        payload["generatedAt"] = record.generated_at
-        payload["chainState"] = record.meta.get("chainState")
-        payload["chainVerificationProgress"] = record.meta.get(
-            "chainVerificationProgress"
+        payload.update(
+            {
+                "dataStatus": record.data_status,
+                "placeholderFields": _placeholder_fields(record.data),
+                "snapshotSource": record.source,
+                "generatedAt": record.generated_at,
+                "chainState": record.meta.get("chainState"),
+                "chainVerificationProgress": record.meta.get("chainVerificationProgress"),
+                "blockFeedKind": record.meta.get("blockFeedKind"),
+            }
         )
-        payload["blockFeedKind"] = record.meta.get("blockFeedKind")
         return jsonify(payload)
 
     @app.get("/api/hashrate/history")
@@ -328,7 +273,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
         _append_hashrate_history_sample(history, record)
         return jsonify(
             {
-                "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "generatedAt": _now_iso(),
                 "maxAgeSeconds": HASHRATE_HISTORY_MAX_AGE_SECONDS,
                 "maxPoints": HASHRATE_HISTORY_MAX_POINTS,
                 "pool": history["pool"],
@@ -351,83 +296,35 @@ def create_app(config: AppConfig | None = None) -> Flask:
 
     @app.get("/api/accepted-candidates")
     def accepted_candidates():
-        import json
-        path = app_config.activity_snapshot_path.parent / "accepted-candidates.json"
-        if not path.exists():
-            path = app_config.runtime_snapshot_path.parent / "accepted-candidates.json"
-        if not path.exists():
-            return jsonify({"items": []})
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            candidates = data.get("accepted_candidates", [])
-        except Exception:
-            return jsonify({"items": []})
-
         items = []
-        for c in candidates:
-            items.append({
-                "candidateHash": c.get("candidate_hash"),
-                "jobId": c.get("job_id"),
-                "submitTimestamp": c.get("submit_timestamp"),
-                "submitblockDaemonResult": c.get("daemon_result"),
-                "followupStatus": c.get("followup_status"),
-                "matchedHeight": c.get("matched_height"),
-                "matchedBlockHash": c.get("matched_block_hash"),
-                "lifecycleStatus": c.get("lifecycle_status"),
-                "confirmations": c.get("confirmations"),
-                "maturityLabel": c.get("maturity_label"),
-            })
+        for c in _load_json_items(
+            app_config.activity_snapshot_path.parent / "accepted-candidates.json",
+            app_config.runtime_snapshot_path.parent / "accepted-candidates.json",
+            "accepted_candidates",
+        ):
+            items.append(
+                {
+                    "candidateHash": c.get("candidate_hash"),
+                    "jobId": c.get("job_id"),
+                    "submitTimestamp": c.get("submit_timestamp"),
+                    "submitblockDaemonResult": c.get("daemon_result"),
+                    "followupStatus": c.get("followup_status"),
+                    "matchedHeight": c.get("matched_height"),
+                    "matchedBlockHash": c.get("matched_block_hash"),
+                    "lifecycleStatus": c.get("lifecycle_status"),
+                    "confirmations": c.get("confirmations"),
+                    "maturityLabel": c.get("maturity_label"),
+                }
+            )
         return jsonify({"items": items})
 
     @app.get("/api/rounds")
     def rounds():
-        import json
-        from pathlib import Path
-        path = app_config.activity_snapshot_path.parent / "rounds-snapshot.json"
-        if not path.exists():
-            path = app_config.runtime_snapshot_path.parent / "rounds-snapshot.json"
-        if not path.exists():
-            return jsonify({"items": []})
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            rounds_list = data.get("rounds", [])
-        except Exception:
-            return jsonify({"items": []})
-
-        def map_shares(shares_dict: dict[str, Any]) -> dict[str, Any]:
-            mapped = {}
-            for wallet, data in shares_dict.items():
-                if isinstance(data, dict):
-                    wallet_mapped = {
-                        "shareCount": data.get("share_count"),
-                        "shareScore": data.get("share_score"),
-                        "sharePercent": data.get("share_percent"),
-                    }
-                    if "workers" in data and isinstance(data["workers"], dict):
-                        workers_mapped = {}
-                        for worker, w_data in data["workers"].items():
-                            if isinstance(w_data, dict):
-                                workers_mapped[worker] = {
-                                    "shareCount": w_data.get("share_count"),
-                                    "shareScore": w_data.get("share_score"),
-                                    "sharePercent": w_data.get("share_percent"),
-                                    "walletSharePercent": w_data.get("wallet_share_percent"),
-                                }
-                            else:
-                                workers_mapped[worker] = w_data
-                        wallet_mapped["workers"] = workers_mapped
-                    mapped[wallet] = wallet_mapped
-                else:
-                    # Fallback for legacy format
-                    mapped[wallet] = {
-                        "shareCount": None,
-                        "shareScore": data,
-                        "sharePercent": None,
-                    }
-            return mapped
-
+        rounds_list = _load_json_items(
+            app_config.activity_snapshot_path.parent / "rounds-snapshot.json",
+            app_config.runtime_snapshot_path.parent / "rounds-snapshot.json",
+            "rounds",
+        )
         items = []
         for r in rounds_list:
             item = {
@@ -444,167 +341,70 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "totalShareScore": r.get("total_share_score", 0.0),
                 "walletCount": r.get("wallet_count", len(r.get("shares", {}))),
                 "workerCount": r.get("worker_count", 0),
-                "shares": map_shares(r.get("shares", {})),
+                "shares": _map_round_shares(r.get("shares", {})),
             }
             if "payable" in r:
                 item["payable"] = r["payable"]
             items.append(item)
-
         items.reverse()
-        items = items[:50]
-        return jsonify({"items": items})
+        return jsonify({"items": items[:50]})
 
     @app.get("/api/operator-status")
     def operator_status():
-        import json
-        path = app_config.activity_snapshot_path.parent / "operator-status.json"
-        if not path.exists():
-            path = app_config.runtime_snapshot_path.parent / "operator-status.json"
-        if not path.exists():
-            return jsonify(_unknown_operator_status_payload())
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return jsonify(_unknown_operator_status_payload())
+        data = _load_json_dict(
+            app_config.activity_snapshot_path.parent / "operator-status.json",
+            app_config.runtime_snapshot_path.parent / "operator-status.json",
+        )
         return jsonify(_sanitize_operator_status_payload(data))
 
     @app.get("/api/payments")
     def payments():
-        import json
-        path = app_config.activity_snapshot_path.parent / "payments-snapshot.json"
-        if not path.exists():
-            path = app_config.runtime_snapshot_path.parent / "payments-snapshot.json"
-        if not path.exists():
-            return jsonify({"items": []})
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and "items" in data:
-                return jsonify(data)
-            return jsonify({"items": []})
-        except Exception:
-            return jsonify({"items": []})
+        data = _load_json_dict(
+            app_config.activity_snapshot_path.parent / "payments-snapshot.json",
+            app_config.runtime_snapshot_path.parent / "payments-snapshot.json",
+        )
+        if isinstance(data.get("items"), list):
+            return jsonify(data)
+        return jsonify({"items": []})
 
     @app.get("/api/miner/<wallet>")
     def miner(wallet: str):
         if not wallet_pattern.fullmatch(wallet):
             return json_error(HTTPStatus.BAD_REQUEST, "Wallet format is invalid")
 
-        def payment_sort_key(item: dict[str, Any]) -> str:
-            return str(item.get("paidAt") or item.get("timestamp") or "")
-
-        def first_present(item: dict[str, Any], *keys: str) -> Any:
-            for key in keys:
-                value = item.get(key)
-                if value is not None:
-                    return value
-            return None
-
-        def normalize_payment_item(item: dict[str, Any]) -> dict[str, Any]:
-            paid_at = item.get("paidAt") or item.get("timestamp")
-            timestamp = item.get("timestamp") or item.get("paidAt")
-            return {
-                "paidAt": paid_at,
-                "timestamp": timestamp,
-                "amount": item.get("amount"),
-                "txid": item.get("txid"),
-                "wallet": item.get("wallet"),
-                "candidateId": item.get("candidateId") or item.get("candidate_id"),
-                "blockHeight": first_present(item, "blockHeight", "height", "matchedHeight", "block_height"),
-                "blockHeights": item.get("blockHeights") or item.get("block_heights"),
-                "blockHeightRange": item.get("blockHeightRange") or item.get("block_height_range"),
-                "blockCount": item.get("blockCount") or item.get("sourceCount") or item.get("source_count"),
-                "sourceCandidateIds": item.get("sourceCandidateIds") or item.get("source_candidate_ids"),
-                "blockHash": item.get("blockHash"),
-                "status": item.get("status"),
-                "confirmations": first_present(item, "confirmations", "confirms", "txConfirmations", "candidateConfirmations"),
-                "note": item.get("note"),
-            }
-
-        # Load recorded manual payments from payments-snapshot.json
-        recent_payments = []
-        total_paid_manual = 0.0
-
-        import json
-        payments_path = app_config.activity_snapshot_path.parent / "payments-snapshot.json"
-        if not payments_path.exists():
-            payments_path = app_config.runtime_snapshot_path.parent / "payments-snapshot.json"
-
-        if payments_path.exists():
-            try:
-                with payments_path.open("r", encoding="utf-8") as f:
-                    payments_data = json.load(f)
-                if isinstance(payments_data, dict) and isinstance(payments_data.get("items"), list):
-                    for item in payments_data["items"]:
-                        if isinstance(item, dict) and item.get("wallet") == wallet:
-                            recent_payments.append(normalize_payment_item(item))
-                            try:
-                                total_paid_manual += float(item.get("amount", 0.0))
-                            except (ValueError, TypeError):
-                                pass
-            except Exception:
-                pass
-        recent_payments.sort(key=payment_sort_key, reverse=True)
-        recent_payments = recent_payments[:50]
-
+        recent_payments, total_paid_manual = _recent_payments_for_wallet(
+            wallet,
+            app_config.activity_snapshot_path.parent / "payments-snapshot.json",
+            app_config.runtime_snapshot_path.parent / "payments-snapshot.json",
+        )
         record = get_snapshot_record()
+        base = {
+            "wallet": wallet,
+            "payments": [],
+            "recentPayments": recent_payments,
+            "totalPaidManual": total_paid_manual,
+            "dataStatus": record.data_status,
+            "activityMode": record.meta.get("activityMode"),
+            "activityDataStatus": record.meta.get("activityDataStatus"),
+        }
         if not bool(record.meta.get("minerLookupImplemented", False)):
-            return jsonify(
-                {
-                    "found": False,
-                    "wallet": wallet,
-                    "summary": None,
-                    "workers": [],
-                    "payments": [],
-                    "recentPayments": recent_payments,
-                    "totalPaidManual": total_paid_manual,
-                    "implemented": False,
-                    "status": "not-implemented",
-                    "dataStatus": record.data_status,
-                    "activityMode": record.meta.get("activityMode"),
-                    "activityDataStatus": record.meta.get("activityDataStatus"),
-                }
-            )
+            return jsonify({**base, "found": False, "summary": None, "workers": [], "implemented": False, "status": "not-implemented"})
 
         miners = record.data.get("miners", {})
-        miner_record = miners.get(wallet)
-
+        miner_record = miners.get(wallet) if isinstance(miners, dict) else None
         if miner_record is None:
-            return jsonify(
-                {
-                    "found": False,
-                    "wallet": wallet,
-                    "summary": None,
-                    "workers": [],
-                    "payments": [],
-                    "recentPayments": recent_payments,
-                    "totalPaidManual": total_paid_manual,
-                    "implemented": True,
-                    "status": "ok",
-                    "dataStatus": record.data_status,
-                    "activityMode": record.meta.get("activityMode"),
-                    "activityDataStatus": record.meta.get("activityDataStatus"),
-                }
-            )
+            return jsonify({**base, "found": False, "summary": None, "workers": [], "implemented": True, "status": "ok"})
 
         return jsonify(
             {
+                **base,
                 "found": True,
-                "wallet": wallet,
                 "summary": miner_record.get("summary", {}),
                 "workers": miner_record.get("workers", []),
                 "payments": miner_record.get("payments", []),
-                "recentPayments": recent_payments,
-                "totalPaidManual": total_paid_manual,
                 "implemented": True,
                 "status": "ok",
-                "dataStatus": record.data_status,
-                "activityMode": record.meta.get("activityMode"),
-                "activityDataStatus": record.meta.get("activityDataStatus"),
-                "activityDerivedFromShares": record.meta.get(
-                    "activityDerivedFromShares"
-                ),
+                "activityDerivedFromShares": record.meta.get("activityDerivedFromShares"),
                 "blockchainVerified": record.meta.get("blockchainVerified"),
                 "hashratePolicy": record.meta.get("hashratePolicy"),
             }
@@ -662,104 +462,42 @@ def create_app(config: AppConfig | None = None) -> Flask:
     return app
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _placeholder_fields(snapshot: dict[str, Any]) -> list[str]:
     meta = snapshot.get("meta", {})
-    placeholder_fields = meta.get("placeholderFields", [])
-    if isinstance(placeholder_fields, list):
-        return [field for field in placeholder_fields if isinstance(field, str)]
-    return []
+    fields = meta.get("placeholderFields", [])
+    return [field for field in fields if isinstance(field, str)] if isinstance(fields, list) else []
 
 
-def _load_json_items(primary_path, fallback_path, item_key: str) -> list[dict[str, Any]]:
+def _load_json_dict(primary_path, fallback_path) -> dict[str, Any]:
     path = primary_path if primary_path.exists() else fallback_path
     if not path.exists():
-        return []
+        return {}
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_json_items(primary_path, fallback_path, item_key: str) -> list[dict[str, Any]]:
+    data = _load_json_dict(primary_path, fallback_path)
     items = data.get(item_key, [])
     if not isinstance(items, list):
         return []
     return [item for item in items if isinstance(item, dict)]
 
 
-def _unknown_operator_status_payload() -> dict[str, Any]:
-    return {
-        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "status": "unknown",
-        "items": [
-            {
-                "key": key,
-                "label": label,
-                "status": "unknown",
-                "message": message,
-            }
-            for key, label, message in OPERATOR_STATUS_ITEMS
-        ],
-    }
-
-
-def _safe_public_status(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    return text if text in PUBLIC_STATUSES else "unknown"
-
-
-def _safe_public_message(value: Any, fallback: str) -> str:
-    if not isinstance(value, str):
-        return fallback
-    text = value.strip()
-    if text in {
-        "Snapshots fresh",
-        "Snapshot delayed",
-        "Pool health review",
-        "Status unavailable",
-        "Wallet growth normal",
-        "Review wallet growth",
-        "Wallet balance unavailable",
-        "Explorer balance timeout",
-        "Payments consistent",
-        "Payment records need review",
-    }:
-        return text
-    return fallback
-
-
-def _sanitize_operator_status_payload(data: Any) -> dict[str, Any]:
-    unknown = _unknown_operator_status_payload()
-    if not isinstance(data, dict):
-        return unknown
-    by_key = {}
-    raw_items = data.get("items")
-    if isinstance(raw_items, list):
-        for item in raw_items:
-            if isinstance(item, dict) and isinstance(item.get("key"), str):
-                by_key[item["key"]] = item
-
-    items = []
-    for key, label, fallback_message in OPERATOR_STATUS_ITEMS:
-        item = by_key.get(key, {})
-        item_status = _safe_public_status(item.get("status") if isinstance(item, dict) else None)
-        items.append(
-            {
-                "key": key,
-                "label": label,
-                "status": item_status,
-                "message": _safe_public_message(
-                    item.get("message") if isinstance(item, dict) else None,
-                    fallback_message,
-                ),
-            }
-        )
-
-    return {
-        "generatedAt": data.get("generatedAt") if isinstance(data.get("generatedAt"), str) else unknown["generatedAt"],
-        "status": _safe_public_status(data.get("status")),
-        "items": items,
-    }
+def _first_present(item: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -877,7 +615,6 @@ def _active_miner_workers(record: SnapshotRecord | None) -> dict[str, dict[str, 
     miners = record.data.get("miners", {})
     if not isinstance(miners, dict):
         return {}
-
     workers: dict[str, dict[str, Any]] = {}
     for wallet, miner_data in miners.items():
         if not isinstance(wallet, str) or not isinstance(miner_data, dict):
@@ -886,12 +623,9 @@ def _active_miner_workers(record: SnapshotRecord | None) -> dict[str, dict[str, 
             if not isinstance(worker, dict):
                 continue
             worker_name = str(worker.get("name") or "default")
-            key = f"{wallet}.{worker_name}"
             hashrate = _as_float(worker.get("hashrate"))
-            share_count = _as_float(
-                worker.get("shareCount", worker.get("acceptedShares", 0.0))
-            )
-            workers[key] = {
+            share_count = _as_float(worker.get("shareCount", worker.get("acceptedShares", 0.0)))
+            workers[f"{wallet}.{worker_name}"] = {
                 "shares": share_count,
                 "invalidshares": 0,
                 "hashrateString": _format_hashrate(hashrate),
@@ -918,18 +652,96 @@ def _share_counts(record: SnapshotRecord | None) -> tuple[int, int]:
     return accepted, rejected
 
 
+def _normalize_block_status(candidate: dict[str, Any]) -> str:
+    status = str(_first_present(candidate, "lifecycle_status", "lifecycleStatus") or "").lower()
+    maturity = str(_first_present(candidate, "maturity_label", "maturityLabel") or "").lower()
+    followup = str(_first_present(candidate, "followup_status", "followupStatus") or "").lower()
+    if status == "confirmed" or maturity == "mature":
+        return "confirmed"
+    if status == "orphan" or "orphan" in maturity or "orphan" in followup:
+        return "orphan"
+    if status in {"immature", "chain_match_found", "submit_accepted"} or maturity == "immature":
+        return "immature"
+    return "pending"
+
+
 def _block_counts(accepted_candidates: list[dict[str, Any]]) -> dict[str, int]:
     counts = {"pending": 0, "confirmed": 0, "orphaned": 0}
     for candidate in accepted_candidates:
-        status = str(candidate.get("lifecycle_status") or candidate.get("lifecycleStatus") or "").lower()
-        maturity = str(candidate.get("maturity_label") or candidate.get("maturityLabel") or "").lower()
-        if status == "confirmed" or maturity == "mature":
+        status = _normalize_block_status(candidate)
+        if status == "confirmed":
             counts["confirmed"] += 1
-        elif status == "orphan" or "orphan" in maturity:
+        elif status == "orphan":
             counts["orphaned"] += 1
-        elif status:
+        else:
             counts["pending"] += 1
     return counts
+
+
+def _pool_block_records(accepted_candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blocks = []
+    for candidate in accepted_candidates:
+        height_value = _first_present(candidate, "matched_height", "matchedHeight", "height")
+        height = None if height_value is None else _as_int(height_value, -1)
+        if height == -1:
+            height = None
+        block_hash = _first_present(
+            candidate,
+            "matched_block_hash",
+            "matchedBlockHash",
+            "blockHash",
+            "candidate_hash",
+            "candidateHash",
+        )
+        timestamp = _first_present(candidate, "submit_timestamp", "submitTimestamp", "timestamp", "time")
+        if height is None and not block_hash:
+            continue
+        blocks.append(
+            {
+                "height": height,
+                "hash": block_hash,
+                "time": timestamp,
+                "timeUnix": _parse_time_ms(timestamp) // 1000 if timestamp else None,
+                "status": _normalize_block_status(candidate),
+                "confirmations": _as_int(_first_present(candidate, "confirmations", "confirms"), 0),
+            }
+        )
+    blocks.sort(
+        key=lambda item: (
+            item["height"] if isinstance(item.get("height"), int) else -1,
+            item["timeUnix"] if isinstance(item.get("timeUnix"), int) else -1,
+        ),
+        reverse=True,
+    )
+    return blocks[:100]
+
+
+def _current_chain_height(record: SnapshotRecord | None) -> int | None:
+    if record is None:
+        return None
+    network = record.data.get("network", {})
+    if not isinstance(network, dict):
+        return None
+    for key in ("height", "blockHeight", "currentHeight"):
+        if network.get(key) is not None:
+            return _as_int(network.get(key), -1)
+    return None
+
+
+def _blocks_last_100(record: SnapshotRecord | None, recent_blocks: list[dict[str, Any]]) -> int:
+    current_height = _current_chain_height(record)
+    if current_height is None or current_height < 0:
+        return len([block for block in recent_blocks[:100] if block.get("status") != "orphan"])
+    lower_bound = current_height - 99
+    return len(
+        [
+            block
+            for block in recent_blocks
+            if block.get("status") != "orphan"
+            and isinstance(block.get("height"), int)
+            and block["height"] >= lower_bound
+        ]
+    )
 
 
 def _total_paid(payments: list[dict[str, Any]]) -> float:
@@ -948,16 +760,42 @@ def _build_mining_pool_stats_payload(
     active_workers = _active_worker_count(record)
     accepted_shares, rejected_shares = _share_counts(record)
     block_counts = _block_counts(accepted_candidates)
+    recent_blocks = _pool_block_records(accepted_candidates)
+    last_block = recent_blocks[0] if recent_blocks else {}
+    block_fields = {
+        "recentBlocks": recent_blocks,
+        "lastBlockHeight": last_block.get("height"),
+        "lastBlockHash": last_block.get("hash"),
+        "lastBlockTime": last_block.get("time"),
+        "lastBlockTimeUnix": last_block.get("timeUnix"),
+        "blocksLast100": _blocks_last_100(record, recent_blocks),
+    }
     total_paid = _total_paid(payments)
     workers = _active_miner_workers(record)
     hashrate_string = _format_hashrate(pool_hashrate)
-
+    pool_payload = {
+        "name": "hoohashv110-pepew",
+        "symbol": "PEPEW",
+        "algorithm": "hoohashv110",
+        "fee": "1",
+        "feeType": "PPLNS",
+        "poolStats": {
+            "validShares": str(accepted_shares),
+            "validBlocks": str(block_counts["confirmed"]),
+            "invalidShares": str(rejected_shares),
+            "totalPaid": str(total_paid),
+        },
+        "blocks": block_counts,
+        "workers": workers,
+        "hashrate": pool_hashrate,
+        "workerCount": active_workers,
+        "hashrateString": hashrate_string,
+        **block_fields,
+    }
     return {
         "time": int(time.time()),
-        "global": {
-            "workers": active_workers,
-            "hashrate": pool_hashrate,
-        },
+        **block_fields,
+        "global": {"workers": active_workers, "hashrate": pool_hashrate},
         "algos": {
             "hoohashv110": {
                 "workers": active_workers,
@@ -965,27 +803,140 @@ def _build_mining_pool_stats_payload(
                 "hashrateString": hashrate_string,
             }
         },
-        "pools": {
-            "hoohashv110-pepew": {
-                "name": "hoohashv110-pepew",
-                "symbol": "PEPEW",
-                "algorithm": "hoohashv110",
-                "fee": "1",
-                "feeType": "PPLNS",
-                "poolStats": {
-                    "validShares": str(accepted_shares),
-                    "validBlocks": str(block_counts["confirmed"]),
-                    "invalidShares": str(rejected_shares),
-                    "totalPaid": str(total_paid),
-                },
-                "blocks": block_counts,
-                "workers": workers,
-                "hashrate": pool_hashrate,
-                "workerCount": active_workers,
-                "hashrateString": hashrate_string,
-            }
-        },
+        "pools": {"hoohashv110-pepew": pool_payload},
     }
+
+
+def _unknown_operator_status_payload() -> dict[str, Any]:
+    return {
+        "generatedAt": _now_iso(),
+        "status": "unknown",
+        "items": [
+            {"key": key, "label": label, "status": "unknown", "message": message}
+            for key, label, message in OPERATOR_STATUS_ITEMS
+        ],
+    }
+
+
+def _safe_public_status(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in PUBLIC_STATUSES else "unknown"
+
+
+def _safe_public_message(value: Any, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if text in {
+        "Snapshots fresh",
+        "Snapshot delayed",
+        "Pool health review",
+        "Status unavailable",
+        "Wallet growth normal",
+        "Review wallet growth",
+        "Wallet balance unavailable",
+        "Explorer balance timeout",
+        "Payments consistent",
+        "Payment records need review",
+    }:
+        return text
+    return fallback
+
+
+def _sanitize_operator_status_payload(data: Any) -> dict[str, Any]:
+    unknown = _unknown_operator_status_payload()
+    if not isinstance(data, dict) or not data:
+        return unknown
+    by_key = {}
+    raw_items = data.get("items")
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if isinstance(item, dict) and isinstance(item.get("key"), str):
+                by_key[item["key"]] = item
+    items = []
+    for key, label, fallback_message in OPERATOR_STATUS_ITEMS:
+        item = by_key.get(key, {})
+        items.append(
+            {
+                "key": key,
+                "label": label,
+                "status": _safe_public_status(item.get("status") if isinstance(item, dict) else None),
+                "message": _safe_public_message(
+                    item.get("message") if isinstance(item, dict) else None,
+                    fallback_message,
+                ),
+            }
+        )
+    return {
+        "generatedAt": data.get("generatedAt") if isinstance(data.get("generatedAt"), str) else unknown["generatedAt"],
+        "status": _safe_public_status(data.get("status")),
+        "items": items,
+    }
+
+
+def _map_round_shares(shares_dict: Any) -> dict[str, Any]:
+    if not isinstance(shares_dict, dict):
+        return {}
+    mapped = {}
+    for wallet, data in shares_dict.items():
+        if isinstance(data, dict):
+            wallet_mapped = {
+                "shareCount": data.get("share_count"),
+                "shareScore": data.get("share_score"),
+                "sharePercent": data.get("share_percent"),
+            }
+            if isinstance(data.get("workers"), dict):
+                wallet_mapped["workers"] = {
+                    worker: {
+                        "shareCount": w_data.get("share_count"),
+                        "shareScore": w_data.get("share_score"),
+                        "sharePercent": w_data.get("share_percent"),
+                        "walletSharePercent": w_data.get("wallet_share_percent"),
+                    }
+                    if isinstance(w_data, dict)
+                    else w_data
+                    for worker, w_data in data["workers"].items()
+                }
+            mapped[wallet] = wallet_mapped
+        else:
+            mapped[wallet] = {"shareCount": None, "shareScore": data, "sharePercent": None}
+    return mapped
+
+
+def _normalize_payment_item(item: dict[str, Any]) -> dict[str, Any]:
+    paid_at = item.get("paidAt") or item.get("timestamp")
+    timestamp = item.get("timestamp") or item.get("paidAt")
+    return {
+        "paidAt": paid_at,
+        "timestamp": timestamp,
+        "amount": item.get("amount"),
+        "txid": item.get("txid"),
+        "wallet": item.get("wallet"),
+        "candidateId": item.get("candidateId") or item.get("candidate_id"),
+        "blockHeight": _first_present(item, "blockHeight", "height", "matchedHeight", "block_height"),
+        "blockHeights": item.get("blockHeights") or item.get("block_heights"),
+        "blockHeightRange": item.get("blockHeightRange") or item.get("block_height_range"),
+        "blockCount": item.get("blockCount") or item.get("sourceCount") or item.get("source_count"),
+        "sourceCandidateIds": item.get("sourceCandidateIds") or item.get("source_candidate_ids"),
+        "blockHash": item.get("blockHash"),
+        "status": item.get("status"),
+        "confirmations": _first_present(item, "confirmations", "confirms", "txConfirmations", "candidateConfirmations"),
+        "note": item.get("note"),
+    }
+
+
+def _recent_payments_for_wallet(wallet: str, primary_path, fallback_path) -> tuple[list[dict[str, Any]], float]:
+    data = _load_json_dict(primary_path, fallback_path)
+    items = data.get("items", [])
+    recent = []
+    total = 0.0
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get("wallet") == wallet:
+                recent.append(_normalize_payment_item(item))
+                total += _as_float(item.get("amount"))
+    recent.sort(key=lambda item: str(item.get("paidAt") or item.get("timestamp") or ""), reverse=True)
+    return recent[:50], total
 
 
 app = create_app()
