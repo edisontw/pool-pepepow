@@ -576,7 +576,7 @@
     if (typeof netHash !== "number" || netHash <= 0) return null;
 
     const BLOCK_TIME_SECONDS = 20;
-    const TOTAL_BLOCK_REWARD = 7000;
+    const TOTAL_BLOCK_REWARD = 6500;
     const DEVELOPER_FEE_RATIO = 0.05;
     const MINER_REWARD_RATIO = 0.65;
     const poolFeeRatio = (pool && typeof pool.feePercent === "number" && isFinite(pool.feePercent) && pool.feePercent > 0)
@@ -713,7 +713,7 @@
     }
 
     const BLOCK_TIME_SECONDS = 20;
-    const TOTAL_BLOCK_REWARD = 7000;
+    const TOTAL_BLOCK_REWARD = 6500;
     const DEVELOPER_FEE_RATIO = 0.05;
     const MINER_REWARD_RATIO = 0.65;
     const poolFeeRatio = (pool && typeof pool.feePercent === "number" && isFinite(pool.feePercent) && pool.feePercent > 0)
