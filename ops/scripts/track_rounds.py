@@ -8,6 +8,7 @@ import argparse
 import json
 import re
 import sys
+from bisect import bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -293,6 +294,7 @@ def main() -> int:
                     }
                 )
 
+    shares.sort(key=lambda s: s["timestamp"])
     share_timestamps = [s["timestamp"] for s in shares]
     earliest_share_ts = min(share_timestamps) if share_timestamps else None
     latest_share_ts = max(share_timestamps) if share_timestamps else None
@@ -333,21 +335,11 @@ def main() -> int:
             return "incomplete", "share_log_tail_too_short"
         return "empty", "no_shares_in_round_window"
 
-    def previous_boundary_timestamp(candidate: dict[str, Any]) -> datetime:
-        candidate_ts = parse_timestamp(candidate.get("submit_timestamp"))
-        previous_ts = datetime.min.replace(tzinfo=timezone.utc)
-        for boundary in boundary_cands:
-            boundary_ts = parse_timestamp(boundary.get("submit_timestamp"))
-            if boundary is candidate:
-                break
-            if boundary_ts <= candidate_ts:
-                previous_ts = boundary_ts
-        return previous_ts
-
     preserved_now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     # Compute rounds and attribute shares
     rounds_list = []
+    previous_boundary_ts = datetime.min.replace(tzinfo=timezone.utc)
     for i, c in enumerate(round_cands):
         c_ts = parse_timestamp(c.get("submit_timestamp"))
         if c.get("lifecycle_status") == "orphan":
@@ -358,7 +350,8 @@ def main() -> int:
                     round_cands[i - 1].get("submit_timestamp")
                 )
         else:
-            start_ts = previous_boundary_timestamp(c)
+            start_ts = previous_boundary_ts
+            previous_boundary_ts = c_ts
 
         # Attribute shares in range (start_ts, c_ts]
         attributed_shares: dict[str, Any] = {}
@@ -366,7 +359,9 @@ def main() -> int:
         total_round_shares = 0
         total_round_score = 0.0
 
-        for s in shares:
+        start_idx = bisect_right(share_timestamps, start_ts)
+        end_idx = bisect_right(share_timestamps, c_ts)
+        for s in shares[start_idx:end_idx]:
             s_ts = s["timestamp"]
             if start_ts < s_ts <= c_ts:
                 wallet = s["wallet"]
