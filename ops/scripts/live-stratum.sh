@@ -876,15 +876,32 @@ candidate_events_service() {
   python3 - "${CANDIDATE_EVENT_LOG}" "${count}" <<'PY'
 import json
 import sys
+from collections import deque
 from pathlib import Path
 
 path = Path(sys.argv[1])
 count = int(sys.argv[2])
-lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-selected = lines[-count:]
+selected = deque(maxlen=count)
+with path.open("r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if line.strip():
+            selected.append(line.strip())
 print(f"candidate_events: {len(selected)}")
+malformed_rows_skipped = 0
 for raw_line in selected:
-    payload = json.loads(raw_line)
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError as exc:
+        malformed_rows_skipped += 1
+        print("---")
+        print("candidate_prep_status: skipped-malformed-jsonl")
+        print(f"followup_note: {exc}")
+        continue
+    if not isinstance(payload, dict):
+        malformed_rows_skipped += 1
+        print("---")
+        print("candidate_prep_status: skipped-non-object-jsonl")
+        continue
     print("---")
     print(f"timestamp: {payload.get('timestamp')}")
     print(f"job_id: {payload.get('jobId')}")
@@ -924,6 +941,7 @@ for raw_line in selected:
     print(f"candidatePrevhash: {payload.get('candidatePrevhash') or payload.get('candidatePrevHash')}")
     print(f"latestTemplatePrevhash: {payload.get('latestTemplatePrevhash')}")
     print(f"prevhashMatchesLatestTemplate: {payload.get('prevhashMatchesLatestTemplate')}")
+print(f"malformed_jsonl_rows_skipped: {malformed_rows_skipped}")
 PY
 }
 
@@ -956,6 +974,7 @@ candidate_followup_service() {
   python3 - "${POOL_CORE_DIR}" "${CANDIDATE_EVENT_LOG}" "${FOLLOWUP_EVENT_LOG}" "${CANDIDATE_OUTCOME_EVENT_LOG}" "${count}" "${record}" "${RPC_URL}" "${RPC_USER}" "${RPC_PASSWORD}" "${RPC_TIMEOUT_SECONDS}" <<'PY'
 import json
 import sys
+from collections import deque
 from pathlib import Path
 
 pool_core_dir = Path(sys.argv[1])
@@ -976,8 +995,11 @@ from daemon_rpc import (  # noqa: E402
     check_candidate_followup,
 )
 
-lines = [line for line in candidate_event_log.read_text(encoding="utf-8").splitlines() if line.strip()]
-selected = lines[-count:]
+selected = deque(maxlen=count)
+with candidate_event_log.open("r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if line.strip():
+            selected.append(line.strip())
 rpc_client = DaemonRpcClient(
     rpc_url=rpc_url,
     rpc_user=rpc_user,
@@ -987,8 +1009,21 @@ rpc_client = DaemonRpcClient(
 )
 
 print(f"candidate_followup: {len(selected)}")
+malformed_rows_skipped = 0
 for raw_line in selected:
-    payload = json.loads(raw_line)
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError as exc:
+        malformed_rows_skipped += 1
+        print("---")
+        print(f"followup_status: skipped-malformed-jsonl")
+        print(f"followup_note: {exc}")
+        continue
+    if not isinstance(payload, dict):
+        malformed_rows_skipped += 1
+        print("---")
+        print(f"followup_status: skipped-non-object-jsonl")
+        continue
     followup = check_candidate_followup(
         payload.get("candidateBlockHash"),
         rpc_client=rpc_client,
@@ -1009,6 +1044,7 @@ for raw_line in selected:
     print(f"followup_observed_height: {followup.get('followupObservedHeight')}")
     print(f"followup_observed_block_hash: {followup.get('followupObservedBlockHash')}")
     print(f"followup_note: {followup.get('followupNote')}")
+print(f"malformed_jsonl_rows_skipped: {malformed_rows_skipped}")
 print(f"followup_recorded: {record}")
 PY
 
@@ -1034,15 +1070,32 @@ candidate_outcomes_service() {
   python3 - "${CANDIDATE_OUTCOME_EVENT_LOG}" "${count}" <<'PY'
 import json
 import sys
+from collections import deque
 from pathlib import Path
 
 path = Path(sys.argv[1])
 count = int(sys.argv[2])
-lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-selected = lines[-count:]
+selected = deque(maxlen=count)
+with path.open("r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if line.strip():
+            selected.append(line.strip())
 print(f"candidate_outcomes: {len(selected)}")
+malformed_rows_skipped = 0
 for raw_line in selected:
-    payload = json.loads(raw_line)
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError as exc:
+        malformed_rows_skipped += 1
+        print("---")
+        print("candidate_outcome_status: skipped-malformed-jsonl")
+        print(f"followup_note: {exc}")
+        continue
+    if not isinstance(payload, dict):
+        malformed_rows_skipped += 1
+        print("---")
+        print("candidate_outcome_status: skipped-non-object-jsonl")
+        continue
     print("---")
     print(f"timestamp: {payload.get('timestamp')}")
     print(f"candidate_timestamp: {payload.get('candidateTimestamp')}")
@@ -1058,6 +1111,7 @@ for raw_line in selected:
     print(f"followup_observed_height: {payload.get('followupObservedHeight')}")
     print(f"followup_observed_block_hash: {payload.get('followupObservedBlockHash')}")
     print(f"followup_note: {payload.get('followupNote')}")
+print(f"malformed_jsonl_rows_skipped: {malformed_rows_skipped}")
 PY
 }
 
@@ -1078,15 +1132,32 @@ candidate_followup_events_service() {
   python3 - "${FOLLOWUP_EVENT_LOG}" "${count}" <<'PY'
 import json
 import sys
+from collections import deque
 from pathlib import Path
 
 path = Path(sys.argv[1])
 count = int(sys.argv[2])
-lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-selected = lines[-count:]
+selected = deque(maxlen=count)
+with path.open("r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if line.strip():
+            selected.append(line.strip())
 print(f"candidate_followup_events: {len(selected)}")
+malformed_rows_skipped = 0
 for raw_line in selected:
-    payload = json.loads(raw_line)
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError as exc:
+        malformed_rows_skipped += 1
+        print("---")
+        print("followup_status: skipped-malformed-jsonl")
+        print(f"followup_note: {exc}")
+        continue
+    if not isinstance(payload, dict):
+        malformed_rows_skipped += 1
+        print("---")
+        print("followup_status: skipped-non-object-jsonl")
+        continue
     print("---")
     print(f"timestamp: {payload.get('timestamp')}")
     print(f"candidate_timestamp: {payload.get('candidateTimestamp')}")
@@ -1097,6 +1168,7 @@ for raw_line in selected:
     print(f"followup_observed_height: {payload.get('followupObservedHeight')}")
     print(f"followup_observed_block_hash: {payload.get('followupObservedBlockHash')}")
     print(f"followup_note: {payload.get('followupNote')}")
+print(f"malformed_jsonl_rows_skipped: {malformed_rows_skipped}")
 PY
 }
 
@@ -1169,6 +1241,15 @@ payout_review_check_service() {
     --candidates "${payout_file}" \
     --carry-snapshot "${carry_file}" \
     --payments-snapshot "${payments_file}"
+}
+
+payout_jsonl_check_service() {
+  ensure_runtime_dir
+  python3 "${SCRIPT_DIR}/payout_helper.py" payout-jsonl-check \
+    --tail-lines 5000 \
+    "${RUNTIME_DIR}/payment-actions.jsonl" \
+    "${RUNTIME_DIR}/candidate-followup-events.jsonl" \
+    "${RUNTIME_DIR}/candidate-outcome-events.jsonl"
 }
 
 pool_wallet_watchdog_service() {
@@ -4170,6 +4251,9 @@ case "${SUBCOMMAND}" in
     ;;
   payout-review-check)
     payout_review_check_service
+    ;;
+  payout-jsonl-check)
+    payout_jsonl_check_service
     ;;
   pool-wallet-watchdog)
     shift

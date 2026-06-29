@@ -1006,7 +1006,10 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_review.returncode, 0)
         self.assertIn("hashconfirmedeligibleblock0001", res_review.stdout)
         self.assertIn("BLOCKED", res_review.stdout)
-        self.assertIn("blocked_coinbase_lookup_unavailable", res_review.stdout)
+        self.assertRegex(
+            res_review.stdout,
+            r"blocked_(coinbase_lookup_unavailable|missing_miner_reward_output)",
+        )
 
         # Test backward compatibility (old candidates format)
         payout_candidates_path = self.tmp_path / "payout-candidates.json"
@@ -1061,6 +1064,41 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(res_record.returncode, 0)
         self.assertTrue((self.tmp_path / "payment-actions.jsonl").exists())
         self.assertTrue((self.tmp_path / "payments-snapshot.json").exists())
+
+    def test_live_stratum_candidate_events_skips_malformed_tail_rows(self):
+        import subprocess
+        import os
+
+        candidate_log = self.tmp_path / "candidate-events.jsonl"
+        good_row = {
+            "timestamp": "2026-06-29T18:00:00Z",
+            "jobId": "job-test",
+            "wallet": "PEPEPOW1WalletAddressTarget001",
+            "worker": "rig01",
+            "candidateBlockHash": "hashcandidateeventsok0000000001",
+            "candidatePrepStatus": "candidate-prepared-complete",
+        }
+        candidate_log.write_text(
+            json.dumps(good_row) + "\n" + '{"timestamp":"2026-06-29T18:01:00Z","candidateBlockHash":' + "\n",
+            encoding="utf-8",
+        )
+
+        env = dict(os.environ)
+        env["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(self.tmp_path)
+
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+        res = subprocess.run(
+            [str(sh_path), "candidate-events", "2"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("candidate_events: 2", res.stdout)
+        self.assertIn("candidate_block_hash: hashcandidateeventsok0000000001", res.stdout)
+        self.assertIn("candidate_prep_status: skipped-malformed-jsonl", res.stdout)
+        self.assertIn("malformed_jsonl_rows_skipped: 1", res.stdout)
 
     def test_live_stratum_sh_auto_payout_config_validation(self):
         import subprocess
