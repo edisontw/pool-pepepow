@@ -1,0 +1,15 @@
+# Install with:
+#   sudo cp ops/systemd/pepepow-pool-runtime.logrotate /etc/logrotate.d/pepepow-pool-runtime
+
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/*.log
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/*-evidence.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/candidate-outcome-events.jsonl {
+    su ubuntu ubuntu
+    size 100M
+    rotate 3
+    copytruncate
+    compress
+    maxage 7
+    missingok
+    notifempty
+}
