@@ -3050,15 +3050,17 @@ class StratumIngressService:
     async def _append_loop(self) -> None:
         log_path = self._config.activity_log_path
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = log_path.open("ab")
+        current_offset = 0
+        active_first_sequence = self._active_log_first_sequence
+        active_last_sequence = self._active_log_last_sequence
 
         try:
-            handle.seek(0, os.SEEK_END)
-            current_offset = handle.tell()
+            with log_path.open("ab") as handle:
+                handle.seek(0, os.SEEK_END)
+                current_offset = handle.tell()
+                log_inode = os.fstat(handle.fileno()).st_ino
             self._recovery.current_offset = max(self._recovery.current_offset, current_offset)
-            self._recovery.log_inode = os.fstat(handle.fileno()).st_ino
-            active_first_sequence = self._active_log_first_sequence
-            active_last_sequence = self._active_log_last_sequence
+            self._recovery.log_inode = log_inode
 
             while not self._stop_event.is_set() or not self._queue.empty():
                 try:
@@ -3079,61 +3081,103 @@ class StratumIngressService:
                     except asyncio.TimeoutError:
                         break
 
-                appended: list[tuple[int, ShareEnvelope]] = []
-                for item in batch:
-                    if active_first_sequence is None:
-                        active_first_sequence = item.sequence
-                    active_last_sequence = item.sequence
-                    encoded = item.serialized.encode("utf-8") + b"\n"
-                    handle.write(encoded)
-                    current_offset += len(encoded)
-                    appended.append((int(item.event.occurred_at.timestamp()), item))
+                append_succeeded = False
+                append_inode = self._recovery.log_inode
+                try:
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with log_path.open("ab") as handle:
+                        handle.seek(0, os.SEEK_END)
+                        observed_offset = handle.tell()
+                        observed_inode = os.fstat(handle.fileno()).st_ino
+                        if (
+                            self._recovery.log_inode is not None
+                            and observed_inode != self._recovery.log_inode
+                        ):
+                            LOGGER.warning(
+                                "Share event log inode changed; reopening active log path=%s previous_inode=%s new_inode=%s",
+                                log_path,
+                                self._recovery.log_inode,
+                                observed_inode,
+                            )
+                            active_first_sequence = None
+                            active_last_sequence = None
+                        elif observed_offset < current_offset:
+                            LOGGER.warning(
+                                "Share event log offset moved backwards; continuing at active path=%s previous_offset=%s new_offset=%s",
+                                log_path,
+                                current_offset,
+                                observed_offset,
+                            )
+                            active_first_sequence = None
+                            active_last_sequence = None
+                        current_offset = observed_offset
+                        append_inode = observed_inode
 
-                handle.flush()
-                os.fsync(handle.fileno())
+                        for item in batch:
+                            if active_first_sequence is None:
+                                active_first_sequence = item.sequence
+                            active_last_sequence = item.sequence
+                            encoded = item.serialized.encode("utf-8") + b"\n"
+                            handle.write(encoded)
+                            current_offset += len(encoded)
 
-                if (
-                    current_offset >= self._config.activity_log_rotate_bytes
-                    and active_first_sequence is not None
-                    and active_last_sequence is not None
-                ):
-                    rotated_path = rotated_log_path(
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                        append_succeeded = True
+
+                    if (
+                        current_offset >= self._config.activity_log_rotate_bytes
+                        and active_first_sequence is not None
+                        and active_last_sequence is not None
+                    ):
+                        rotated_path = rotated_log_path(
+                            log_path,
+                            active_first_sequence,
+                            active_last_sequence,
+                        )
+                        os.replace(log_path, rotated_path)
+                        removed_logs = prune_rotated_logs(
+                            log_path,
+                            self._config.activity_log_retention_files,
+                        )
+                        for removed_log in removed_logs:
+                            LOGGER.info("Pruned rotated share log %s", removed_log.name)
+                        LOGGER.info("Rotated share log to %s", rotated_path.name)
+                        with log_path.open("ab") as handle:
+                            handle.seek(0, os.SEEK_END)
+                            current_offset = handle.tell()
+                            append_inode = os.fstat(handle.fileno()).st_ino
+                        active_first_sequence = None
+                        active_last_sequence = None
+                except OSError:
+                    self._warning_count += 1
+                    LOGGER.exception(
+                        "Failed to append share event batch to %s; keeping in-memory activity snapshot current",
                         log_path,
-                        active_first_sequence,
-                        active_last_sequence,
                     )
-                    handle.close()
-                    os.replace(log_path, rotated_path)
-                    removed_logs = prune_rotated_logs(
-                        log_path,
-                        self._config.activity_log_retention_files,
-                    )
-                    for removed_log in removed_logs:
-                        LOGGER.info("Pruned rotated share log %s", removed_log.name)
-                    LOGGER.info("Rotated share log to %s", rotated_path.name)
-                    handle = log_path.open("ab")
-                    current_offset = handle.tell()
-                    active_first_sequence = None
-                    active_last_sequence = None
 
                 async with self._state_lock:
                     self._active_log_first_sequence = active_first_sequence
                     self._active_log_last_sequence = active_last_sequence
                     self._recovery.current_offset = current_offset
-                    self._recovery.log_inode = os.fstat(handle.fileno()).st_ino
-                    for occurred_at_second, item in appended:
+                    if append_inode is not None:
+                        self._recovery.log_inode = append_inode
+                    for item in batch:
+                        occurred_at_second = int(item.event.occurred_at.timestamp())
                         self._recovery.record(occurred_at_second, item.sequence)
                         self._engine.ingest_event(
                             item.event,
                             sequence=item.sequence,
                             update_lifetime=True,
                         )
+                    if not append_succeeded:
+                        self._dirty_snapshot = True
                     self._dirty_snapshot = True
 
                 for _item in batch:
                     self._queue.task_done()
         finally:
-            handle.close()
+            pass
 
         await self._write_activity_snapshot(force=True)
 

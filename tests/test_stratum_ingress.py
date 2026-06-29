@@ -5649,6 +5649,95 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pre_snapshot["meta"]["warningCount"], 0)
             self.assertEqual(post_snapshot["meta"]["warningCount"], 0)
 
+    async def test_share_log_recreated_after_external_unlink(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config = self._make_config(tmp_path)
+            service = StratumIngressService(config)
+            await service.start()
+
+            reader = writer = None
+            try:
+                reader, writer = await self._open_client(service)
+                await self._rpc_call(
+                    reader,
+                    writer,
+                    {"id": 1, "method": "mining.subscribe", "params": ["test-miner/1.0"]},
+                )
+                writer.write(
+                    json.dumps(
+                        {
+                            "id": 2,
+                            "method": "mining.authorize",
+                            "params": ["PEPEPOW1KnownWalletAddress000000.rig01", "x"],
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                await writer.drain()
+
+                await self._read_json(reader)
+                await self._read_json(reader)
+                notify_message = await self._read_json(reader)
+                self.assertEqual(notify_message["method"], "mining.notify")
+
+                first_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 3,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            extranonce2="00000003",
+                            nonce="00000004",
+                        ),
+                    },
+                )
+                self.assertTrue(first_response["result"])
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+
+                config.activity_log_path.unlink()
+
+                second_response = await self._rpc_call(
+                    reader,
+                    writer,
+                    {
+                        "id": 4,
+                        "method": "mining.submit",
+                        "params": self._submit_params(
+                            "PEPEPOW1KnownWalletAddress000000.rig01",
+                            notify_message["params"][0],
+                            notify_message["params"][7],
+                            extranonce2="00000004",
+                            nonce="00000005",
+                        ),
+                    },
+                )
+                self.assertTrue(second_response["result"])
+                await self._wait_for(
+                    lambda: len(self._read_share_events(config.activity_log_path)) == 1
+                )
+
+                share_event = json.loads(self._read_share_events(config.activity_log_path)[0])
+                self.assertEqual(share_event["sequence"], 2)
+
+                await self._wait_for(
+                    lambda: self._load_json(config.activity_snapshot_output_path)["pool"][
+                        "activeMiners"
+                    ]
+                    == 1
+                )
+            finally:
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+                await service.stop()
+
     async def test_replay_window_boundary_warns_when_retention_truncates_tail(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
