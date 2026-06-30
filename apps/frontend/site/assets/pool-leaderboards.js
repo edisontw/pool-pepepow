@@ -5,7 +5,7 @@
   const TOTAL_BLOCK_REWARD = 6500;
   const DEVELOPER_FEE_RATIO = 0.05;
   const MINER_REWARD_RATIO = 0.65;
-  const ORPHAN_RATE = 0.75;
+  const NON_ORPHAN_RATE = 0.75;
   let cachedLeaderboardItems = [];
   let cachedShareLabel = "accepted shares";
   let cachedLastPoolBlockText = "";
@@ -238,7 +238,7 @@
 
     const warning = document.querySelector(".estimate-warning");
     if (warning) {
-      warning.innerHTML = "⚠️ <strong>Orphan-adjusted theoretical estimate.</strong> Uses current block reward 6500 × 95% developer-fee remainder × 65% miner share × pool fee × 25% non-orphan rate. Actual recorded payments can still differ because of pool luck, network hashrate changes, and payment timing.";
+      warning.innerHTML = "⚠️ <strong>Orphan-adjusted theoretical estimate.</strong> Uses current block reward 6500 × 95% developer-fee remainder × 65% miner share × pool fee × 75% non-orphan rate. Actual recorded payments can still differ because of pool luck, network hashrate changes, and payment timing.";
     }
   }
 
@@ -261,8 +261,7 @@
       const netHashrate = network && typeof network.networkHashrate === "number" ? network.networkHashrate : null;
       if (!netHashrate || netHashrate <= 0) return;
 
-      const nonOrphanRate = 1 - ORPHAN_RATE;
-      const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio(pool)) * nonOrphanRate;
+      const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio(pool)) * NON_ORPHAN_RATE;
       const rewardPerDay = (userHashrateHps / netHashrate) * (86400 / BLOCK_TIME_SECONDS) * minerRewardPerBlock;
       const rewardPerHour = rewardPerDay / 24;
       const rewardPerWeek = rewardPerDay * 7;
