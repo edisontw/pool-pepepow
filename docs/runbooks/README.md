@@ -5,6 +5,7 @@
 - prelaunch checklist: `./prelaunch-checklist.md`
 - snapshot pipeline: `./snapshot-pipeline.md`
 - Stratum activity ingest: `./stratum-activity-ingest.md`
+- reward calculator and log maintenance: `./reward-calculator-and-log-maintenance.md`
 - external GPU smoke benchmark: `../benchmarks/2026-04-14-external-gpu-stratum-smoke.md`
 - helper scripts: `../../ops/scripts/`
 
@@ -13,6 +14,8 @@ Current runbooks cover:
 - daemon-aware runtime snapshots
 - daemon-independent Stratum ingress
 - activity snapshot overlay behavior
+- calculator formula assumptions
+- runtime JSONL / journald disk-bounding rules
 - local verification and stress testing
 - external synthetic miner compatibility evidence
 
