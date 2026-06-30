@@ -12,11 +12,41 @@
     if (node) node.innerHTML = value;
   }
 
+  function ensurePoolWalletWatchStyles() {
+    if (document.getElementById("pool-wallet-watch-style")) return;
+    const style = document.createElement("style");
+    style.id = "pool-wallet-watch-style";
+    style.textContent = `
+      .pool-wallet-watch{display:grid;gap:.85rem;overflow:hidden}
+      .pool-wallet-watch .eyebrow{margin-bottom:-.35rem}
+      .pool-wallet-watch h3{margin:0;font-size:clamp(1.02rem,1.6vw,1.18rem);line-height:1.2}
+      .pool-wallet-watch-hero{display:grid;gap:.35rem;padding:1rem 1.05rem;border-radius:14px;border:1px solid rgba(129,247,176,.22);background:linear-gradient(135deg,rgba(129,247,176,.12),rgba(55,196,255,.06))}
+      .pool-wallet-watch-status{width:fit-content;padding:.22rem .5rem;border-radius:999px;background:rgba(238,245,248,.09);color:rgba(235,245,255,.78);font-size:.68rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+      .pool-wallet-watch-main{font-size:clamp(1.55rem,4.2vw,2.25rem);line-height:1.05;letter-spacing:.025em;word-break:break-word}
+      .pool-wallet-watch-body{display:grid;grid-template-columns:minmax(0,1fr);gap:.7rem}
+      .pool-wallet-watch-address-card,.pool-wallet-watch-summary{display:grid;gap:.35rem;padding:.8rem .9rem;border-radius:13px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
+      .pool-wallet-watch-address-card span,.pool-wallet-watch-summary span{color:var(--muted);font-size:.68rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+      .pool-wallet-watch-address-card code{display:block;white-space:normal;overflow-wrap:anywhere;font-size:clamp(.86rem,2vw,1rem);line-height:1.45;font-weight:800;color:rgba(238,245,248,.95)}
+      .pool-wallet-watch-summary strong{font-size:.92rem;line-height:1.25}
+      .pool-wallet-watch-summary p{margin:0;color:var(--muted);font-size:.78rem;line-height:1.45}
+      .pool-wallet-watch-note{margin:0;color:rgba(190,205,216,.86);font-size:.8rem;line-height:1.45}
+      .pool-wallet-watch-actions{display:flex;align-items:center;justify-content:flex-start;gap:.6rem;flex-wrap:wrap}
+      .pool-wallet-watch-actions a{display:inline-flex;align-items:center;justify-content:center;min-height:2rem;padding:.45rem .7rem;border-radius:10px;border:1px solid rgba(55,196,255,.35);background:rgba(55,196,255,.09);color:var(--accent-alt);font-size:.78rem;font-weight:800;text-decoration:none}
+      .pool-wallet-watch.is-ok .pool-wallet-watch-status{background:rgba(129,247,176,.16);color:#a8ffc8}
+      .pool-wallet-watch.is-guarded .pool-wallet-watch-status{background:rgba(255,212,90,.16);color:#ffe08a}
+      .pool-wallet-watch.is-alert .pool-wallet-watch-status{background:rgba(255,118,118,.15);color:#ffb0b0}
+      @media(min-width:720px){.pool-wallet-watch-body{grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr)}}
+    `;
+    document.head.appendChild(style);
+  }
+
   function ensurePoolWalletWatchCard() {
+    ensurePoolWalletWatchStyles();
     let root = document.getElementById("pool-wallet-watch-card");
     if (root) return root;
 
-    const target = document.querySelector(".dashboard-left") || document.querySelector("main.page-grid");
+    const poolPositioning = document.querySelector(".pool-about");
+    const target = poolPositioning?.parentElement || document.querySelector(".dashboard-right") || document.querySelector("main.page-grid");
     if (!target) return null;
 
     root = document.createElement("section");
@@ -26,24 +56,29 @@
     root.innerHTML = `
       <p class="eyebrow">Pool Wallet Watch</p>
       <h3 id="pool-wallet-watch-title">24h Pool Wallet Growth</h3>
-      <div class="metric-grid">
-        <article class="metric-primary">
-          <span id="pool-wallet-watch-status">Waiting for monitor</span>
-          <strong id="pool-wallet-watch-main">-</strong>
-        </article>
-        <article>
+      <article class="pool-wallet-watch-hero" aria-live="polite">
+        <span class="pool-wallet-watch-status" id="pool-wallet-watch-status">Waiting for monitor</span>
+        <strong class="pool-wallet-watch-main" id="pool-wallet-watch-main">-</strong>
+      </article>
+      <div class="pool-wallet-watch-body">
+        <article class="pool-wallet-watch-address-card">
           <span>Pool reward wallet</span>
-          <strong><code id="pool-wallet-watch-address">${POOL_WALLET}</code></strong>
+          <code id="pool-wallet-watch-address">${POOL_WALLET}</code>
+        </article>
+        <article class="pool-wallet-watch-summary">
+          <span>Status</span>
+          <strong id="pool-wallet-watch-headline">Loading wallet monitor...</strong>
+          <p id="pool-wallet-watch-sub">Fetching latest 24h wallet growth snapshot...</p>
         </article>
       </div>
-      <p class="muted"><strong id="pool-wallet-watch-headline">Loading wallet monitor...</strong></p>
-      <p class="muted" id="pool-wallet-watch-sub">Fetching latest 24h wallet growth snapshot...</p>
-      <p class="muted" id="pool-wallet-watch-note">Server-side monitor snapshot is loading.</p>
+      <p class="pool-wallet-watch-note" id="pool-wallet-watch-note">Server-side monitor snapshot is loading.</p>
+      <div class="pool-wallet-watch-actions"><a id="pool-wallet-watch-explorer" href="https://explorer.pepepow.net/address/${POOL_WALLET}" target="_blank" rel="noopener noreferrer">Open explorer ↗</a></div>
     `;
 
-    const firstPanel = target.querySelector(".mining-outlook");
-    if (firstPanel && firstPanel.nextSibling) {
-      target.insertBefore(root, firstPanel.nextSibling);
+    if (poolPositioning && poolPositioning.nextSibling) {
+      target.insertBefore(root, poolPositioning.nextSibling);
+    } else if (poolPositioning) {
+      target.appendChild(root);
     } else {
       target.appendChild(root);
     }
@@ -91,6 +126,11 @@
     return "";
   }
 
+  function updateExplorerLink(url) {
+    const link = document.getElementById("pool-wallet-watch-explorer");
+    if (link && url) link.href = url;
+  }
+
   async function loadPoolWalletWatch() {
     const root = ensurePoolWalletWatchCard();
     if (!root) return;
@@ -121,7 +161,8 @@
       setText("pool-wallet-watch-address", wallet);
       setText("pool-wallet-watch-main", displayDelta !== null ? `${displayDelta >= 0 ? "+" : ""}${formatPepew(displayDelta)} PEPEW` : "No previous sample");
       setText("pool-wallet-watch-sub", `${windowLabel} · Updated ${formatAge(updatedAt)}`);
-      setHtml("pool-wallet-watch-note", `${summary} <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer">Open explorer ↗</a>`);
+      setText("pool-wallet-watch-note", summary);
+      updateExplorerLink(explorerUrl);
     } catch (error) {
       root.classList.remove("is-ok", "is-guarded");
       root.classList.add("is-alert");
@@ -130,7 +171,8 @@
       setText("pool-wallet-watch-address", POOL_WALLET);
       setText("pool-wallet-watch-main", "-");
       setText("pool-wallet-watch-sub", "Run live-stratum pool wallet monitor to publish the snapshot.");
-      setHtml("pool-wallet-watch-note", `Server-side monitor snapshot is not available yet. <a href="https://explorer.pepepow.net/address/${POOL_WALLET}" target="_blank" rel="noopener noreferrer">Open explorer ↗</a>`);
+      setText("pool-wallet-watch-note", "Server-side monitor snapshot is not available yet.");
+      updateExplorerLink(`https://explorer.pepepow.net/address/${POOL_WALLET}`);
       console.warn("Pool wallet monitor snapshot unavailable:", error);
     }
   }
