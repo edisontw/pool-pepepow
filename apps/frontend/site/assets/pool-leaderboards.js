@@ -5,6 +5,7 @@
   const TOTAL_BLOCK_REWARD = 6500;
   const DEVELOPER_FEE_RATIO = 0.05;
   const MINER_REWARD_RATIO = 0.65;
+  const ORPHAN_RATE = 0.75;
   let cachedLeaderboardItems = [];
   let cachedShareLabel = "accepted shares";
   let cachedLastPoolBlockText = "";
@@ -223,13 +224,13 @@
       : 0;
   }
 
-  function relabelTheoreticalCalculator() {
+  function relabelOrphanAdjustedCalculator() {
     [
-      ["calc-pepew-hour", "Estimated PEPEW / Hour"],
-      ["calc-pepew-day", "Estimated PEPEW / Day"],
-      ["calc-pepew-week", "Estimated PEPEW / Week"],
-      ["calc-usdt-day", "Estimated USDT / Day"],
-      ["calc-usdt-week", "Estimated USDT / Week"]
+      ["calc-pepew-hour", "Orphan-adjusted PEPEW / Hour"],
+      ["calc-pepew-day", "Orphan-adjusted PEPEW / Day"],
+      ["calc-pepew-week", "Orphan-adjusted PEPEW / Week"],
+      ["calc-usdt-day", "Orphan-adjusted USDT / Day"],
+      ["calc-usdt-week", "Orphan-adjusted USDT / Week"]
     ].forEach(([id, label]) => {
       const labelNode = document.getElementById(id)?.closest("div")?.querySelector("span");
       if (labelNode) labelNode.textContent = label;
@@ -237,16 +238,16 @@
 
     const warning = document.querySelector(".estimate-warning");
     if (warning) {
-      warning.innerHTML = "⚠️ <strong>Theoretical estimate.</strong> Uses current block reward 6500 × 95% developer-fee remainder × 65% miner share × pool fee. Actual recorded payments can still differ because of pool luck, orphan rate, network hashrate changes, and payment timing.";
+      warning.innerHTML = "⚠️ <strong>Orphan-adjusted theoretical estimate.</strong> Uses current block reward 6500 × 95% developer-fee remainder × 65% miner share × pool fee × 25% non-orphan rate. Actual recorded payments can still differ because of pool luck, network hashrate changes, and payment timing.";
     }
   }
 
-  async function refreshTheoreticalCalculator() {
+  async function refreshOrphanAdjustedCalculator() {
     if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
     const hashrateInput = document.getElementById("calc-hashrate");
     const unitSelect = document.getElementById("calc-unit");
     if (!hashrateInput || !unitSelect) return;
-    relabelTheoreticalCalculator();
+    relabelOrphanAdjustedCalculator();
 
     const userHashrateHps = unitToHps(hashrateInput.value, unitSelect.value);
     if (!userHashrateHps) return;
@@ -260,7 +261,8 @@
       const netHashrate = network && typeof network.networkHashrate === "number" ? network.networkHashrate : null;
       if (!netHashrate || netHashrate <= 0) return;
 
-      const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio(pool));
+      const nonOrphanRate = 1 - ORPHAN_RATE;
+      const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio(pool)) * nonOrphanRate;
       const rewardPerDay = (userHashrateHps / netHashrate) * (86400 / BLOCK_TIME_SECONDS) * minerRewardPerBlock;
       const rewardPerHour = rewardPerDay / 24;
       const rewardPerWeek = rewardPerDay * 7;
@@ -274,29 +276,29 @@
         setText("calc-usdt-week", "$" + (rewardPerWeek * price.price).toFixed(2));
       }
     } catch (_error) {
-      relabelTheoreticalCalculator();
+      relabelOrphanAdjustedCalculator();
     }
   }
 
-  function installTheoreticalCalculator() {
+  function installOrphanAdjustedCalculator() {
     if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
     const hashrateInput = document.getElementById("calc-hashrate");
     const unitSelect = document.getElementById("calc-unit");
-    if (hashrateInput) hashrateInput.addEventListener("input", () => window.setTimeout(refreshTheoreticalCalculator, 0));
-    if (unitSelect) unitSelect.addEventListener("change", () => window.setTimeout(refreshTheoreticalCalculator, 0));
-    relabelTheoreticalCalculator();
-    refreshTheoreticalCalculator();
-    window.setTimeout(refreshTheoreticalCalculator, 1500);
-    window.setTimeout(refreshTheoreticalCalculator, 4500);
+    if (hashrateInput) hashrateInput.addEventListener("input", () => window.setTimeout(refreshOrphanAdjustedCalculator, 0));
+    if (unitSelect) unitSelect.addEventListener("change", () => window.setTimeout(refreshOrphanAdjustedCalculator, 0));
+    relabelOrphanAdjustedCalculator();
+    refreshOrphanAdjustedCalculator();
+    window.setTimeout(refreshOrphanAdjustedCalculator, 1500);
+    window.setTimeout(refreshOrphanAdjustedCalculator, 4500);
   }
 
   async function refresh() {
-    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock(), refreshTheoreticalCalculator()]);
+    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock(), refreshOrphanAdjustedCalculator()]);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     installLastPoolBlockGuard();
-    installTheoreticalCalculator();
+    installOrphanAdjustedCalculator();
     refresh();
     window.setTimeout(refreshLastObservedPoolBlock, 1500);
     window.setInterval(refresh, REFRESH_MS);
