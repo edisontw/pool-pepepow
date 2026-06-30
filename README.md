@@ -61,6 +61,7 @@ Not goals:
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 - Local development: [`docs/local-development.md`](docs/local-development.md)
 - Runbooks: [`docs/runbooks/README.md`](docs/runbooks/README.md)
+- Reward calculator and log maintenance: [`docs/runbooks/reward-calculator-and-log-maintenance.md`](docs/runbooks/reward-calculator-and-log-maintenance.md)
 - Prelaunch checklist: [`docs/runbooks/prelaunch-checklist.md`](docs/runbooks/prelaunch-checklist.md)
 - Benchmarks and milestones: [`docs/benchmarks/`](docs/benchmarks/)
 - Public API page: [`apps/frontend/site/api.html`](apps/frontend/site/api.html)
@@ -297,6 +298,7 @@ with guards such as enable flags and max-send limits.
 
 - Snapshot pipeline: [`docs/runbooks/snapshot-pipeline.md`](docs/runbooks/snapshot-pipeline.md)
 - Stratum activity ingest: [`docs/runbooks/stratum-activity-ingest.md`](docs/runbooks/stratum-activity-ingest.md)
+- Reward calculator and log maintenance: [`docs/runbooks/reward-calculator-and-log-maintenance.md`](docs/runbooks/reward-calculator-and-log-maintenance.md)
 - Controlled live submitblock: [`docs/runbooks/controlled-live-submitblock.md`](docs/runbooks/controlled-live-submitblock.md)
 - Manual payout review: [`docs/runbooks/manual-payout-review.md`](docs/runbooks/manual-payout-review.md)
 - Prelaunch checklist: [`docs/runbooks/prelaunch-checklist.md`](docs/runbooks/prelaunch-checklist.md)
