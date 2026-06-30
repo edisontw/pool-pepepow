@@ -1,5 +1,6 @@
 (function () {
   const SNAPSHOT_URL = "/pool-wallet-monitor.json";
+  const POOL_WALLET = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho";
 
   function setText(id, value) {
     const node = document.getElementById(id);
@@ -9,6 +10,44 @@
   function setHtml(id, value) {
     const node = document.getElementById(id);
     if (node) node.innerHTML = value;
+  }
+
+  function ensurePoolWalletWatchCard() {
+    let root = document.getElementById("pool-wallet-watch-card");
+    if (root) return root;
+
+    const target = document.querySelector(".dashboard-left") || document.querySelector("main.page-grid");
+    if (!target) return null;
+
+    root = document.createElement("section");
+    root.id = "pool-wallet-watch-card";
+    root.className = "panel pool-wallet-watch";
+    root.setAttribute("aria-labelledby", "pool-wallet-watch-title");
+    root.innerHTML = `
+      <p class="eyebrow">Pool Wallet Watch</p>
+      <h3 id="pool-wallet-watch-title">24h Pool Wallet Growth</h3>
+      <div class="metric-grid">
+        <article class="metric-primary">
+          <span id="pool-wallet-watch-status">Waiting for monitor</span>
+          <strong id="pool-wallet-watch-main">-</strong>
+        </article>
+        <article>
+          <span>Pool reward wallet</span>
+          <strong><code id="pool-wallet-watch-address">${POOL_WALLET}</code></strong>
+        </article>
+      </div>
+      <p class="muted"><strong id="pool-wallet-watch-headline">Loading wallet monitor...</strong></p>
+      <p class="muted" id="pool-wallet-watch-sub">Fetching latest 24h wallet growth snapshot...</p>
+      <p class="muted" id="pool-wallet-watch-note">Server-side monitor snapshot is loading.</p>
+    `;
+
+    const firstPanel = target.querySelector(".mining-outlook");
+    if (firstPanel && firstPanel.nextSibling) {
+      target.insertBefore(root, firstPanel.nextSibling);
+    } else {
+      target.appendChild(root);
+    }
+    return root;
   }
 
   function formatPepew(value) {
@@ -53,7 +92,7 @@
   }
 
   async function loadPoolWalletWatch() {
-    const root = document.getElementById("pool-wallet-watch-card");
+    const root = ensurePoolWalletWatchCard();
     if (!root) return;
 
     try {
@@ -69,7 +108,8 @@
       const headline = data.headline || statusLabel(status);
       const summary = data.summary || "Pool wallet monitor has no summary yet.";
       const updatedAt = data.generatedAt || null;
-      const explorerUrl = data.explorerWalletUrl || "https://explorer.pepepow.net/address/PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho";
+      const explorerUrl = data.explorerWalletUrl || `https://explorer.pepepow.net/address/${POOL_WALLET}`;
+      const wallet = data.poolWallet || POOL_WALLET;
       const windowLabel = windowDelta !== null ? formatWindow(windowHours, sampleHours) : "latest sample";
 
       root.classList.remove("is-ok", "is-guarded", "is-alert");
@@ -78,6 +118,7 @@
 
       setText("pool-wallet-watch-status", statusLabel(status));
       setText("pool-wallet-watch-headline", headline);
+      setText("pool-wallet-watch-address", wallet);
       setText("pool-wallet-watch-main", displayDelta !== null ? `${displayDelta >= 0 ? "+" : ""}${formatPepew(displayDelta)} PEPEW` : "No previous sample");
       setText("pool-wallet-watch-sub", `${windowLabel} · Updated ${formatAge(updatedAt)}`);
       setHtml("pool-wallet-watch-note", `${summary} <a href="${explorerUrl}" target="_blank" rel="noopener noreferrer">Open explorer ↗</a>`);
@@ -86,9 +127,10 @@
       root.classList.add("is-alert");
       setText("pool-wallet-watch-status", "Waiting for monitor");
       setText("pool-wallet-watch-headline", "No server snapshot yet");
+      setText("pool-wallet-watch-address", POOL_WALLET);
       setText("pool-wallet-watch-main", "-");
       setText("pool-wallet-watch-sub", "Run live-stratum pool wallet monitor to publish the snapshot.");
-      setHtml("pool-wallet-watch-note", "Server-side monitor snapshot is not available yet.");
+      setHtml("pool-wallet-watch-note", `Server-side monitor snapshot is not available yet. <a href="https://explorer.pepepow.net/address/${POOL_WALLET}" target="_blank" rel="noopener noreferrer">Open explorer ↗</a>`);
       console.warn("Pool wallet monitor snapshot unavailable:", error);
     }
   }
