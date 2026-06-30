@@ -1,6 +1,11 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
   const MAX_MINER_LOOKUPS = 20;
+  const PAYMENT_ADJUSTED_RATIO = 0.55;
+  const BLOCK_TIME_SECONDS = 20;
+  const TOTAL_BLOCK_REWARD = 7000;
+  const DEVELOPER_FEE_RATIO = 0.05;
+  const MINER_REWARD_RATIO = 0.65;
   let cachedLeaderboardItems = [];
   let cachedShareLabel = "accepted shares";
   let cachedLastPoolBlockText = "";
@@ -200,12 +205,99 @@
     observer.observe(node, { childList: true, characterData: true, subtree: true });
   }
 
+  function setText(id, value) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = value;
+  }
+
+  function unitToHps(value, unit) {
+    let hps = Number(value);
+    if (!Number.isFinite(hps) || hps < 0) return null;
+    if (unit === "KH") hps *= 1000;
+    if (unit === "MH") hps *= 1000000;
+    return hps;
+  }
+
+  function poolFeeRatio(pool) {
+    return pool && typeof pool.feePercent === "number" && Number.isFinite(pool.feePercent) && pool.feePercent > 0
+      ? pool.feePercent / 100
+      : 0;
+  }
+
+  function relabelPaymentAdjustedCalculator() {
+    [
+      ["calc-pepew-hour", "Payment-adjusted PEPEW / Hour"],
+      ["calc-pepew-day", "Payment-adjusted PEPEW / Day"],
+      ["calc-pepew-week", "Payment-adjusted PEPEW / Week"],
+      ["calc-usdt-day", "Payment-adjusted USDT / Day"],
+      ["calc-usdt-week", "Payment-adjusted USDT / Week"]
+    ].forEach(([id, label]) => {
+      const labelNode = document.getElementById(id)?.closest("div")?.querySelector("span");
+      if (labelNode) labelNode.textContent = label;
+    });
+
+    const warning = document.querySelector(".estimate-warning");
+    if (warning) {
+      warning.innerHTML = `⚠️ <strong>Payment-adjusted rough estimate.</strong> Uses 7000 × 95% developer-fee remainder × 65% miner share × pool fee × ${Math.round(PAYMENT_ADJUSTED_RATIO * 100)}% observed-payment calibration. Actual payout can still vary with pool luck, orphan rate, network hashrate, and payment timing.`;
+    }
+  }
+
+  async function refreshPaymentAdjustedCalculator() {
+    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
+    const hashrateInput = document.getElementById("calc-hashrate");
+    const unitSelect = document.getElementById("calc-unit");
+    if (!hashrateInput || !unitSelect) return;
+    relabelPaymentAdjustedCalculator();
+
+    const userHashrateHps = unitToHps(hashrateInput.value, unitSelect.value);
+    if (!userHashrateHps) return;
+
+    try {
+      const [network, pool, price] = await Promise.all([
+        fetchJson("/api/network/summary").catch(() => null),
+        fetchJson("/api/pool/summary").catch(() => null),
+        fetchJson("/api/price/pepew-usdt").catch(() => null)
+      ]);
+      const netHashrate = network && typeof network.networkHashrate === "number" ? network.networkHashrate : null;
+      if (!netHashrate || netHashrate <= 0) return;
+
+      const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio(pool)) * PAYMENT_ADJUSTED_RATIO;
+      const rewardPerDay = (userHashrateHps / netHashrate) * (86400 / BLOCK_TIME_SECONDS) * minerRewardPerBlock;
+      const rewardPerHour = rewardPerDay / 24;
+      const rewardPerWeek = rewardPerDay * 7;
+
+      setText("calc-pepew-hour", formatNumber(Math.round(rewardPerHour * 100) / 100));
+      setText("calc-pepew-day", formatNumber(Math.round(rewardPerDay * 100) / 100));
+      setText("calc-pepew-week", formatNumber(Math.round(rewardPerWeek * 100) / 100));
+
+      if (price && typeof price.price === "number") {
+        setText("calc-usdt-day", "$" + (rewardPerDay * price.price).toFixed(2));
+        setText("calc-usdt-week", "$" + (rewardPerWeek * price.price).toFixed(2));
+      }
+    } catch (_error) {
+      relabelPaymentAdjustedCalculator();
+    }
+  }
+
+  function installPaymentAdjustedCalculator() {
+    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
+    const hashrateInput = document.getElementById("calc-hashrate");
+    const unitSelect = document.getElementById("calc-unit");
+    if (hashrateInput) hashrateInput.addEventListener("input", () => window.setTimeout(refreshPaymentAdjustedCalculator, 0));
+    if (unitSelect) unitSelect.addEventListener("change", () => window.setTimeout(refreshPaymentAdjustedCalculator, 0));
+    relabelPaymentAdjustedCalculator();
+    refreshPaymentAdjustedCalculator();
+    window.setTimeout(refreshPaymentAdjustedCalculator, 1500);
+    window.setTimeout(refreshPaymentAdjustedCalculator, 4500);
+  }
+
   async function refresh() {
-    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock()]);
+    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock(), refreshPaymentAdjustedCalculator()]);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     installLastPoolBlockGuard();
+    installPaymentAdjustedCalculator();
     refresh();
     window.setTimeout(refreshLastObservedPoolBlock, 1500);
     window.setInterval(refresh, REFRESH_MS);
