@@ -17,21 +17,21 @@
     const style = document.createElement("style");
     style.id = "pool-wallet-watch-style";
     style.textContent = `
-      .pool-wallet-watch{display:grid;gap:.85rem;overflow:hidden}
-      .pool-wallet-watch .eyebrow{margin-bottom:-.35rem}
-      .pool-wallet-watch h3{margin:0;font-size:clamp(1.02rem,1.6vw,1.18rem);line-height:1.2}
-      .pool-wallet-watch-hero{display:grid;gap:.35rem;padding:1rem 1.05rem;border-radius:14px;border:1px solid rgba(129,247,176,.22);background:linear-gradient(135deg,rgba(129,247,176,.12),rgba(55,196,255,.06))}
-      .pool-wallet-watch-status{width:fit-content;padding:.22rem .5rem;border-radius:999px;background:rgba(238,245,248,.09);color:rgba(235,245,255,.78);font-size:.68rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
-      .pool-wallet-watch-main{font-size:clamp(1.55rem,4.2vw,2.25rem);line-height:1.05;letter-spacing:.025em;word-break:break-word}
-      .pool-wallet-watch-body{display:grid;grid-template-columns:minmax(0,1fr);gap:.7rem}
-      .pool-wallet-watch-address-card,.pool-wallet-watch-summary{display:grid;gap:.35rem;padding:.8rem .9rem;border-radius:13px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
-      .pool-wallet-watch-address-card span,.pool-wallet-watch-summary span{color:var(--muted);font-size:.68rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
-      .pool-wallet-watch-address-card code{display:block;white-space:normal;overflow-wrap:anywhere;font-size:clamp(.86rem,2vw,1rem);line-height:1.45;font-weight:800;color:rgba(238,245,248,.95)}
-      .pool-wallet-watch-summary strong{font-size:.92rem;line-height:1.25}
-      .pool-wallet-watch-summary p{margin:0;color:var(--muted);font-size:.78rem;line-height:1.45}
-      .pool-wallet-watch-note{margin:0;color:rgba(190,205,216,.86);font-size:.8rem;line-height:1.45}
-      .pool-wallet-watch-actions{display:flex;align-items:center;justify-content:flex-start;gap:.6rem;flex-wrap:wrap}
-      .pool-wallet-watch-actions a{display:inline-flex;align-items:center;justify-content:center;min-height:2rem;padding:.45rem .7rem;border-radius:10px;border:1px solid rgba(55,196,255,.35);background:rgba(55,196,255,.09);color:var(--accent-alt);font-size:.78rem;font-weight:800;text-decoration:none}
+      .pool-wallet-watch{display:grid;gap:.55rem;overflow:hidden;padding:1rem!important}
+      .pool-wallet-watch .eyebrow{margin-bottom:-.28rem;font-size:.62rem;letter-spacing:.1em}
+      .pool-wallet-watch h3{margin:0;font-size:clamp(.86rem,1.25vw,.98rem);line-height:1.15}
+      .pool-wallet-watch-hero{display:grid;gap:.24rem;padding:.72rem .78rem;border-radius:12px;border:1px solid rgba(129,247,176,.2);background:linear-gradient(135deg,rgba(129,247,176,.11),rgba(55,196,255,.05))}
+      .pool-wallet-watch-status{width:fit-content;padding:.18rem .42rem;border-radius:999px;background:rgba(238,245,248,.09);color:rgba(235,245,255,.78);font-size:.56rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+      .pool-wallet-watch-main{font-size:clamp(1.18rem,3vw,1.55rem);line-height:1.05;letter-spacing:.015em;word-break:break-word}
+      .pool-wallet-watch-body{display:grid;grid-template-columns:minmax(0,1fr);gap:.5rem}
+      .pool-wallet-watch-address-card,.pool-wallet-watch-summary{display:grid;gap:.24rem;padding:.58rem .62rem;border-radius:11px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.075)}
+      .pool-wallet-watch-address-card span,.pool-wallet-watch-summary span{color:var(--muted);font-size:.55rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+      .pool-wallet-watch-address-card code{display:block;white-space:normal;overflow-wrap:anywhere;font-size:clamp(.64rem,1.5vw,.76rem);line-height:1.32;font-weight:800;color:rgba(238,245,248,.92)}
+      .pool-wallet-watch-summary strong{font-size:.72rem;line-height:1.22}
+      .pool-wallet-watch-summary p{margin:0;color:var(--muted);font-size:.64rem;line-height:1.35}
+      .pool-wallet-watch-note{margin:0;color:rgba(190,205,216,.84);font-size:.64rem;line-height:1.35}
+      .pool-wallet-watch-actions{display:flex;align-items:center;justify-content:flex-start;gap:.45rem;flex-wrap:wrap;margin-top:-.1rem}
+      .pool-wallet-watch-actions a{display:inline-flex;align-items:center;justify-content:center;min-height:1.62rem;padding:.32rem .55rem;border-radius:8px;border:1px solid rgba(55,196,255,.32);background:rgba(55,196,255,.08);color:var(--accent-alt);font-size:.62rem;font-weight:800;text-decoration:none}
       .pool-wallet-watch.is-ok .pool-wallet-watch-status{background:rgba(129,247,176,.16);color:#a8ffc8}
       .pool-wallet-watch.is-guarded .pool-wallet-watch-status{background:rgba(255,212,90,.16);color:#ffe08a}
       .pool-wallet-watch.is-alert .pool-wallet-watch-status{background:rgba(255,118,118,.15);color:#ffb0b0}
