@@ -405,6 +405,24 @@ class ApiEndpointTests(unittest.TestCase):
             runtime_path.write_text(
                 json.dumps(runtime_payload), encoding="utf-8"
             )
+            candidates_path = Path(tmp_dir) / "accepted-candidates.json"
+            candidates_path.write_text(
+                json.dumps({
+                    "accepted_candidates": [
+                        {
+                            "candidate_hash": "candidate-block-hash",
+                            "submit_timestamp": "2026-06-05T12:42:37Z",
+                            "matched_height": 4573284,
+                            "matched_block_hash": "matched-block-hash",
+                            "lifecycle_status": "chain_match_found",
+                            "confirmations": 5,
+                            "maturity_label": "immature",
+                            "difficulty": "123.45",
+                        }
+                    ]
+                }),
+                encoding="utf-8",
+            )
 
             app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
             client = app.test_client()
@@ -416,6 +434,14 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(payload["dataStatus"], "live")
             self.assertIsInstance(payload["items"], list)
             self.assertGreaterEqual(len(payload["items"]), 1)
+            self.assertIn("blocks", payload)
+            first_block = payload["blocks"][0]
+            self.assertEqual(first_block["coin"], "PEPEW")
+            self.assertEqual(first_block["time"], "1780663357")
+            self.assertEqual(first_block["height"], "4573284")
+            self.assertEqual(first_block["category"], "immature")
+            self.assertEqual(first_block["difficulty"], "123.45")
+            self.assertEqual(first_block["difficulty_user"], "123.45")
 
     def test_accepted_candidates_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1152,6 +1178,20 @@ class ApiEndpointTests(unittest.TestCase):
             runtime_path.write_text(
                 json.dumps(runtime_payload), encoding="utf-8"
             )
+            candidates_path = Path(tmp_dir) / "accepted-candidates.json"
+            candidates_path.write_text(
+                json.dumps({
+                    "accepted_candidates": [
+                        {
+                            "submit_timestamp": "2026-06-05T12:42:37Z",
+                            "matched_height": 4573284,
+                            "matched_block_hash": "hash-abc",
+                            "lifecycle_status": "confirmed",
+                        }
+                    ]
+                }),
+                encoding="utf-8",
+            )
 
             app = create_app(make_config(runtime_path, FALLBACK_SNAPSHOT_PATH))
             client = app.test_client()
@@ -1168,6 +1208,8 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(algo["workers"], 3)
             self.assertEqual(algo["hashrate"], 57266230.61333334)
             self.assertEqual(algo["hashrate_last24h"], 57266230.61333334)
+            self.assertEqual(algo["lastblock"], 4573284)
+            self.assertIn("timesincelast", algo)
             self.assertNotIn("estimate_current", algo)
             self.assertNotIn("actual_last24h", algo)
             self.assertNotIn("rental_current", algo)

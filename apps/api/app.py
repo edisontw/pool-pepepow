@@ -236,6 +236,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "placeholderFields": _placeholder_fields(record.data),
                 "snapshotSource": record.source,
                 "generatedAt": record.generated_at,
+                "activityUpdatedAt": record.meta.get("activityUpdatedAt"),
                 "activityMode": record.meta.get("activityMode"),
                 "activityDataStatus": record.meta.get("activityDataStatus"),
                 "activityWindowSeconds": record.meta.get("activityWindowSeconds"),
@@ -284,9 +285,17 @@ def create_app(config: AppConfig | None = None) -> Flask:
     @app.get("/api/blocks")
     def blocks():
         record = get_snapshot_record()
+        accepted_candidates = _load_json_items(
+            app_config.activity_snapshot_path.parent / "accepted-candidates.json",
+            app_config.runtime_snapshot_path.parent / "accepted-candidates.json",
+            "accepted_candidates",
+        )
+        zpool_blocks = _zpool_block_records(record, accepted_candidates, record.data["blocks"])
         return jsonify(
             {
                 "items": record.data["blocks"],
+                "blocks": zpool_blocks,
+                "zpool": {"blocks": zpool_blocks},
                 "kind": record.meta.get("blockFeedKind", "unknown"),
                 "dataStatus": record.data_status,
                 "generatedAt": record.generated_at,
@@ -440,6 +449,13 @@ def create_app(config: AppConfig | None = None) -> Flask:
             record = None
         pool_hashrate = _pool_hashrate(record)
         active_workers = _active_worker_count(record)
+        accepted_candidates = _load_json_items(
+            app_config.activity_snapshot_path.parent / "accepted-candidates.json",
+            app_config.runtime_snapshot_path.parent / "accepted-candidates.json",
+            "accepted_candidates",
+        )
+        recent_blocks = _pool_block_records(accepted_candidates)
+        last_block = recent_blocks[0] if recent_blocks else {}
         return jsonify(
             {
                 "hoohashv110": {
@@ -450,6 +466,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     "hashrate": pool_hashrate,
                     "workers": active_workers,
                     "hashrate_last24h": pool_hashrate,
+                    "lastblock": last_block.get("height"),
+                    "timesincelast": _seconds_since_unix(last_block.get("timeUnix")),
                 }
             }
         )
@@ -568,7 +586,8 @@ def _network_hashrate(record: SnapshotRecord | None) -> float:
 
 def _append_hashrate_history_sample(history: dict[str, Any], record: SnapshotRecord) -> None:
     now_ms = int(time.time() * 1000)
-    sample_ms = _parse_time_ms(record.generated_at)
+    activity_updated_at = record.meta.get("activityUpdatedAt")
+    sample_ms = _parse_time_ms(activity_updated_at if isinstance(activity_updated_at, str) else record.generated_at)
     history["pool"] = _append_history_point(history.get("pool"), sample_ms, _pool_hashrate(record), now_ms)
     history["network"] = _append_history_point(history.get("network"), sample_ms, _network_hashrate(record), now_ms)
 
@@ -710,6 +729,110 @@ def _pool_block_records(accepted_candidates: list[dict[str, Any]]) -> list[dict[
         key=lambda item: (
             item["height"] if isinstance(item.get("height"), int) else -1,
             item["timeUnix"] if isinstance(item.get("timeUnix"), int) else -1,
+        ),
+        reverse=True,
+    )
+    return blocks[:100]
+
+
+def _zpool_category(status: str) -> str:
+    if status == "confirmed":
+        return "generate"
+    if status == "orphan":
+        return "orphan"
+    return "immature"
+
+
+def _seconds_since_unix(value: Any) -> int | None:
+    if value is None:
+        return None
+    timestamp = _as_int(value, -1)
+    if timestamp < 0:
+        return None
+    return max(0, int(time.time()) - timestamp)
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _zpool_block_records(
+    record: SnapshotRecord | None,
+    accepted_candidates: list[dict[str, Any]],
+    snapshot_blocks: Any,
+) -> list[dict[str, Any]]:
+    network = record.data.get("network", {}) if record is not None else {}
+    network_difficulty = None
+    if isinstance(network, dict):
+        network_difficulty = _first_present(network, "difficulty", "networkDifficulty")
+
+    blocks = []
+    for candidate in accepted_candidates:
+        height = _first_present(candidate, "matched_height", "matchedHeight", "height")
+        timestamp = _first_present(candidate, "submit_timestamp", "submitTimestamp", "timestamp", "time")
+        amount = _first_present(candidate, "reward", "amount")
+        difficulty = _first_present(candidate, "difficulty", "difficulty_user", "difficultyUser", "shareDifficulty")
+        if difficulty is None:
+            difficulty = network_difficulty
+        block_hash = _first_present(
+            candidate,
+            "matched_block_hash",
+            "matchedBlockHash",
+            "blockHash",
+            "candidate_hash",
+            "candidateHash",
+        )
+        if height is None and not block_hash:
+            continue
+        time_unix = _parse_time_ms(timestamp) // 1000 if timestamp else None
+        blocks.append(
+            {
+                "coin": "PEPEW",
+                "time": _string_or_none(time_unix),
+                "height": _string_or_none(height),
+                "amount": str(amount if amount is not None else "0"),
+                "category": _zpool_category(_normalize_block_status(candidate)),
+                "difficulty": difficulty,
+                "difficulty_user": _first_present(candidate, "difficulty_user", "difficultyUser") or difficulty,
+                "hash": block_hash,
+                "confirmations": _as_int(_first_present(candidate, "confirmations", "confirms"), 0),
+            }
+        )
+
+    if not blocks and isinstance(snapshot_blocks, list):
+        for block in snapshot_blocks:
+            if not isinstance(block, dict):
+                continue
+            height = _first_present(block, "height", "blockHeight", "matchedHeight")
+            block_hash = _first_present(block, "hash", "blockHash", "matchedBlockHash")
+            if height is None and not block_hash:
+                continue
+            timestamp = _first_present(block, "time", "foundAt", "timestamp", "submitTimestamp")
+            amount = _first_present(block, "reward", "amount")
+            difficulty = _first_present(block, "difficulty", "difficulty_user", "difficultyUser")
+            if difficulty is None:
+                difficulty = network_difficulty
+            time_unix = _parse_time_ms(timestamp) // 1000 if timestamp else None
+            blocks.append(
+                {
+                    "coin": "PEPEW",
+                    "time": _string_or_none(time_unix),
+                    "height": _string_or_none(height),
+                    "amount": str(amount if amount is not None else "0"),
+                    "category": _zpool_category(_normalize_block_status(block)),
+                    "difficulty": difficulty,
+                    "difficulty_user": _first_present(block, "difficulty_user", "difficultyUser") or difficulty,
+                    "hash": block_hash,
+                    "confirmations": _as_int(_first_present(block, "confirmations", "confirms"), 0),
+                }
+            )
+
+    blocks.sort(
+        key=lambda item: (
+            _as_int(item.get("height"), -1),
+            _as_int(item.get("time"), -1),
         ),
         reverse=True,
     )
