@@ -246,6 +246,9 @@ def _overlay_activity_snapshot(
     )
 
     base_meta["activityMode"] = activity_meta.get("activityMode", base_meta.get("activityMode"))
+    activity_generated_at = activity_snapshot.get("generatedAt")
+    if isinstance(activity_generated_at, str):
+        base_meta["activityUpdatedAt"] = activity_generated_at
     base_meta["activityDataSource"] = activity_meta.get(
         "activityDataSource", base_meta.get("activityDataSource")
     )
