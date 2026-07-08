@@ -856,15 +856,14 @@ def _blocks_last_100(record: SnapshotRecord | None, recent_blocks: list[dict[str
     if current_height is None or current_height < 0:
         return len([block for block in recent_blocks[:100] if block.get("status") != "orphan"])
     lower_bound = current_height - 99
-    return len(
-        [
-            block
-            for block in recent_blocks
-            if block.get("status") != "orphan"
-            and isinstance(block.get("height"), int)
-            and block["height"] >= lower_bound
-        ]
-    )
+    count = 0
+    for block in recent_blocks:
+        if block.get("status") == "orphan":
+            continue
+        height = _as_int(block.get("height"), -1)
+        if height >= lower_bound:
+            count += 1
+    return count
 
 
 def _total_paid(payments: list[dict[str, Any]]) -> float:
@@ -885,13 +884,21 @@ def _build_mining_pool_stats_payload(
     block_counts = _block_counts(accepted_candidates)
     recent_blocks = _pool_block_records(accepted_candidates)
     last_block = recent_blocks[0] if recent_blocks else {}
+    last_block_height = last_block.get("height")
+    last_block_time_unix = last_block.get("timeUnix")
+    time_since_last = _seconds_since_unix(last_block_time_unix)
     block_fields = {
         "recentBlocks": recent_blocks,
-        "lastBlockHeight": last_block.get("height"),
+        "lastBlockHeight": last_block_height,
         "lastBlockHash": last_block.get("hash"),
         "lastBlockTime": last_block.get("time"),
-        "lastBlockTimeUnix": last_block.get("timeUnix"),
+        "lastBlockTimeUnix": last_block_time_unix,
         "blocksLast100": _blocks_last_100(record, recent_blocks),
+        # MiningPoolStats / yiimp-style compatibility aliases.
+        "lastblock": last_block_height,
+        "lastblockheight": last_block_height,
+        "lastBlock": last_block_height,
+        "timesincelast": time_since_last,
     }
     total_paid = _total_paid(payments)
     workers = _active_miner_workers(record)
