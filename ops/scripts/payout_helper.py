@@ -23,6 +23,79 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+_JSONL_WARNING_COUNTS: dict[str, int] = {}
+
+
+def iter_jsonl_objects(path: Path, *, warn: bool = False, warning_limit: int = 5):
+    """Yield dict rows from a JSONL file, skipping malformed or non-object rows."""
+    skipped = 0
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line_no, line in enumerate(f, 1):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                skipped += 1
+                if warn and skipped <= warning_limit:
+                    print(
+                        f"Warning: skipped malformed JSONL row in {path} line {line_no}: {exc}",
+                        file=sys.stderr,
+                    )
+                continue
+            if isinstance(row, dict):
+                yield row
+            else:
+                skipped += 1
+                if warn and skipped <= warning_limit:
+                    print(
+                        f"Warning: skipped non-object JSONL row in {path} line {line_no}",
+                        file=sys.stderr,
+                    )
+    if skipped:
+        _JSONL_WARNING_COUNTS[str(path)] = _JSONL_WARNING_COUNTS.get(str(path), 0) + skipped
+        if warn:
+            print(f"Warning: skipped {skipped} malformed/non-object JSONL row(s) in {path}", file=sys.stderr)
+
+
+def jsonl_malformed_rows_skipped(path: Path) -> int:
+    return _JSONL_WARNING_COUNTS.get(str(path), 0)
+
+
+def payout_jsonl_check(paths: list[Path], tail_lines: int = 5000) -> int:
+    """Report malformed rows in the tail of payout/runtime JSONL files without modifying them."""
+    tail_lines = max(1, min(int(tail_lines), 5000))
+    for path in paths:
+        print(f"== {path}")
+        if not path.exists():
+            print("status: missing")
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-tail_lines:]
+        except Exception as exc:
+            print(f"status: read_error {type(exc).__name__}: {exc}")
+            continue
+        checked = 0
+        bad = 0
+        for idx, line in enumerate(lines, 1):
+            raw = line.strip()
+            if not raw:
+                continue
+            checked += 1
+            try:
+                json.loads(raw)
+            except json.JSONDecodeError as exc:
+                bad += 1
+                if bad <= 10:
+                    print(f"bad_tail_line: {idx} error: {exc} preview: {raw[:220]}")
+        print(f"checked_tail_lines: {len(lines)}")
+        print(f"json_rows: {checked}")
+        print(f"malformed_rows: {bad}")
+    return 0
+
 def load_pool_snapshot() -> dict[str, Any]:
     paths = [
         Path(os.getenv("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT", "")),
@@ -446,31 +519,23 @@ def load_paid_payment_pairs(
     paid_pairs: set[tuple[str, str]] = set()
     if actions_log_path.exists():
         try:
-            with actions_log_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        act = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(act, dict) or not action_represents_successful_payment(act):
-                        continue
-                    c_id = act.get("candidate_id")
-                    wallet = act.get("wallet")
-                    if c_id and wallet:
-                        paid_pairs.add((str(c_id), str(wallet)))
-                        source_ids = act.get("sourceCandidateIds")
-                        if isinstance(source_ids, list):
-                            for source_id in source_ids:
-                                if source_id:
-                                    paid_pairs.add((str(source_id), str(wallet)))
-                        source_ids = act.get("carrySourceCandidateIds")
-                        if isinstance(source_ids, list):
-                            for source_id in source_ids:
-                                if source_id:
-                                    paid_pairs.add((str(source_id), str(wallet)))
+            for act in iter_jsonl_objects(actions_log_path, warn=True):
+                if not action_represents_successful_payment(act):
+                    continue
+                c_id = act.get("candidate_id")
+                wallet = act.get("wallet")
+                if c_id and wallet:
+                    paid_pairs.add((str(c_id), str(wallet)))
+                    source_ids = act.get("sourceCandidateIds")
+                    if isinstance(source_ids, list):
+                        for source_id in source_ids:
+                            if source_id:
+                                paid_pairs.add((str(source_id), str(wallet)))
+                    source_ids = act.get("carrySourceCandidateIds")
+                    if isinstance(source_ids, list):
+                        for source_id in source_ids:
+                            if source_id:
+                                paid_pairs.add((str(source_id), str(wallet)))
         except Exception:
             pass
 
@@ -551,33 +616,25 @@ def load_manual_operator_backfill_paid_candidate_ids(actions_log_path: Path) -> 
     if not actions_log_path.exists():
         return set()
     try:
-        with actions_log_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    act = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(act, dict) or not action_represents_successful_payment(act):
-                    continue
-                if act.get("action") != MANUAL_OPERATOR_BACKFILL_ACTION:
-                    continue
-                if act.get("reason") != MANUAL_OPERATOR_BACKFILL_REASON:
-                    continue
-                if act.get("sourceBucket") != MANUAL_OPERATOR_BACKFILL_BUCKET:
-                    continue
-                source_ids = act.get("sourceCandidateIds")
-                wallet = act.get("wallet")
-                timestamp = str(act.get("timestamp") or "")
-                total = str(act.get("operatorBackfillTotal") or "")
-                if not isinstance(source_ids, list) or not wallet or not timestamp or not total:
-                    continue
-                normalized_sources = tuple(_dedupe_preserve_order(str(source_id) for source_id in source_ids if source_id))
-                if not normalized_sources:
-                    continue
-                groups.setdefault((timestamp, total, normalized_sources), set()).add(str(wallet))
+        for act in iter_jsonl_objects(actions_log_path, warn=True):
+            if not action_represents_successful_payment(act):
+                continue
+            if act.get("action") != MANUAL_OPERATOR_BACKFILL_ACTION:
+                continue
+            if act.get("reason") != MANUAL_OPERATOR_BACKFILL_REASON:
+                continue
+            if act.get("sourceBucket") != MANUAL_OPERATOR_BACKFILL_BUCKET:
+                continue
+            source_ids = act.get("sourceCandidateIds")
+            wallet = act.get("wallet")
+            timestamp = str(act.get("timestamp") or "")
+            total = str(act.get("operatorBackfillTotal") or "")
+            if not isinstance(source_ids, list) or not wallet or not timestamp or not total:
+                continue
+            normalized_sources = tuple(_dedupe_preserve_order(str(source_id) for source_id in source_ids if source_id))
+            if not normalized_sources:
+                continue
+            groups.setdefault((timestamp, total, normalized_sources), set()).add(str(wallet))
     except Exception:
         return set()
 
@@ -596,32 +653,24 @@ def has_partial_manual_operator_backfill_payment(actions_log_path: Path) -> bool
     expected_wallets = {wallet for wallet, _pct in MANUAL_OPERATOR_BACKFILL_DISTRIBUTION}
     groups: dict[tuple[str, str, tuple[str, ...]], set[str]] = {}
     try:
-        with actions_log_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    act = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(act, dict) or not action_represents_successful_payment(act):
-                    continue
-                if act.get("action") != MANUAL_OPERATOR_BACKFILL_ACTION:
-                    continue
-                if act.get("reason") != MANUAL_OPERATOR_BACKFILL_REASON:
-                    continue
-                if act.get("sourceBucket") != MANUAL_OPERATOR_BACKFILL_BUCKET:
-                    continue
-                source_ids = act.get("sourceCandidateIds")
-                wallet = act.get("wallet")
-                timestamp = str(act.get("timestamp") or "")
-                total = str(act.get("operatorBackfillTotal") or "")
-                if not isinstance(source_ids, list) or not wallet or not timestamp or not total:
-                    continue
-                normalized_sources = tuple(_dedupe_preserve_order(str(source_id) for source_id in source_ids if source_id))
-                if normalized_sources:
-                    groups.setdefault((timestamp, total, normalized_sources), set()).add(str(wallet))
+        for act in iter_jsonl_objects(actions_log_path, warn=True):
+            if not action_represents_successful_payment(act):
+                continue
+            if act.get("action") != MANUAL_OPERATOR_BACKFILL_ACTION:
+                continue
+            if act.get("reason") != MANUAL_OPERATOR_BACKFILL_REASON:
+                continue
+            if act.get("sourceBucket") != MANUAL_OPERATOR_BACKFILL_BUCKET:
+                continue
+            source_ids = act.get("sourceCandidateIds")
+            wallet = act.get("wallet")
+            timestamp = str(act.get("timestamp") or "")
+            total = str(act.get("operatorBackfillTotal") or "")
+            if not isinstance(source_ids, list) or not wallet or not timestamp or not total:
+                continue
+            normalized_sources = tuple(_dedupe_preserve_order(str(source_id) for source_id in source_ids if source_id))
+            if normalized_sources:
+                groups.setdefault((timestamp, total, normalized_sources), set()).add(str(wallet))
     except Exception:
         return False
     return any(wallets and wallets != expected_wallets for wallets in groups.values())
@@ -632,26 +681,14 @@ def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: 
     if not actions_log_path.exists():
         return False
     try:
-        with actions_log_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    act = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (
-                    isinstance(act, dict)
-                    and act.get("wallet") == wallet
-                    and action_represents_successful_payment(act)
-                ):
-                    if act.get("candidate_id") == candidate_id:
+        for act in iter_jsonl_objects(actions_log_path, warn=True):
+            if act.get("wallet") == wallet and action_represents_successful_payment(act):
+                if act.get("candidate_id") == candidate_id:
+                    return True
+                for key in ("sourceCandidateIds", "carrySourceCandidateIds"):
+                    source_ids = act.get(key)
+                    if isinstance(source_ids, list) and candidate_id in {str(source_id) for source_id in source_ids}:
                         return True
-                    for key in ("sourceCandidateIds", "carrySourceCandidateIds"):
-                        source_ids = act.get(key)
-                        if isinstance(source_ids, list) and candidate_id in {str(source_id) for source_id in source_ids}:
-                            return True
     except Exception:
         return False
     return False
@@ -1668,18 +1705,7 @@ def generate_payments_snapshot(
     existing_actions = []
     if actions_log_path.exists():
         try:
-            with actions_log_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        act = json.loads(line)
-                        if not isinstance(act, dict):
-                            continue
-                        existing_actions.append(act)
-                    except json.JSONDecodeError:
-                        continue
+            existing_actions = list(iter_jsonl_objects(actions_log_path, warn=True))
         except Exception as exc:
             print(f"Error reading payment actions log: {exc}", file=sys.stderr)
             return 1
@@ -2011,25 +2037,15 @@ def record_payment(
     existing_actions = []
     if actions_log_path.exists():
         try:
-            with actions_log_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        act = json.loads(line)
-                        if not isinstance(act, dict):
-                            continue
-                        if (
-                            act.get("candidate_id") == candidate_id
-                            and act.get("wallet") == wallet
-                            and action_represents_successful_payment(act)
-                        ):
-                            print(f"Error: Duplicate payment rejected. Wallet {wallet} has already been paid for candidate {candidate_id}.", file=sys.stderr)
-                            return 1
-                        existing_actions.append(act)
-                    except json.JSONDecodeError:
-                        continue
+            for act in iter_jsonl_objects(actions_log_path, warn=True):
+                if (
+                    act.get("candidate_id") == candidate_id
+                    and act.get("wallet") == wallet
+                    and action_represents_successful_payment(act)
+                ):
+                    print(f"Error: Duplicate payment rejected. Wallet {wallet} has already been paid for candidate {candidate_id}.", file=sys.stderr)
+                    return 1
+                existing_actions.append(act)
         except Exception as exc:
             print(f"Error reading payment actions log: {exc}", file=sys.stderr)
             return 1
@@ -4481,6 +4497,10 @@ def main() -> int:
     parser_check.add_argument("--carry-snapshot", type=str, required=True, help="Path to payout-carry-snapshot.json")
     parser_check.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
 
+    parser_jsonl = subparsers.add_parser("payout-jsonl-check", help="Report malformed tail rows in JSONL files without modifying them")
+    parser_jsonl.add_argument("--tail-lines", type=int, default=5000, help="Tail lines to inspect per file, max 5000")
+    parser_jsonl.add_argument("paths", nargs="+", help="JSONL paths to inspect")
+
     parser_dry = subparsers.add_parser("payout-wallet-dry-run", help="Dry-run wallet payout validation and balance checking")
     parser_dry.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_dry.add_argument("--output", type=str, required=True, help="Path to output payout-wallet-dry-run.json")
@@ -4577,6 +4597,8 @@ def main() -> int:
             Path(args.carry_snapshot),
             Path(args.payments_snapshot)
         )
+    elif args.command == "payout-jsonl-check":
+        return payout_jsonl_check([Path(p) for p in args.paths], tail_lines=args.tail_lines)
     elif args.command == "payout-wallet-dry-run":
         return payout_wallet_dry_run(
             Path(args.candidates),
