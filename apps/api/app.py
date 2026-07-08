@@ -33,6 +33,7 @@ OPERATOR_STATUS_ITEMS = (
     ("payment_audit", "Payment Audit", "Status unavailable"),
 )
 PUBLIC_STATUSES = {"ok", "warning", "error", "unknown"}
+PEPEW_LIGHT_PRICE_API_URL = "https://light.pepepow.net/api/price"
 
 
 def parse_price_defensively(data: Any) -> float | None:
@@ -100,7 +101,7 @@ class PriceCache:
         if should_fetch:
             try:
                 req = urllib.request.Request(
-                    "https://api.nonkyc.io/api/v2/ticker/PEPEW_USDT",
+                    PEPEW_LIGHT_PRICE_API_URL,
                     headers={"User-Agent": "pepepow-pool-api/0.1.0"},
                 )
                 with urllib.request.urlopen(req, timeout=5) as response:
@@ -112,13 +113,13 @@ class PriceCache:
                         self.updated_at = _now_iso()
                         self.last_fetch_success = now
             except Exception as exc:
-                print(f"Error fetching PEPEW price from NonKYC: {exc}")
+                print(f"Error fetching PEPEW price from PEPEW Light price API: {exc}")
 
         with self.lock:
             return {
                 "symbol": "PEPEW_USDT",
                 "price": self.price,
-                "source": "nonkyc",
+                "source": "pepew-light",
                 "updatedAt": self.updated_at,
                 "cacheSeconds": self.cache_ttl_seconds,
             }

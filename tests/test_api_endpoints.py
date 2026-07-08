@@ -1250,10 +1250,12 @@ class ApiEndpointTests(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(payload["symbol"], "PEPEW_USDT")
             self.assertEqual(payload["price"], 0.000000325)
-            self.assertEqual(payload["source"], "nonkyc")
+            self.assertEqual(payload["source"], "pepew-light")
             self.assertIsNotNone(payload["updatedAt"])
             self.assertEqual(payload["cacheSeconds"], 120)
             mock_urlopen.assert_called_once()
+            request = mock_urlopen.call_args.args[0]
+            self.assertEqual(request.full_url, "https://light.pepepow.net/api/price")
 
     def test_price_endpoint_caching(self):
         from unittest.mock import patch, MagicMock
@@ -1278,6 +1280,8 @@ class ApiEndpointTests(unittest.TestCase):
             payload2 = response2.get_json()
             self.assertEqual(payload1["price"], 0.000000325)
             self.assertEqual(payload2["price"], 0.000000325)
+            self.assertEqual(payload1["source"], "pepew-light")
+            self.assertEqual(payload2["source"], "pepew-light")
             self.assertEqual(payload1["updatedAt"], payload2["updatedAt"])
 
             # Should only be called once
@@ -1291,12 +1295,17 @@ class ApiEndpointTests(unittest.TestCase):
         client = app.test_client()
 
         # Case 1: Fetch fails and no price cached yet -> should return price: null
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")) as mock_urlopen:
+        with (
+            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")) as mock_urlopen,
+            patch("builtins.print") as mock_print,
+        ):
             response = client.get("/api/price/pepew-usdt")
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertEqual(payload["price"], None)
             self.assertEqual(payload["updatedAt"], None)
+            mock_urlopen.assert_called_once()
+            self.assertIn("PEPEW Light price API", mock_print.call_args.args[0])
 
         # Case 2: Seed the cache manually, then fetch fails -> should return previously cached price
         cache = app.config["PRICE_CACHE"]
@@ -1306,12 +1315,16 @@ class ApiEndpointTests(unittest.TestCase):
         cache.last_fetch_success = 0.0
         cache.last_fetch_attempt = 0.0
 
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")) as mock_urlopen:
+        with (
+            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")) as mock_urlopen,
+            patch("builtins.print"),
+        ):
             response = client.get("/api/price/pepew-usdt")
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertEqual(payload["price"], 0.000000450)
             self.assertEqual(payload["updatedAt"], "2026-06-12T15:00:00Z")
+            mock_urlopen.assert_called_once()
 
     def test_price_endpoint_defensive_shapes(self):
         from unittest.mock import patch, MagicMock
