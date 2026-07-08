@@ -89,15 +89,15 @@ class PoolWalletWatchdogTests(unittest.TestCase):
             ],
         )
 
-        rc = self._run_main(self._args(4322.5))
+        rc = self._run_main(self._args(4013.75))
 
         self.assertEqual(rc, 0)
         data = json.loads(self.output.read_text(encoding="utf-8"))
         self.assertEqual(data["status"], "ok")
-        self.assertAlmostEqual(data["actualDelta"], 3322.5)
-        self.assertAlmostEqual(data["expectedDelta"], 3322.5)
-        self.assertAlmostEqual(data["accounting"]["newPoolRetainedTotal"], 86.45)
-        self.assertAlmostEqual(data["accounting"]["newMinerNetTotal"], 4236.05)
+        self.assertAlmostEqual(data["actualDelta"], 3013.75)
+        self.assertAlmostEqual(data["expectedDelta"], 3013.75)
+        self.assertAlmostEqual(data["accounting"]["newPoolRetainedTotal"], 80.275)
+        self.assertAlmostEqual(data["accounting"]["newMinerNetTotal"], 3933.475)
 
     def test_watchdog_alerts_on_unexpected_increase(self):
         self._write_inputs([])
