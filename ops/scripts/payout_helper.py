@@ -26,6 +26,38 @@ from typing import Any
 _JSONL_WARNING_COUNTS: dict[str, int] = {}
 
 
+class NonBlockingFileLock:
+    """Small process-local wrapper around flock that keeps the fd alive."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._fd: Any = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = self.path.open("a", encoding="utf-8")
+        try:
+            fcntl.flock(self._fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._fd.close()
+            self._fd = None
+            return False
+        return True
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._fd.close()
+            self._fd = None
+
+
+def payout_candidates_lock_path(output_path: Path) -> Path:
+    return output_path.parent / ".payout-candidates.lock"
+
+
 def iter_jsonl_objects(path: Path, *, warn: bool = False, warning_limit: int = 5):
     """Yield dict rows from a JSONL file, skipping malformed or non-object rows."""
     skipped = 0
@@ -1175,6 +1207,18 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             print(f"Warning: Failed to load rounds snapshot: {exc}", file=sys.stderr)
 
     payout_candidates = []
+    paid_candidate_ids = {candidate_id for candidate_id, _wallet in paid_pairs}
+    candidate_wallets_by_hash: dict[Any, set[str]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_hash = candidate.get("candidate_hash")
+        if not candidate_hash:
+            continue
+        wallet_value = str(candidate.get("wallet") or candidate.get("miner_wallet") or "").strip()
+        if wallet_value:
+            candidate_wallets_by_hash.setdefault(candidate_hash, set()).add(wallet_value)
+
     for c in candidates:
         if not isinstance(c, dict):
             continue
@@ -1274,10 +1318,10 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 if all((c_hash, w) in paid_pairs for w in shares):
                     is_already_paid = True
             else:
-                if any(p[0] == c_hash for p in paid_pairs):
+                if c_hash in paid_candidate_ids:
                     is_already_paid = True
         else:
-            if any(p[0] == c_hash for p in paid_pairs):
+            if c_hash in paid_candidate_ids:
                 is_already_paid = True
 
         if is_already_paid:
@@ -1421,8 +1465,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 elif c_hash not in rounds_map:
                     fallback_wallet = c.get("wallet") or c.get("miner_wallet")
                     # Check for duplicate candidates with same hash but different wallets
-                    same_hash_wallets = {str(cand.get("wallet") or cand.get("miner_wallet") or "").strip() for cand in candidates if cand.get("candidate_hash") == c_hash}
-                    same_hash_wallets.discard("")
+                    same_hash_wallets = candidate_wallets_by_hash.get(c_hash, set())
                     
                     is_ambiguous = len(same_hash_wallets) > 1
                     is_wallet_valid = isinstance(fallback_wallet, str) and bool(re.match(r"^[A-Za-z0-9]{26,128}$", fallback_wallet))
@@ -4548,12 +4591,21 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "payout-candidates":
-        return generate_payout_candidates(
-            Path(args.accepted_candidates),
-            Path(args.rounds_snapshot),
-            Path(args.output),
-            Path(args.carry_snapshot) if args.carry_snapshot else None
-        )
+        output_path = Path(args.output)
+        lock = NonBlockingFileLock(payout_candidates_lock_path(output_path))
+        if not lock.acquire():
+            print(f"payout_candidates_status: skipped_lock_held")
+            print(f"lock_path: {payout_candidates_lock_path(output_path)}")
+            return 0
+        try:
+            return generate_payout_candidates(
+                Path(args.accepted_candidates),
+                Path(args.rounds_snapshot),
+                output_path,
+                Path(args.carry_snapshot) if args.carry_snapshot else None
+            )
+        finally:
+            lock.release()
     elif args.command == "record-payment":
         return record_payment(
             Path(args.actions_log),

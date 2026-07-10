@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 import os
+import subprocess
 from pathlib import Path
 import sys
 
@@ -119,6 +120,116 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         with self.output_path.open("r", encoding="utf-8") as f:
             return json.load(f)["items"][0]
+
+    def test_payout_candidates_cli_skips_concurrent_invocation(self):
+        lock = payout_helper.NonBlockingFileLock(payout_helper.payout_candidates_lock_path(self.output_path))
+        self.assertTrue(lock.acquire())
+        try:
+            helper_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "payout_helper.py"
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(helper_path),
+                    "payout-candidates",
+                    "--accepted-candidates",
+                    str(self.accepted_path),
+                    "--rounds-snapshot",
+                    str(self.rounds_path),
+                    "--output",
+                    str(self.output_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        finally:
+            lock.release()
+
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("payout_candidates_status: skipped_lock_held", res.stdout)
+        self.assertFalse(self.output_path.exists())
+
+    def test_payout_candidates_stable_and_keeps_paid_rows_blocked(self):
+        paid_hash = "a" * 64
+        immature_hash = "b" * 64
+        wallet = "PEPEPOW1WalletAddressTarget001"
+        self.accepted_path.write_text(
+            json.dumps({
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": paid_hash,
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 4580896,
+                        "submit_timestamp": "2026-06-06T12:00:00Z",
+                        "coinbase_outputs": [
+                            {
+                                "value": 4387.5,
+                                "scriptPubKey": {
+                                    "addresses": ["PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"],
+                                    "type": "pubkeyhash",
+                                },
+                            },
+                            {"value": 2362.5},
+                        ],
+                    },
+                    {
+                        "candidate_hash": immature_hash,
+                        "lifecycle_status": "immature",
+                        "matched_height": 4580897,
+                        "submit_timestamp": "2026-06-06T12:01:00Z",
+                    },
+                ]
+            }),
+            encoding="utf-8",
+        )
+        self.rounds_path.write_text(
+            json.dumps({
+                "rounds": [
+                    {
+                        "candidate_hash": paid_hash,
+                        "total_share_score": 100.0,
+                        "total_share_count": 100,
+                        "shares": {wallet: {"share_count": 100, "share_score": 100.0}},
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+        self.actions_log.write_text(
+            json.dumps({
+                "type": "payment_recorded",
+                "status": "success",
+                "candidate_id": paid_hash,
+                "wallet": wallet,
+                "amount": 10.0,
+                "txid": "txidstablefixture",
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            rc1 = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            first = json.loads(self.output_path.read_text(encoding="utf-8"))
+            rc2 = payout_helper.generate_payout_candidates(self.accepted_path, self.rounds_path, self.output_path)
+            second = json.loads(self.output_path.read_text(encoding="utf-8"))
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+
+        self.assertEqual(rc1, 0)
+        self.assertEqual(rc2, 0)
+        self.assertEqual(first["items"], second["items"])
+        self.assertEqual(len(first["items"]), 2)
+        blocked = [item for item in first["items"] if item["status"] == "blocked"]
+        self.assertEqual(len(blocked), 2)
+        paid_item = next(item for item in first["items"] if item["candidateId"] == paid_hash)
+        self.assertEqual(paid_item["blockedReason"], "blocked_already_paid")
+        self.assertEqual(paid_item["payouts"], [])
 
     def _payout_review_summary(self, candidates_data, payments_data=None):
         import io
