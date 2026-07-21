@@ -6757,9 +6757,8 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             },
         )
 
-    def test_reject_evidence_captures_new_fields(self):
-        """Rejected daemon-template submit captures cleanJobsLegacy, shareHashValidationMode,
-        preimage source fields, refinedReasonCode, and variantTargetMatches."""
+    def test_non_candidate_reject_does_not_write_submit_evidence(self):
+        """Ordinary rejected shares do not create unbounded evidence artifacts."""
         from datetime import datetime, timezone
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -6776,29 +6775,7 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
 
             service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
 
-            self.assertTrue(evidence_path.exists())
-            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(len(records), 1)
-            rec = records[0]
-
-            self.assertEqual(rec["cleanJobsLegacy"], True)
-            self.assertEqual(rec["shareHashValidationMode"], "hoohashv110-pepew-header80")
-            self.assertEqual(rec["preimageVersion"], "20000000")
-            self.assertEqual(rec["preimagePrevhash"], "a" * 64)
-            self.assertEqual(rec["preimageNbits"], "1d00ffff")
-            self.assertEqual(rec["preimageJobNtime"], "01020304")
-            self.assertEqual(rec["issuedJobCoinb1"], "01")
-            self.assertEqual(rec["issuedJobCoinb2"], "ff")
-            self.assertEqual(rec["issuedJobMerkleBranch"], [])
-            self.assertEqual(rec["coinbaseLocalHex"], "01aabbccdd00000001ff")
-            self.assertEqual(rec["refinedReasonCode"], "ntime-mismatch")
-            self.assertIn("variantTargetMatches", rec)
-            variants = rec["variantTargetMatches"]
-            self.assertIsInstance(variants, dict)
-            self.assertTrue(variants.get("ntimeSourceOrder"))
-            self.assertFalse(variants.get("versionSourceOrder"))
-            self.assertNotIn("issuedVsSubmitReconstructionMatch", rec)
-            self.assertEqual(rec["rejectReason"], "low-difficulty-share")
+            self.assertFalse(evidence_path.exists())
 
     def test_reject_evidence_skipped_for_synthetic_source(self):
         """No record is written for synthetic-source jobs."""
@@ -6912,8 +6889,8 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
             self.assertNotIn("submitblockException", rec)
 
 
-    def test_reject_evidence_clean_jobs_legacy_false_recorded(self):
-        """cleanJobsLegacy=False is faithfully recorded."""
+    def test_non_candidate_reject_with_clean_jobs_legacy_false_is_not_recorded(self):
+        """The evidence filter applies regardless of the legacy clean-jobs flag."""
         from datetime import datetime, timezone
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -6930,11 +6907,10 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
 
             service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
 
-            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(records[0]["cleanJobsLegacy"], False)
+            self.assertFalse(evidence_path.exists())
 
-    def test_reject_evidence_variant_matches_absent_when_not_in_diagnostic(self):
-        """variantTargetMatches key is absent when diagnostic has no header80VariantTargetMatches."""
+    def test_non_candidate_reject_without_variant_diagnostic_is_not_recorded(self):
+        """Ordinary validation rejects do not bypass the evidence filter."""
         from datetime import datetime, timezone
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -6964,10 +6940,7 @@ class RejectEvidenceArtifactTests(unittest.TestCase):
 
             service._append_submit_evidence(assessment, state, "1.2.3.4:5678", params, observed_at)
 
-            records = [json.loads(line) for line in evidence_path.read_text().splitlines() if line.strip()]
-            self.assertEqual(len(records), 1)
-            self.assertNotIn("variantTargetMatches", records[0])
-            self.assertEqual(records[0]["rejectReason"], "preimage-missing")
+            self.assertFalse(evidence_path.exists())
 
 
 class LowDifficultyShareLogThrottleTests(unittest.TestCase):

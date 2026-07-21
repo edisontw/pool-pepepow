@@ -403,6 +403,7 @@ MANUAL_OPERATOR_BACKFILL_ACTION = "manual_operator_backfill_payment_recorded"
 MANUAL_OPERATOR_BACKFILL_REASON = "operator_approved_fixed_distribution_backfill_2026_06"
 MANUAL_OPERATOR_BACKFILL_BUCKET = "operatorApprovedBackfill"
 MANUAL_OPERATOR_BACKFILL_NOTE = "fixed split for current unattributed confirmed operator backfill bucket"
+MANUAL_RECOVERY_BATCH_ACTION = "manual_recovery_batch_payment_recorded"
 MANUAL_OPERATOR_BACKFILL_DISTRIBUTION = [
     ("PVKL38CAZxKX3tNczQCL9gN94i3SJ2LeNd", Decimal("0.65")),
     ("PNQf7byG1hYBzQHZEiPSK15DNr1YCkxpRd", Decimal("0.30")),
@@ -676,6 +677,48 @@ def load_manual_operator_backfill_paid_candidate_ids(actions_log_path: Path) -> 
         if wallets == expected_wallets:
             paid_ids.update(source_ids)
     return paid_ids
+
+
+def load_completed_manual_recovery_batch_candidate_ids(actions_log_path: Path) -> set[str]:
+    """Return source ids only after every payment in a manual recovery batch succeeded."""
+    batches: dict[str, dict[str, Any]] = {}
+    for action in iter_jsonl_objects(actions_log_path, warn=True):
+        if action.get("action") != MANUAL_RECOVERY_BATCH_ACTION or not action_represents_successful_payment(action):
+            continue
+        batch_id = str(action.get("recoveryBatch") or "")
+        sources = action.get("sourceCandidateIds")
+        expected = action.get("expectedSendCount")
+        if not batch_id or not isinstance(sources, list):
+            continue
+        try:
+            expected_count = int(expected)
+        except (TypeError, ValueError):
+            continue
+        if expected_count < 1:
+            continue
+        entry = batches.setdefault(batch_id, {"sources": tuple(_dedupe_preserve_order(str(v) for v in sources if v)), "expected": expected_count, "wallets": set()})
+        if entry["sources"] != tuple(_dedupe_preserve_order(str(v) for v in sources if v)) or entry["expected"] != expected_count:
+            continue
+        wallet = action.get("wallet")
+        if wallet:
+            entry["wallets"].add(str(wallet))
+    paid_ids: set[str] = set()
+    for entry in batches.values():
+        if len(entry["wallets"]) == entry["expected"]:
+            paid_ids.update(entry["sources"])
+    return paid_ids
+
+
+def load_manual_recovery_protected_candidate_ids(actions_log_path: Path) -> set[str]:
+    """Protect a batch from replay as soon as it has any recorded send attempt."""
+    protected: set[str] = set()
+    for action in iter_jsonl_objects(actions_log_path, warn=True):
+        if action.get("action") != MANUAL_RECOVERY_BATCH_ACTION:
+            continue
+        sources = action.get("sourceCandidateIds")
+        if isinstance(sources, list):
+            protected.update(str(value) for value in sources if value)
+    return protected
 
 
 def has_partial_manual_operator_backfill_payment(actions_log_path: Path) -> bool:
@@ -1161,7 +1204,11 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
     actions_log_path = output_path.parent / "payment-actions.jsonl"
     payments_snapshot_path = output_path.parent / "payments-snapshot.json"
     paid_pairs = load_paid_payment_pairs(actions_log_path, output_path, payments_snapshot_path)
-    manual_operator_backfill_paid_ids = load_manual_operator_backfill_paid_candidate_ids(actions_log_path)
+    manual_operator_backfill_paid_ids = (
+        load_manual_operator_backfill_paid_candidate_ids(actions_log_path)
+        | load_completed_manual_recovery_batch_candidate_ids(actions_log_path)
+        | load_manual_recovery_protected_candidate_ids(actions_log_path)
+    )
 
     wallet_carry_state: dict[str, dict[str, Any]] = {}
     for wallet, items in carry_map.items():
@@ -3774,6 +3821,111 @@ def payout_wallet_send_aggregated_once(
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def manual_recovery_batch(
+    candidates_path: Path,
+    actions_log_path: Path,
+    payments_snapshot_path: Path,
+    output_path: Path,
+    batch_id: str,
+    reason: str,
+    source_candidate_ids: list[str],
+    payments: list[tuple[str, str]],
+) -> int:
+    """Send one explicitly-authorized, aggregate recovery batch without altering normal payout selection."""
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    source_candidate_ids = _dedupe_preserve_order(source_candidate_ids)
+    env = load_env_vars()
+    real_enabled = env.get("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT", "false").strip().lower() == "true"
+    try:
+        max_sends = int(env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS", ""))
+    except (TypeError, ValueError):
+        max_sends = None
+    sent: list[dict[str, Any]] = []
+    status = "unknown"
+
+    def finish(value: str) -> int:
+        nonlocal status
+        status = value
+        atomic_write_json(output_path, {"generatedAt": generated_at, "status": status, "recoveryBatch": batch_id, "reason": reason, "sourceCandidateIds": source_candidate_ids, "sourceCount": len(source_candidate_ids), "expectedSendCount": len(payments), "sent": sent})
+        print(f"manual_recovery_batch_status: {status}")
+        print(f"source_count: {len(source_candidate_ids)}")
+        print(f"sent_count: {len(sent)}")
+        for row in sent:
+            print(f"sent: {row['wallet']} {row['amount']} {row['txid']}")
+        print(f"artifact_path: {output_path}")
+        return 0 if value == "sent_recorded" else 1
+
+    if not real_enabled or max_sends != len(payments) or len(payments) != 3 or not batch_id or not reason:
+        return finish("blocked_authorization_or_budget")
+    if len(source_candidate_ids) != 28 or len(set(source_candidate_ids)) != 28:
+        return finish("blocked_invalid_source_count")
+    if len({wallet for wallet, _amount in payments}) != len(payments):
+        return finish("blocked_duplicate_wallet")
+    try:
+        normalized = [(wallet, _normalize_payout_send_amount(amount)) for wallet, amount in payments]
+    except Exception:
+        return finish("blocked_amount_mismatch")
+    if any(not wallet or amount is None for wallet, amount in normalized):
+        return finish("blocked_amount_mismatch")
+    try:
+        with candidates_path.open("r", encoding="utf-8") as f:
+            candidate_items = json.load(f).get("items", [])
+    except Exception:
+        return finish("blocked_candidates_unreadable")
+    by_id = {_candidate_id(item): item for item in candidate_items if isinstance(item, dict)}
+    for source_id in source_candidate_ids:
+        item = by_id.get(source_id)
+        if not isinstance(item, dict) or item.get("lifecycleStatus") != "confirmed" or item.get("coinbaseMatchesExpectedPoolWallet") is not True or item.get("blockedReason") != "missing_share_data":
+            return finish("blocked_source_ineligible")
+        try:
+            if Decimal(str(item.get("netReward"))) <= 0:
+                return finish("blocked_source_ineligible")
+        except (InvalidOperation, TypeError, ValueError):
+            return finish("blocked_source_ineligible")
+    source_total = sum((Decimal(str(by_id[source_id]["netReward"])) for source_id in source_candidate_ids), Decimal("0"))
+    payment_total = sum((Decimal(amount) for _wallet, amount in normalized), Decimal("0"))
+    normalized_source_total = source_total.quantize(PEPEPOW_PAYOUT_SEND_QUANTUM, rounding=ROUND_DOWN)
+    if normalized_source_total != payment_total:
+        return finish("blocked_amount_mismatch")
+    existing_paid = load_manual_recovery_protected_candidate_ids(actions_log_path)
+    if any(source_id in existing_paid for source_id in source_candidate_ids):
+        return finish("blocked_already_paid")
+    balance = wallet_readonly_call("getbalance", [])
+    try:
+        if balance is None or Decimal(str(balance)) < payment_total:
+            return finish("blocked_insufficient_balance")
+    except (InvalidOperation, TypeError, ValueError):
+        return finish("blocked_wallet_balance_unreadable")
+    for wallet, _amount in normalized:
+        validated = wallet_readonly_call("validateaddress", [wallet])
+        if not isinstance(validated, dict) or validated.get("isvalid") is not True:
+            return finish("blocked_invalid_address")
+    lock_path = payment_actions_lock_path(actions_log_path)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            if any(source_id in load_manual_recovery_protected_candidate_ids(actions_log_path) for source_id in source_candidate_ids):
+                return finish("blocked_already_paid")
+            cli_path = load_env_vars().get("PEPEPOW_WALLET_CLI") or "/home/ubuntu/PEPEPOW-cli"
+            if not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
+                return finish("blocked_wallet_cli_unavailable")
+            for wallet, amount in normalized:
+                proc = subprocess.run([cli_path, "sendtoaddress", wallet, amount], check=False, capture_output=True, text=True, timeout=15)
+                txid = proc.stdout.strip().splitlines()[0].strip() if proc.returncode == 0 and proc.stdout.strip() else ""
+                if not re.fullmatch(r"[A-Za-z0-9]{26,128}", txid):
+                    append_payment_action(actions_log_path, {"action": MANUAL_RECOVERY_BATCH_ACTION, "candidate_id": f"manual_recovery:{batch_id}:{wallet}", "wallet": wallet, "amount": float(amount), "status": "failed", "reason": reason, "distributionPolicy": "70/25/5", "recoveryBatch": batch_id, "sourceCandidateIds": source_candidate_ids, "sourceCount": len(source_candidate_ids), "expectedSendCount": len(normalized), "operator": "manual_recovery", "timestamp": generated_at})
+                    generate_payments_snapshot(actions_log_path, payments_snapshot_path)
+                    return finish("blocked_send_failed")
+                action = {"action": MANUAL_RECOVERY_BATCH_ACTION, "candidate_id": f"manual_recovery:{batch_id}:{wallet}", "wallet": wallet, "amount": float(amount), "txid": txid, "status": "sent", "reason": reason, "distributionPolicy": "70/25/5", "recoveryBatch": batch_id, "sourceCandidateIds": source_candidate_ids, "sourceCount": len(source_candidate_ids), "expectedSendCount": len(normalized), "operator": "manual_recovery", "timestamp": generated_at}
+                append_payment_action(actions_log_path, action)
+                sent.append({"wallet": wallet, "amount": amount, "txid": txid})
+            if generate_payments_snapshot(actions_log_path, payments_snapshot_path) != 0:
+                return finish("sent_record_failed")
+            return finish("sent_recorded")
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def manual_operator_backfill_fixed_distribution(
     candidates_path: Path,
     actions_log_path: Path,
@@ -4566,6 +4718,16 @@ def main() -> int:
     parser_manual_backfill.add_argument("--payments-snapshot", type=str, required=True, help="Path to payments-snapshot.json")
     parser_manual_backfill.add_argument("--output", type=str, required=True, help="Path to output manual backfill result JSON")
 
+    parser_recovery = subparsers.add_parser("manual-recovery-batch", help="Send one explicit, bounded manual recovery batch")
+    parser_recovery.add_argument("--candidates", type=str, required=True)
+    parser_recovery.add_argument("--actions-log", type=str, required=True)
+    parser_recovery.add_argument("--payments-snapshot", type=str, required=True)
+    parser_recovery.add_argument("--output", type=str, required=True)
+    parser_recovery.add_argument("--batch-id", type=str, required=True)
+    parser_recovery.add_argument("--reason", type=str, required=True)
+    parser_recovery.add_argument("--source-candidate-id", action="append", required=True)
+    parser_recovery.add_argument("--payment", action="append", required=True, help="wallet:amount; repeat exactly three times")
+
     parser_preflight = subparsers.add_parser("payout-wallet-send-preflight", help="Preflight guarded wallet payout send without sending")
     parser_preflight.add_argument("--candidates", type=str, required=True, help="Path to payout-candidates.json")
     parser_preflight.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
@@ -4672,6 +4834,17 @@ def main() -> int:
             Path(args.actions_log),
             Path(args.payments_snapshot),
             Path(args.output),
+        )
+    elif args.command == "manual-recovery-batch":
+        parsed_payments = []
+        for value in args.payment:
+            wallet, sep, amount = value.rpartition(":")
+            if not sep:
+                parser.error("--payment must be wallet:amount")
+            parsed_payments.append((wallet, amount))
+        return manual_recovery_batch(
+            Path(args.candidates), Path(args.actions_log), Path(args.payments_snapshot), Path(args.output),
+            args.batch_id, args.reason, args.source_candidate_id, parsed_payments,
         )
     elif args.command == "payout-wallet-send-preflight":
         return payout_wallet_send_preflight(
