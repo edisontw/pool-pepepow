@@ -3,6 +3,8 @@
 
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/*.log
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/*-evidence.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/candidate-events.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/candidate-followup-events.jsonl
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/candidate-outcome-events.jsonl {
     su ubuntu ubuntu
     size 100M

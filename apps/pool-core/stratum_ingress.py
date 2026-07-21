@@ -285,6 +285,7 @@ class StratumIngressService:
             512, config.template_job_cache_size * 64
         )
         self._submit_fingerprints: OrderedDict[str, datetime] = OrderedDict()
+        self._submit_evidence_fingerprints: OrderedDict[str, None] = OrderedDict()
         self._candidate_event_log_path = config.activity_log_path.with_name(
             "candidate-events.jsonl"
         )
@@ -1192,12 +1193,49 @@ class StratumIngressService:
             return
 
         diag = assessment.share_hash_diagnostic or {}
-        coinbase_sum = diag.get("coinbaseAssemblySummary") or {}
-        merkle_sum = diag.get("merkleSummary") or {}
-        submitted_extranonce1 = state.extranonce1
+        # This artifact contains full reconstruction payloads.  Recording it for
+        # ordinary pool shares turns normal miner traffic into unbounded disk use;
+        # candidate and submitblock lifecycle evidence remains available below.
+        evidence_relevant = (
+            assessment.candidate_possible
+            or diag.get("meetsBlockTarget") is True
+            or diag.get("candidateArtifact") is not None
+            or diag.get("candidatePreparedAt") is not None
+            or diag.get("submitblockDryRunReady") is True
+            or diag.get("submitblockAttempted") is True
+            or diag.get("submitblockSent") is True
+            or diag.get("submitblockDaemonResult") is not None
+            or diag.get("submitblockDaemonError") is not None
+            or diag.get("submitblockRealSubmitStatus") is not None
+        )
+        if not evidence_relevant:
+            return
+
         submitted_extranonce2 = params[2] if len(params) > 2 else None
         submitted_ntime = params[3] if len(params) > 3 else None
         submitted_nonce = params[4] if len(params) > 4 else None
+        evidence_fingerprint = _json_sha256_digest(
+            {
+                "sessionId": state.session_id,
+                "jobId": assessment.submit_job_id,
+                "extranonce2": submitted_extranonce2,
+                "ntime": submitted_ntime,
+                "nonce": submitted_nonce,
+                "candidateBlockHash": diag.get("candidateBlockHash"),
+                "submitblockPayloadHash": diag.get("submitblockPayloadHash"),
+                "submitblockRealSubmitStatus": diag.get("submitblockRealSubmitStatus"),
+            }
+        )
+        evidence_fingerprints = getattr(self, "_submit_evidence_fingerprints", None)
+        if not isinstance(evidence_fingerprints, OrderedDict):
+            evidence_fingerprints = OrderedDict()
+            self._submit_evidence_fingerprints = evidence_fingerprints
+        if evidence_fingerprint in evidence_fingerprints:
+            return
+
+        coinbase_sum = diag.get("coinbaseAssemblySummary") or {}
+        merkle_sum = diag.get("merkleSummary") or {}
+        submitted_extranonce1 = state.extranonce1
         notify_prevhash_header_hex = self._notify_prevhash_for_submit(
             state=state,
             job_id=assessment.submit_job_id,
@@ -1263,14 +1301,6 @@ class StratumIngressService:
             if isinstance(authoritative_header, bytes):
                 authoritative_header_hex = authoritative_header.hex()
             authoritative_share_hash = authoritative_reference.get("shareHash")
-
-        is_interesting = (
-            assessment.share_hash_validation_status in ("share-hash-invalid", "share-hash-valid", "block-candidate", "low-difficulty-share")
-            or diag.get("meetsBlockTarget") is True
-            or assessment.reject_reason not in (None, "unknown-job", "stale-job", "duplicate-submit")
-        )
-        if not is_interesting:
-            return
 
         submit_coinb1 = getattr(cached_job, "coinb1", None)
         submit_coinb2 = getattr(cached_job, "coinb2", None)
@@ -1508,6 +1538,9 @@ class StratumIngressService:
         try:
             with open(self._submit_evidence_path, "a") as f:
                 f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            evidence_fingerprints[evidence_fingerprint] = None
+            while len(evidence_fingerprints) > 1024:
+                evidence_fingerprints.popitem(last=False)
         except Exception as exc:
             LOGGER.error("Failed to append submit evidence: %s", exc)
         self._append_notify_debug_capture(
@@ -3439,6 +3472,20 @@ class StratumIngressService:
         worker: str,
         observed_at: datetime,
     ) -> None:
+        diag = assessment.share_hash_diagnostic or {}
+        if not (
+            assessment.candidate_possible
+            or diag.get("meetsBlockTarget") is True
+            or diag.get("candidateArtifact") is not None
+            or diag.get("candidatePreparedAt") is not None
+            or diag.get("submitblockDryRunReady") is True
+            or diag.get("submitblockAttempted") is True
+            or diag.get("submitblockSent") is True
+            or diag.get("submitblockDaemonResult") is not None
+            or diag.get("submitblockDaemonError") is not None
+            or diag.get("submitblockRealSubmitStatus") is not None
+        ):
+            return
         notify_probe = self._notify_probe_for_job(state, assessment.submit_job_id)
         difficulty_probe = self._latest_difficulty_probe(state)
         record = {
