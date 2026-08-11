@@ -377,6 +377,102 @@ def create_app(config: AppConfig | None = None) -> Flask:
             return jsonify(data)
         return jsonify({"items": []})
 
+    @app.get("/api/solo/summary")
+    def solo_summary():
+        data = _load_json_dict(
+            app_config.solo_activity_snapshot_path,
+            app_config.solo_activity_snapshot_path,
+        )
+        if not data:
+            return jsonify(
+                {
+                    "miningMode": "solo",
+                    "hashrate": 0,
+                    "estimatedHashrate": 0,
+                    "miners": 0,
+                    "workers": 0,
+                    "blocksFound": 0,
+                    "status": "ok",
+                }
+            )
+        pool_stats = data.get("pool", {})
+        if not isinstance(pool_stats, dict):
+            pool_stats = {}
+
+        miners_val = data.get("miners")
+        if isinstance(miners_val, int):
+            miners_count = miners_val
+        elif isinstance(miners_val, dict):
+            miners_count = pool_stats.get("activeMiners", len(miners_val))
+        else:
+            miners_count = pool_stats.get("activeMiners", 0)
+
+        workers_val = data.get("workers")
+        if isinstance(workers_val, int):
+            workers_count = workers_val
+        else:
+            sessions_dict = data.get("activeSessions")
+            if isinstance(sessions_dict, dict):
+                workers_count = pool_stats.get("activeWorkers", len(sessions_dict))
+            else:
+                workers_count = pool_stats.get("activeWorkers", 0)
+
+        hashrate_val = (
+            pool_stats.get("poolHashrate")
+            or pool_stats.get("hashrate")
+            or data.get("hashrate")
+            or data.get("estimatedHashrate")
+            or 0
+        )
+
+        response_payload = dict(data)
+        response_payload.update(
+            {
+                "miningMode": "solo",
+                "status": "ok",
+                "hashrate": hashrate_val,
+                "estimatedHashrate": hashrate_val,
+                "miners": miners_count,
+                "workers": workers_count,
+                "blocksFound": data.get("blocksFound", 0),
+            }
+        )
+        return jsonify(response_payload)
+
+    @app.get("/api/solo/accepted-candidates")
+    def solo_accepted_candidates():
+        data = _load_json_dict(
+            app_config.solo_accepted_candidates_path,
+            app_config.solo_accepted_candidates_path,
+        )
+        candidates = data.get("accepted_candidates", [])
+        if not isinstance(candidates, list):
+            candidates = []
+        return jsonify(
+            {
+                "updated_at": data.get("updated_at"),
+                "miningMode": "solo",
+                "accepted_candidates": [c for c in candidates if isinstance(c, dict)],
+            }
+        )
+
+    @app.get("/api/solo/payments")
+    def solo_payments():
+        data = _load_json_dict(
+            app_config.solo_payments_snapshot_path,
+            app_config.solo_payments_snapshot_path,
+        )
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            items = []
+        return jsonify(
+            {
+                "updated_at": data.get("updated_at"),
+                "miningMode": "solo",
+                "items": [item for item in items if isinstance(item, dict)],
+            }
+        )
+
     @app.get("/api/miner/<wallet>")
     def miner(wallet: str):
         if not wallet_pattern.fullmatch(wallet):

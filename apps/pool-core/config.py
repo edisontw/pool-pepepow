@@ -73,6 +73,7 @@ class PoolCoreConfig:
     stratum_vardiff_slow_share_interval_seconds: float
     pool_reward_address: str = DEFAULT_POOL_REWARD_ADDRESS
     pepepow_header_version_source_order_enabled: bool = False
+    mining_mode: str = "pool"
 
 
 def load_config() -> PoolCoreConfig:
@@ -82,6 +83,11 @@ def load_config() -> PoolCoreConfig:
     rpc_host = os.getenv("PEPEPOWD_RPC_HOST", "127.0.0.1")
     rpc_port = int(os.getenv("PEPEPOWD_RPC_PORT", "8834"))
     stratum_port = int(os.getenv("PEPEPOW_POOL_CORE_STRATUM_PORT", "3333"))
+    mining_mode = os.getenv("PEPEPOW_POOL_CORE_MINING_MODE", "pool").strip().lower()
+    if mining_mode not in {"pool", "solo"}:
+        raise ValueError(
+            f"Invalid PEPEPOW_POOL_CORE_MINING_MODE: '{mining_mode}'. Allowed values: 'pool', 'solo'."
+        )
     hashrate_assumed_share_difficulty = max(
         MIN_HASHRATE_ASSUMED_SHARE_DIFFICULTY,
         float(
@@ -93,6 +99,7 @@ def load_config() -> PoolCoreConfig:
     )
 
     return PoolCoreConfig(
+        mining_mode=mining_mode,
         coin_name=os.getenv("PEPEPOW_POOL_CORE_COIN_NAME", "PEPEPOW"),
         algorithm=os.getenv(
             "PEPEPOW_POOL_CORE_ALGORITHM", "hoohashv110-pepew"

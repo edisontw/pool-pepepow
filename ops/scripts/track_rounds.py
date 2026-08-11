@@ -212,6 +212,11 @@ def main() -> int:
                     continue  # Exclude malformed
 
                 # Validation checks:
+                # 0. Exclude non-pool shares from Pool rounds
+                share_mining_mode = payload.get("miningMode") or payload.get("mining_mode") or "pool"
+                if isinstance(share_mining_mode, str) and share_mining_mode.strip().lower() != "pool":
+                    continue
+
                 # 1. Exclude rejected
                 accepted = payload.get("accepted")
                 if accepted is not True:
@@ -299,12 +304,13 @@ def main() -> int:
     earliest_share_ts = min(share_timestamps) if share_timestamps else None
     latest_share_ts = max(share_timestamps) if share_timestamps else None
 
-    # Filter candidates to only those matched on-chain (rounds)
+    # Filter candidates to only pool mode candidates matched on-chain (rounds)
     round_statuses = {"chain_match_found", "immature", "confirmed", "orphan"}
     round_cands = [
         c
         for c in candidates
         if c.get("lifecycle_status") in round_statuses
+        and (str(c.get("mining_mode") or c.get("miningMode") or "pool")).strip().lower() == "pool"
     ]
     boundary_cands = [
         c

@@ -58,7 +58,8 @@
             </div>
           </div>
           <div class="status-strip">
-            <div><span>Endpoint</span><strong><code>pool.pepepow.net:39333</code></strong></div>
+            <div><span>Pool Endpoint</span><strong><code>pool.pepepow.net:39333</code></strong></div>
+            <div><span>SOLO Endpoint</span><strong><code>pool.pepepow.net:39334</code></strong></div>
             <div><span>Algorithm</span><strong>hoohash-pepew / v110</strong></div>
             <div><span>Password</span><strong><code>x</code></strong></div>
           </div>
@@ -66,16 +67,27 @@
 
         <section class="panel">
           <div class="section-head">
-            <h3>Connection profile</h3>
-            <button class="button" id="copy-endpoint-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Endpoint</button>
+            <h3>POOL Mining (Shared Round Distribution)</h3>
+            <button class="button" id="copy-endpoint-btn" style="margin-top: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;">Copy Pool Endpoint</button>
           </div>
           <div class="kv-list">
-            <div><span>Coin</span><strong>PEPEPOW</strong></div>
-            <div><span>Algorithm</span><strong id="connect-algorithm">Hoohash-pepew / Hoohash V110 PEPEW</strong></div>
+            <div><span>Reward Scheme</span><strong>PPLNS / Round Share Weighted (1.0% Pool Fee)</strong></div>
             <div><span>Endpoint</span><strong id="connect-endpoint">stratum+tcp://pool.pepepow.net:39333</strong></div>
-            <div><span>Miner flag</span><strong><code>--pepepow</code></strong></div>
             <div><span>Username</span><strong><code>YOUR_WALLET.worker</code></strong></div>
             <div><span>Password</span><strong><code>x</code></strong></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>PURE SOLO Mining (100% Net Finder Reward)</h3>
+          </div>
+          <div class="kv-list">
+            <div><span>Reward Scheme</span><strong>Pure SOLO (Finder receives 100% of net miner reward after 1.0% SOLO pool fee)</strong></div>
+            <div><span>Endpoint</span><strong><code>stratum+tcp://pool.pepepow.net:39334</code></strong></div>
+            <div><span>Username</span><strong><code>YOUR_WALLET.worker</code></strong></div>
+            <div><span>Password</span><strong><code>x</code></strong></div>
+            <div><span>Note</span><p style="margin: 0; font-size: 0.85rem; color: rgba(235, 245, 255, 0.8);">Protocol-level developer, masternode, and foundation reward outputs are unaffected.</p></div>
           </div>
         </section>
 

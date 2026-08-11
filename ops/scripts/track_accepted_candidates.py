@@ -186,6 +186,34 @@ def main() -> int:
         except (ValueError, TypeError):
             current_height = 0
 
+    if current_height == 0:
+        activity_candidates = [
+            output_path.parent / "activity-snapshot.json",
+            output_path.parent.parent / "activity-snapshot.json",
+            output_path.parent.parent / "live-stratum" / "activity-snapshot.json",
+        ]
+        for act_p in activity_candidates:
+            if act_p.exists():
+                try:
+                    with act_p.open("r", encoding="utf-8") as f:
+                        act_data = json.load(f)
+                    if isinstance(act_data, dict):
+                        h = (
+                            act_data.get("meta", {}).get("templateLatestTemplateHeight")
+                            or act_data.get("meta", {}).get("current_height")
+                        )
+                        if not h and isinstance(act_data.get("jobs", {}).get("active"), list):
+                            for j in act_data["jobs"]["active"]:
+                                if isinstance(j, dict) and isinstance(j.get("targetContext"), dict):
+                                    h = j["targetContext"].get("height")
+                                    if h:
+                                        break
+                        if h:
+                            current_height = int(h)
+                            break
+                except Exception:
+                    pass
+
     # Load JSON lines
     candidates_by_hash: dict[str, dict[str, Any]] = {}
     try:
@@ -232,6 +260,8 @@ def main() -> int:
             "confirmations": confirmations,
             "maturity_label": maturity_label,
             "wallet": row.get("wallet"),
+            "worker": row.get("worker"),
+            "mining_mode": row.get("miningMode") or row.get("mining_mode") or "pool",
         }
         accepted_list.append(record)
 

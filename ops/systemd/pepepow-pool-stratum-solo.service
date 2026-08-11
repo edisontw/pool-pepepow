@@ -1,0 +1,19 @@
+[Unit]
+Description=PEPEPOW Pool Pure SOLO Stratum Ingress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/pool-pepepow/apps/pool-core
+EnvironmentFile=/home/ubuntu/pool-pepepow/.runtime/systemd-smoke/stratum-solo.env
+ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/apps/pool-core/stratum_ingress.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

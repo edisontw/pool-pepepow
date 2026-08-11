@@ -18,6 +18,7 @@ class ShareEvent:
     occurred_at: datetime
     accepted: bool
     difficulty: float | None = None
+    mining_mode: str = "pool"
 
 
 @dataclass(frozen=True)
@@ -121,12 +122,18 @@ def parse_share_event(raw_event: str | dict[str, Any]) -> ShareEvent:
     occurred_at = _parse_timestamp(payload)
     accepted = _resolve_outcome(payload)
     difficulty = _resolve_difficulty(payload)
+    mining_mode = payload.get("miningMode") or payload.get("mining_mode") or "pool"
+    if not isinstance(mining_mode, str) or mining_mode.strip().lower() not in {"pool", "solo"}:
+        mining_mode = "pool"
+    else:
+        mining_mode = mining_mode.strip().lower()
     return ShareEvent(
         wallet=wallet,
         worker=worker,
         occurred_at=occurred_at,
         accepted=accepted,
         difficulty=difficulty,
+        mining_mode=mining_mode,
     )
 
 

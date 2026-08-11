@@ -20,6 +20,9 @@ class AppConfig:
     cache_ttl_seconds: int
     stale_after_seconds: int
     allowed_wallet_pattern: str
+    solo_activity_snapshot_path: Path = Path("/var/lib/pepepow-pool/solo/activity-snapshot.json")
+    solo_accepted_candidates_path: Path = Path("/var/lib/pepepow-pool/solo/accepted-candidates.json")
+    solo_payments_snapshot_path: Path = Path("/var/lib/pepepow-pool/solo/solo-payments-snapshot.json")
 
 
 def load_config() -> AppConfig:
@@ -28,11 +31,20 @@ def load_config() -> AppConfig:
     default_runtime_snapshot = Path("/var/lib/pepepow-pool/pool-snapshot.json")
     default_activity_snapshot = Path("/var/lib/pepepow-pool/activity-snapshot.json")
     legacy_snapshot_path = os.getenv("PEPEPOW_POOL_API_SNAPSHOT_PATH")
-
     runtime_snapshot_path = os.getenv(
         "PEPEPOW_POOL_API_RUNTIME_SNAPSHOT_PATH",
         legacy_snapshot_path or str(default_runtime_snapshot),
     )
+    activity_snapshot_path = Path(
+        os.getenv(
+            "PEPEPOW_POOL_API_ACTIVITY_SNAPSHOT_PATH",
+            str(default_activity_snapshot),
+        )
+    ).expanduser()
+
+    default_solo_activity_snapshot = activity_snapshot_path.parent / "solo" / "activity-snapshot.json"
+    default_solo_accepted_candidates = activity_snapshot_path.parent / "solo" / "accepted-candidates.json"
+    default_solo_payments_snapshot = activity_snapshot_path.parent / "solo" / "solo-payments-snapshot.json"
 
     return AppConfig(
         app_name="pepepow-pool-api",
@@ -46,10 +58,23 @@ def load_config() -> AppConfig:
                 str(default_fallback_snapshot),
             )
         ).expanduser(),
-        activity_snapshot_path=Path(
+        activity_snapshot_path=activity_snapshot_path,
+        solo_activity_snapshot_path=Path(
             os.getenv(
-                "PEPEPOW_POOL_API_ACTIVITY_SNAPSHOT_PATH",
-                str(default_activity_snapshot),
+                "PEPEPOW_POOL_API_SOLO_ACTIVITY_SNAPSHOT_PATH",
+                str(default_solo_activity_snapshot),
+            )
+        ).expanduser(),
+        solo_accepted_candidates_path=Path(
+            os.getenv(
+                "PEPEPOW_POOL_API_SOLO_ACCEPTED_CANDIDATES_PATH",
+                str(default_solo_accepted_candidates),
+            )
+        ).expanduser(),
+        solo_payments_snapshot_path=Path(
+            os.getenv(
+                "PEPEPOW_POOL_API_SOLO_PAYMENTS_SNAPSHOT_PATH",
+                str(default_solo_payments_snapshot),
             )
         ).expanduser(),
         cache_ttl_seconds=max(

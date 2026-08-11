@@ -1267,10 +1267,22 @@ operator_status_service() {
   python3 "${SCRIPT_DIR}/operator_status_snapshot.py" --runtime-dir "${RUNTIME_DIR}" "$@"
 }
 
+solo_payout_refresh_service() {
+  local solo_runtime="${RUNTIME_DIR}/solo"
+  if [[ -d "${solo_runtime}" ]]; then
+    RUNTIME_DIR="${solo_runtime}" candidate_followup_service candidate-followup 200 --record >/dev/null 2>&1 || true
+    RUNTIME_DIR="${solo_runtime}" accepted_candidates_service >/dev/null 2>&1 || true
+    python3 "${SCRIPT_DIR}/solo_payout_helper.py" \
+      --accepted-candidates "${solo_runtime}/accepted-candidates.json" \
+      --output "${solo_runtime}/solo-payout-candidates.json" >/dev/null 2>&1 || true
+  fi
+}
+
 payout_refresh_service() {
   ensure_runtime_dir
   candidate_followup_service candidate-followup --record
   accepted_candidates_service
+  solo_payout_refresh_service
   track_rounds_service
   payout_carry_service
   payout_candidates_service

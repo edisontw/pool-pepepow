@@ -1017,3 +1017,60 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertEqual(round_item["total_share_count"], 1)
         self.assertEqual(round_item["total_share_score"], 3.0)
         self.assertEqual(data["preservedRoundAttributionCount"], 0)
+
+    def test_solo_shares_and_candidates_excluded_from_pool_rounds(self):
+        data = self._run_track(
+            candidates_data={
+                "accepted_candidates": [
+                    {
+                        "candidate_hash": "hash-solo-block",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 200,
+                        "submit_timestamp": "2026-06-05T12:02:00Z",
+                        "confirmations": 110,
+                        "mining_mode": "solo",
+                        "wallet": "walletSolo",
+                    },
+                    {
+                        "candidate_hash": "hash-pool-block",
+                        "lifecycle_status": "confirmed",
+                        "matched_height": 201,
+                        "submit_timestamp": "2026-06-05T12:05:00Z",
+                        "confirmations": 109,
+                        "mining_mode": "pool",
+                        "wallet": "walletPool",
+                    },
+                ]
+            },
+            shares=[
+                {
+                    "wallet": "walletPool",
+                    "timestamp": "2026-06-05T12:01:00Z",
+                    "accepted": True,
+                    "miningMode": "pool",
+                    "submit": {"difficulty": 1.0},
+                },
+                {
+                    "wallet": "walletSolo",
+                    "timestamp": "2026-06-05T12:03:00Z",
+                    "accepted": True,
+                    "miningMode": "solo",
+                    "submit": {"difficulty": 50.0},
+                },
+                {
+                    "wallet": "walletPool",
+                    "timestamp": "2026-06-05T12:04:00Z",
+                    "accepted": True,
+                    "miningMode": "pool",
+                    "submit": {"difficulty": 2.0},
+                },
+            ],
+        )
+        self.assertEqual(len(data["rounds"]), 1)
+        round_item = data["rounds"][0]
+        self.assertEqual(round_item["candidate_hash"], "hash-pool-block")
+        self.assertEqual(round_item["total_share_count"], 2)
+        self.assertEqual(round_item["total_share_score"], 3.0)
+        self.assertNotIn("walletSolo", round_item["shares"])
+        self.assertIn("walletPool", round_item["shares"])
+

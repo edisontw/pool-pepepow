@@ -2,7 +2,8 @@
   const DEFAULT_CONFIG = {
     apiBaseUrl: "/api",
     refreshIntervalMs: 60000,
-    stratumHost: "stratum+tcp://pool.pepepow.net:39333"
+    stratumHost: "stratum+tcp://pool.pepepow.net:39333",
+    soloStratumHost: "stratum+tcp://pool.pepepow.net:39334"
   };
 
   const FRONTEND_BUILD = "dashboard-fix-v7";
