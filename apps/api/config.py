@@ -20,6 +20,9 @@ class AppConfig:
     cache_ttl_seconds: int
     stale_after_seconds: int
     allowed_wallet_pattern: str
+    solo_activity_snapshot_path: Path = Path("/var/lib/pepepow-pool/solo/activity-snapshot.json")
+    solo_accepted_candidates_path: Path = Path("/var/lib/pepepow-pool/solo/accepted-candidates.json")
+    solo_payments_snapshot_path: Path = Path("/var/lib/pepepow-pool/solo/solo-payments-snapshot.json")
 
 
 def load_config() -> AppConfig:
@@ -27,6 +30,9 @@ def load_config() -> AppConfig:
     default_fallback_snapshot = base_dir / "data" / "mock" / "pool-snapshot.json"
     default_runtime_snapshot = Path("/var/lib/pepepow-pool/pool-snapshot.json")
     default_activity_snapshot = Path("/var/lib/pepepow-pool/activity-snapshot.json")
+    default_solo_activity_snapshot = Path("/var/lib/pepepow-pool/solo/activity-snapshot.json")
+    default_solo_accepted_candidates = Path("/var/lib/pepepow-pool/solo/accepted-candidates.json")
+    default_solo_payments_snapshot = Path("/var/lib/pepepow-pool/solo/solo-payments-snapshot.json")
     legacy_snapshot_path = os.getenv("PEPEPOW_POOL_API_SNAPSHOT_PATH")
 
     runtime_snapshot_path = os.getenv(
@@ -50,6 +56,24 @@ def load_config() -> AppConfig:
             os.getenv(
                 "PEPEPOW_POOL_API_ACTIVITY_SNAPSHOT_PATH",
                 str(default_activity_snapshot),
+            )
+        ).expanduser(),
+        solo_activity_snapshot_path=Path(
+            os.getenv(
+                "PEPEPOW_POOL_API_SOLO_ACTIVITY_SNAPSHOT_PATH",
+                str(default_solo_activity_snapshot),
+            )
+        ).expanduser(),
+        solo_accepted_candidates_path=Path(
+            os.getenv(
+                "PEPEPOW_POOL_API_SOLO_ACCEPTED_CANDIDATES_PATH",
+                str(default_solo_accepted_candidates),
+            )
+        ).expanduser(),
+        solo_payments_snapshot_path=Path(
+            os.getenv(
+                "PEPEPOW_POOL_API_SOLO_PAYMENTS_SNAPSHOT_PATH",
+                str(default_solo_payments_snapshot),
             )
         ).expanduser(),
         cache_ttl_seconds=max(

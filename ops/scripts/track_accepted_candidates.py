@@ -232,6 +232,8 @@ def main() -> int:
             "confirmations": confirmations,
             "maturity_label": maturity_label,
             "wallet": row.get("wallet"),
+            "worker": row.get("worker"),
+            "mining_mode": row.get("miningMode") or row.get("mining_mode") or "pool",
         }
         accepted_list.append(record)
 

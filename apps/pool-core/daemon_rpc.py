@@ -299,6 +299,7 @@ def build_candidate_outcome_event(
             .replace("+00:00", "Z")
         ),
         "candidateTimestamp": candidate_event.get("timestamp"),
+        "miningMode": candidate_event.get("miningMode") or candidate_event.get("mining_mode") or "pool",
         "jobId": candidate_event.get("jobId"),
         "templateAnchor": candidate_event.get("templateAnchor"),
         "wallet": candidate_event.get("wallet"),
@@ -422,6 +423,7 @@ def build_candidate_followup_event(
             .replace("+00:00", "Z")
         ),
         "candidateTimestamp": candidate_event.get("timestamp"),
+        "miningMode": candidate_event.get("miningMode") or candidate_event.get("mining_mode") or "pool",
         "jobId": candidate_event.get("jobId"),
         "templateAnchor": candidate_event.get("templateAnchor"),
         "wallet": candidate_event.get("wallet"),

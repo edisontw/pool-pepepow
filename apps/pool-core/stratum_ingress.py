@@ -745,6 +745,7 @@ class StratumIngressService:
                 occurred_at=observed_at,
                 accepted=accepted_submit,
                 difficulty=state.current_difficulty or self._synthetic_difficulty(),
+                mining_mode=self._config.mining_mode,
             )
             share_event_candidate_possible = assessment.candidate_possible
             if (
@@ -865,6 +866,7 @@ class StratumIngressService:
                 "wallet": wallet,
                 "worker": worker,
                 "login": login,
+                "miningMode": self._config.mining_mode,
                 "accepted": accepted_submit,
                 "status": "accepted" if accepted_submit else "rejected",
                 "source": "stratum",
@@ -2629,6 +2631,7 @@ class StratumIngressService:
             "wallet": wallet,
             "worker": worker,
             "login": login,
+            "miningMode": self._config.mining_mode,
             "candidateBlockHash": candidate_block_hash,
             "candidate_block_hash": candidate_block_hash,
             "localComputedHash": threshold_summary.get("localComputedHash"),

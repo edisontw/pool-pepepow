@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import importlib.util
 import sys
@@ -1366,5 +1367,40 @@ class ApiEndpointTests(unittest.TestCase):
                 data = response.get_json()
                 self.assertEqual(data["price"], expected_price)
 
+    def test_solo_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            solo_summary_path = tmp_path / "solo-activity.json"
+            solo_cands_path = tmp_path / "solo-candidates.json"
+            solo_payments_path = tmp_path / "solo-payments.json"
+
+            solo_summary_path.write_text(json.dumps({"miningMode": "solo", "hashrate": 500000, "status": "ok"}), encoding="utf-8")
+            solo_cands_path.write_text(json.dumps({"updated_at": "2026-08-11T12:00:00Z", "accepted_candidates": [{"candidate_hash": "solo1"}]}), encoding="utf-8")
+            solo_payments_path.write_text(json.dumps({"updated_at": "2026-08-11T12:00:00Z", "items": [{"candidate_id": "solo1"}]}), encoding="utf-8")
+
+            config = make_config(FALLBACK_SNAPSHOT_PATH, FALLBACK_SNAPSHOT_PATH)
+            config = replace(
+                config,
+                solo_activity_snapshot_path=solo_summary_path,
+                solo_accepted_candidates_path=solo_cands_path,
+                solo_payments_snapshot_path=solo_payments_path,
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            res = client.get("/api/solo/summary")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.get_json()["hashrate"], 500000)
+
+            res = client.get("/api/solo/accepted-candidates")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(len(res.get_json()["accepted_candidates"]), 1)
+
+            res = client.get("/api/solo/payments")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(len(res.get_json()["items"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+
