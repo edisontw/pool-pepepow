@@ -10,8 +10,7 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/pool-pepepow/apps/pool-core
 EnvironmentFile=/home/ubuntu/pool-pepepow/.runtime/systemd-smoke/stratum-solo.env
 ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/apps/pool-core/stratum_ingress.py
-Restart=always
-RestartSec=3
+Restart=no
 NoNewPrivileges=true
 PrivateTmp=true
 
