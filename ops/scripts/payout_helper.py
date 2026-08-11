@@ -537,10 +537,13 @@ def action_represents_successful_payment(action: dict[str, Any]) -> bool:
             return False
         if normalized in SUCCESS_PAYMENT_ACTION_STATUSES:
             return bool(action.get("txid"))
-    action_name = action.get("action")
-    if isinstance(action_name, str) and action_name.strip().lower() in SUCCESS_PAYMENT_ACTIONS:
-        return bool(action.get("txid"))
-    return bool(action.get("txid") and action.get("candidate_id") and action.get("wallet"))
+    cand_id = (
+        action.get("candidate_id")
+        or action.get("candidateId")
+        or action.get("candidateHash")
+        or action.get("candidate_hash")
+    )
+    return bool(action.get("txid") and cand_id and action.get("wallet"))
 
 
 def load_paid_payment_pairs(
@@ -555,7 +558,12 @@ def load_paid_payment_pairs(
             for act in iter_jsonl_objects(actions_log_path, warn=True):
                 if not action_represents_successful_payment(act):
                     continue
-                c_id = act.get("candidate_id")
+                c_id = (
+                    act.get("candidate_id")
+                    or act.get("candidateId")
+                    or act.get("candidateHash")
+                    or act.get("candidate_hash")
+                )
                 wallet = act.get("wallet")
                 if c_id and wallet:
                     paid_pairs.add((str(c_id), str(wallet)))
@@ -605,7 +613,7 @@ def load_paid_payment_pairs(
                                 if source_id:
                                     paid_pairs.add((str(source_id), str(wallet)))
 
-    if not paid_pairs or candidates_path is None or not candidates_path.exists():
+    if candidates_path is None or not candidates_path.exists():
         return paid_pairs
 
     try:
@@ -615,7 +623,13 @@ def load_paid_payment_pairs(
         return paid_pairs
     if not isinstance(data, dict):
         return paid_pairs
-    candidates = data.get("items") or data.get("candidates") or []
+    candidates = (
+        data.get("items")
+        or data.get("candidates")
+        or data.get("payout_candidates")
+        or data.get("solo_payout_candidates")
+        or []
+    )
     if not isinstance(candidates, list):
         return paid_pairs
 
@@ -4304,7 +4318,13 @@ def auto_payout_once(
     try:
         with candidates_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
-        candidates = payload.get("items") if isinstance(payload, dict) else []
+        candidates = (
+            payload.get("items")
+            or payload.get("candidates")
+            or payload.get("payout_candidates")
+            or payload.get("solo_payout_candidates")
+            or []
+        ) if isinstance(payload, dict) else []
         if not isinstance(candidates, list):
             candidates = []
     except Exception as exc:
@@ -4391,7 +4411,7 @@ def auto_payout_once(
             if not isinstance(payouts, list):
                 append_skip(c_id, "", None, "missing_payouts")
                 continue
-            if candidate_status not in {"ready_for_manual_review", "blocked"}:
+            if candidate_status not in {"ready_for_manual_review", "blocked", "ready", ""}:
                 append_skip(c_id, "", None, f"candidate_status_{candidate_status or 'missing'}")
                 continue
 
@@ -4432,7 +4452,7 @@ def auto_payout_once(
                 if payout_status in {"ready_for_wallet_send_preview"}:
                     append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status}")
                     continue
-                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send", "below_threshold", "below_threshold_carried"}:
+                if payout_status not in {"pending_manual_payment", "ready_for_wallet_send", "ready", "below_threshold", "below_threshold_carried"}:
                     append_skip(c_id, wallet, amount_raw, f"payout_status_{payout_status or 'missing'}")
                     continue
                 if "weight" in payout:
@@ -4592,7 +4612,7 @@ def auto_payout_once(
                         send_status = str(send_payload.get("status") or "unknown")
                 except Exception:
                     send_status = "result_unreadable"
-            if send_status == "sent_recorded":
+            if send_status in {"sent_recorded", "sent"}:
                 sent_count += 1
             items.append({
                 "wallet": wallet,

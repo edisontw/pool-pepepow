@@ -142,6 +142,161 @@ class SoloPayoutHelperTests(unittest.TestCase):
             self.assertEqual(cands[0]["netReward"], 6435.0)
             self.assertTrue(cands[0]["eligibleForPayout"])
 
+    def test_operational_solo_auto_payout_and_isolation(self):
+        import payout_helper
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            solo_cands_path = tmp_path / "solo-payout-candidates.json"
+            solo_actions_path = tmp_path / "solo-payment-actions.jsonl"
+            solo_payments_path = tmp_path / "solo-payments-snapshot.json"
+            solo_out_path = tmp_path / "solo-auto-payout-result.json"
+
+            # Create 3 SOLO candidates:
+            # 1. Confirmed unpaid (solocand1)
+            # 2. Confirmed already paid (solocand2)
+            # 3. Immature candidate (solocand3)
+            solo_data = {
+                "solo_payout_candidates": [
+                    {
+                        "candidateId": "solo:solocand1",
+                        "candidateHash": "solocand1",
+                        "miningMode": "solo",
+                        "lifecycleStatus": "confirmed",
+                        "confirmations": 110,
+                        "coinbaseMatchesExpectedPoolWallet": True,
+                        "finderWallet": "PwalletA111",
+                        "finderWorker": "rig1",
+                        "grossReward": 5000.0,
+                        "soloFeePercent": 1.0,
+                        "soloFeeAmount": 50.0,
+                        "netReward": 4950.0,
+                        "status": "ready",
+                        "weightMode": "solo_finder",
+                        "payouts": [{"wallet": "PwalletA111", "amount": 4950.0, "status": "ready"}],
+                    },
+                    {
+                        "candidateId": "solo:solocand2",
+                        "candidateHash": "solocand2",
+                        "miningMode": "solo",
+                        "lifecycleStatus": "confirmed",
+                        "confirmations": 120,
+                        "coinbaseMatchesExpectedPoolWallet": True,
+                        "finderWallet": "PwalletB222",
+                        "finderWorker": "rig2",
+                        "grossReward": 5000.0,
+                        "soloFeePercent": 1.0,
+                        "soloFeeAmount": 50.0,
+                        "netReward": 4950.0,
+                        "status": "ready",
+                        "weightMode": "solo_finder",
+                        "payouts": [{"wallet": "PwalletB222", "amount": 4950.0, "status": "ready"}],
+                    },
+                    {
+                        "candidateId": "solo:solocand3",
+                        "candidateHash": "solocand3",
+                        "miningMode": "solo",
+                        "lifecycleStatus": "immature",
+                        "confirmations": 40,
+                        "coinbaseMatchesExpectedPoolWallet": True,
+                        "finderWallet": "PwalletC333",
+                        "finderWorker": "rig3",
+                        "grossReward": 5000.0,
+                        "soloFeePercent": 1.0,
+                        "soloFeeAmount": 50.0,
+                        "netReward": 4950.0,
+                        "status": "ready",
+                        "weightMode": "solo_finder",
+                        "payouts": [{"wallet": "PwalletC333", "amount": 4950.0, "status": "ready"}],
+                    },
+                ]
+            }
+            solo_cands_path.write_text(json.dumps(solo_data), encoding="utf-8")
+
+            # Mark solocand2 as already paid in actions log
+            paid_action = {
+                "action": "sent",
+                "candidateId": "solo:solocand2",
+                "wallet": "PwalletB222",
+                "amount": 4950.0,
+                "txid": "txid_already_paid_solocand2",
+                "timestamp": "2026-08-11T12:00:00Z",
+            }
+            solo_actions_path.write_text(json.dumps(paid_action) + "\n", encoding="utf-8")
+            solo_payments_path.write_text(json.dumps({"items": []}), encoding="utf-8")
+
+            def fake_send_aggregate(*args, **kwargs):
+                actions_log_p = args[1] if len(args) > 1 else kwargs.get("actions_log_path")
+                out_p = args[3] if len(args) > 3 else kwargs.get("output_path")
+                wallet = args[4] if len(args) > 4 else kwargs.get("wallet")
+                total_amount = args[5] if len(args) > 5 else kwargs.get("total_amount")
+                source_ids = args[6] if len(args) > 6 else kwargs.get("source_ids")
+                record = {
+                    "action": "sent",
+                    "candidateId": source_ids[0] if source_ids else "",
+                    "wallet": wallet,
+                    "amount": float(total_amount),
+                    "txid": "txid_newly_sent_solocand1",
+                    "timestamp": "2026-08-11T15:00:00Z",
+                }
+                with actions_log_p.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record) + "\n")
+
+                res = {
+                    "status": "sent_recorded",
+                    "sendSent": True,
+                    "sendAttempted": True,
+                    "txid": "txid_newly_sent_solocand1",
+                    "wallet": wallet,
+                    "totalAmount": str(total_amount),
+                    "sourceCandidateIds": source_ids,
+                }
+                out_p.write_text(json.dumps(res), encoding="utf-8")
+                return 0
+
+            with patch("payout_helper.payout_wallet_send_aggregated_once", side_effect=fake_send_aggregate):
+                with patch.dict("os.environ", {"PEPEPOW_ENABLE_REAL_WALLET_PAYOUT": "true", "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET": "true"}):
+                    res_code = payout_helper.auto_payout_once(
+                        solo_cands_path,
+                        solo_actions_path,
+                        solo_payments_path,
+                        solo_out_path,
+                        max_sends=5,
+                        min_payout=0.00001,
+                    )
+
+            out_data = json.loads(solo_out_path.read_text(encoding="utf-8"))
+            self.assertEqual(out_data["status"], "ok")
+
+            # Verify solocand1 was sent
+            self.assertEqual(out_data["sentCount"], 1)
+            # Verify solocand2 (already paid) and solocand3 (immature) were skipped
+            skipped_reasons = {item.get("candidateId"): item.get("reason") for item in out_data.get("items", []) if item.get("action") == "skipped"}
+            self.assertEqual(skipped_reasons.get("solo:solocand2"), "blocked_already_paid")
+            self.assertEqual(skipped_reasons.get("solo:solocand3"), "lifecycle_status_immature")
+
+            # Verify payment action persisted to solo_actions_path
+            actions_text = solo_actions_path.read_text(encoding="utf-8")
+            self.assertIn("txid_newly_sent_solocand1", actions_text)
+            self.assertIn("PwalletA111", actions_text)
+
+            # Re-running auto_payout_once on next cycle: both solocand1 and solocand2 should now be skipped
+            with patch("payout_helper.payout_wallet_send_aggregated_once", side_effect=fake_send_aggregate) as mock_send_again:
+                with patch.dict("os.environ", {"PEPEPOW_ENABLE_REAL_WALLET_PAYOUT": "true", "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET": "true"}):
+                    payout_helper.auto_payout_once(
+                        solo_cands_path,
+                        solo_actions_path,
+                        solo_payments_path,
+                        solo_out_path,
+                        max_sends=5,
+                        min_payout=0.00001,
+                    )
+                mock_send_again.assert_not_called()
+
+            out_data2 = json.loads(solo_out_path.read_text(encoding="utf-8"))
+            self.assertEqual(out_data2["sentCount"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
