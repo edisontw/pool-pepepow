@@ -48,9 +48,6 @@ WATCHDOG_OUTPUT_PATH = Path(
     )
 )
 WATCHDOG_TOLERANCE = float(os.environ.get("PEPEPOW_POOL_WALLET_WATCHDOG_TOLERANCE", "0.01"))
-DEFAULT_BLOCK_REWARD = 6500.0
-DEFAULT_DEVELOPER_FACTOR = 0.95
-DEFAULT_MINER_FACTOR = 0.65
 
 
 def utc_now() -> str:
@@ -409,12 +406,18 @@ def is_confirmed_pool_candidate(candidate: dict[str, Any]) -> bool:
     return candidate.get("coinbaseMatchesExpectedPoolWallet") is not False and candidate.get("coinbase_matches_expected_pool_wallet") is not False
 
 
-def candidate_miner_reward(candidate: dict[str, Any], default_reward: float) -> float:
+def candidate_miner_reward(candidate: dict[str, Any]) -> float | None:
     for key in ("minerRewardAmount", "miner_reward_amount", "miner_gross_reward", "minerGrossReward"):
         value = as_number(candidate.get(key))
         if value is not None and value > 0:
             return value
-    return default_reward
+    outputs = candidate.get("coinbase_outputs") or candidate.get("coinbaseOutputs")
+    if isinstance(outputs, list):
+        detected = payout_helper.detect_coinbase_miner_reward(outputs)
+        value = as_number(detected.get("minerRewardAmount"))
+        if detected.get("coinbaseMatchesExpectedPoolWallet") is True and value is not None and value > 0:
+            return value
+    return None
 
 
 def payment_id(item: dict[str, Any]) -> str | None:
@@ -492,10 +495,6 @@ def wallet_balance_from_explorer(wallet: str, explorer_base: str) -> float:
 def build_watchdog_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     now = utc_now()
     env = payout_helper.load_env_vars()
-    block_reward = float(args.block_reward)
-    developer_factor = float(args.developer_factor)
-    miner_factor = float(args.miner_factor)
-    miner_reward_default = block_reward * developer_factor * miner_factor
     parsed_pool_fee_percent = as_number(env.get("PEPEPOW_POOL_FEE_PERCENT"))
     parsed_min_payout = as_number(env.get("PEPEPOW_MIN_PAYOUT"))
     pool_fee_percent = 1.0 if parsed_pool_fee_percent is None else parsed_pool_fee_percent
@@ -532,9 +531,13 @@ def build_watchdog_snapshot(args: argparse.Namespace) -> dict[str, Any]:
 
     confirmed_blocks = []
     miner_gross_total = 0.0
+    missing_reward_candidate_ids: list[str] = []
     for cid in new_candidate_ids:
         candidate = candidates[cid]
-        miner_gross = candidate_miner_reward(candidate, miner_reward_default)
+        miner_gross = candidate_miner_reward(candidate)
+        if miner_gross is None:
+            missing_reward_candidate_ids.append(cid)
+            continue
         pool_retained = miner_gross * pool_fee_percent / 100.0
         miner_net = miner_gross - pool_retained
         miner_gross_total += miner_gross
@@ -547,16 +550,27 @@ def build_watchdog_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         })
 
     outgoing_total = sum(payments[pid]["amount"] for pid in new_payment_ids)
-    expected_delta = miner_gross_total - outgoing_total
+    accounting_complete = not missing_reward_candidate_ids
+    expected_delta = miner_gross_total - outgoing_total if accounting_complete else None
     previous_balance = as_number(previous.get("balance"))
     actual_delta = None if previous_balance is None else current_balance - previous_balance
-    unexpected_increase = None if actual_delta is None else actual_delta - expected_delta
+    accounting_difference = None if actual_delta is None or expected_delta is None else actual_delta - expected_delta
+    unexpected_decrease = None if accounting_difference is None else max(0.0, -accounting_difference)
+    unexpected_increase = None if accounting_difference is None else max(0.0, accounting_difference)
 
     status = "baseline" if first_sample else "ok"
-    if unexpected_increase is not None and unexpected_increase > WATCHDOG_TOLERANCE:
+    if not first_sample and not accounting_complete:
+        status = "warning"
+    elif unexpected_decrease is not None and unexpected_decrease > WATCHDOG_TOLERANCE:
+        status = "critical"
+    elif unexpected_increase is not None and unexpected_increase > WATCHDOG_TOLERANCE:
         status = "warning"
     if first_sample:
         summary = "Baseline recorded; next run will compare wallet balance deltas."
+    elif not accounting_complete:
+        summary = "Accounting evidence is incomplete; wallet conservation conclusion is withheld."
+    elif unexpected_decrease is not None and unexpected_decrease > WATCHDOG_TOLERANCE:
+        summary = f"Unexpected wallet depletion detected: {unexpected_decrease:.8f} PEPEW below expected delta."
     elif status == "warning":
         summary = f"Unexpected wallet balance increase detected: {unexpected_increase:.8f} PEPEW over expected delta."
     else:
@@ -573,15 +587,14 @@ def build_watchdog_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         "previousBalance": previous_balance,
         "actualDelta": actual_delta,
         "expectedDelta": None if first_sample else expected_delta,
+        "accountingDifference": None if first_sample else accounting_difference,
+        "unexpectedDecrease": None if first_sample else unexpected_decrease,
         "unexpectedIncrease": None if first_sample else unexpected_increase,
+        "accountingComplete": accounting_complete,
         "tolerance": WATCHDOG_TOLERANCE,
         "params": {
-            "blockReward": block_reward,
-            "developerFactor": developer_factor,
-            "minerFactor": miner_factor,
             "poolFeePercent": pool_fee_percent,
             "minPayout": min_payout,
-            "defaultMinerGrossReward": miner_reward_default,
         },
         "accounting": {
             "newConfirmedBlockCount": 0 if first_sample else len(new_candidate_ids),
@@ -590,6 +603,7 @@ def build_watchdog_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "newMinerNetTotal": 0.0 if first_sample else sum(row["minerNetReward"] for row in confirmed_blocks),
             "newOutgoingPaymentCount": 0 if first_sample else len(new_payment_ids),
             "newOutgoingPaymentTotal": 0.0 if first_sample else outgoing_total,
+            "missingRewardCandidateIds": [] if first_sample else missing_reward_candidate_ids[:50],
         },
         "confirmedBlocks": [] if first_sample else confirmed_blocks[:50],
         "errors": [],
@@ -626,7 +640,10 @@ def print_watchdog(snapshot: dict[str, Any], output_format: str) -> None:
         print(f"balance: {snapshot.get('balance')}")
         print(f"actualDelta: {snapshot.get('actualDelta')}")
         print(f"expectedDelta: {snapshot.get('expectedDelta')}")
+        print(f"accountingDifference: {snapshot.get('accountingDifference')}")
+        print(f"unexpectedDecrease: {snapshot.get('unexpectedDecrease')}")
         print(f"unexpectedIncrease: {snapshot.get('unexpectedIncrease')}")
+        print(f"accountingComplete: {snapshot.get('accountingComplete')}")
         print(f"snapshot: {snapshot.get('outputPath') or WATCHDOG_OUTPUT_PATH}")
     if output_format in {"json", "both"}:
         print(json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
@@ -644,9 +661,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     watchdog.add_argument("--payments-snapshot", default=str(RUNTIME_DIR / "payments-snapshot.json"))
     watchdog.add_argument("--state", default=str(WATCHDOG_STATE_PATH))
     watchdog.add_argument("--output", default=str(WATCHDOG_OUTPUT_PATH))
-    watchdog.add_argument("--block-reward", type=float, default=DEFAULT_BLOCK_REWARD)
-    watchdog.add_argument("--developer-factor", type=float, default=DEFAULT_DEVELOPER_FACTOR)
-    watchdog.add_argument("--miner-factor", type=float, default=DEFAULT_MINER_FACTOR)
     watchdog.add_argument("--balance", type=float, default=None, help="override current wallet balance for tests")
     watchdog.add_argument("--format", choices=("human", "json", "both"), default="both")
     args = parser.parse_args(argv)

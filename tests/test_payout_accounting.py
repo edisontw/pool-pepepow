@@ -6,10 +6,12 @@ import os
 import subprocess
 from pathlib import Path
 import sys
+import argparse
 
 # Insert ops/scripts to path to load payout_helper
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ops" / "scripts"))
 import payout_helper
+import pool_wallet_monitor
 
 class PayoutAccountingTests(unittest.TestCase):
     def setUp(self):
@@ -74,6 +76,16 @@ class PayoutAccountingTests(unittest.TestCase):
         return None
 
     def _write_single_confirmed_candidate(self, candidate_hash, coinbase_outputs):
+        pool_address = payout_helper.expected_pool_reward_address()
+        has_explicit_address = any("scriptPubKey" in output for output in coinbase_outputs)
+        unaddressed_values = [float(output.get("value", 0)) for output in coinbase_outputs if "scriptPubKey" not in output]
+        default_miner_value = None if has_explicit_address else max(unaddressed_values, default=None)
+        normalized_outputs = []
+        for output in coinbase_outputs:
+            output = dict(output)
+            if "scriptPubKey" not in output and float(output.get("value", 0)) == default_miner_value:
+                output["scriptPubKey"] = {"addresses": [pool_address], "type": "pubkeyhash"}
+            normalized_outputs.append(output)
         with self.accepted_path.open("w", encoding="utf-8") as f:
             json.dump({
                 "accepted_candidates": [
@@ -82,7 +94,7 @@ class PayoutAccountingTests(unittest.TestCase):
                         "lifecycle_status": "confirmed",
                         "matched_height": 4580896,
                         "submit_timestamp": "2026-06-06T12:00:00Z",
-                        "coinbase_outputs": coinbase_outputs,
+                        "coinbase_outputs": normalized_outputs,
                     }
                 ]
             }, f)
@@ -634,13 +646,13 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["minerGrossReward"], 4387.5)
         self.assertEqual(item["grossReward"], 4387.5)
         self.assertEqual(item["masternodeReward"], 2362.5)
-        self.assertEqual(item["devFeeReward"], 250.0)
+        self.assertIsNone(item["devFeeReward"])
         self.assertEqual(item["coinbaseTotalReward"], 7000.0)
         self.assertEqual(item["minerRewardOutputIndex"], 0)
         self.assertEqual(item["minerRewardAmount"], 4387.5)
         self.assertEqual(item["masternodeRewardAmount"], 2362.5)
-        self.assertEqual(item["specialRewardAmount"], 250.0)
-        self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward")
+        self.assertIsNone(item["specialRewardAmount"])
+        self.assertEqual(item["rewardSource"], "coinbase_expected_pool_address_output")
         self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [2362.5, 250.0])
         self.assertAlmostEqual(item["poolFeeAmount"], 43.875)
         self.assertAlmostEqual(item["netReward"], 4343.625)
@@ -911,7 +923,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["minerRewardOutputIndex"], 0)
         self.assertEqual(item["minerRewardAmount"], 4387.5)
         self.assertEqual(item["grossReward"], 4387.5)
-        self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward")
+        self.assertEqual(item["rewardSource"], "coinbase_expected_pool_address_output")
 
     def test_coinbase_miner_reward_detected_when_vout2(self):
         item = self._generate_single_candidate(
@@ -949,7 +961,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 {"value": 4387.5},
             ],
         )
-        self.assertEqual(item["specialRewardAmount"], 250.0)
+        self.assertIsNone(item["specialRewardAmount"])
         self.assertIn(250.0, [out["value"] for out in item["excludedCoinbaseOutputs"]])
 
     def test_coinbase_superblock_reward_uses_actual_total_and_split(self):
@@ -965,22 +977,96 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["minerRewardOutputIndex"], 2)
         self.assertEqual(item["minerRewardAmount"], 8937.5)
         self.assertEqual(item["masternodeRewardAmount"], 4812.5)
-        self.assertEqual(item["specialRewardAmount"], 250.0)
+        self.assertIsNone(item["specialRewardAmount"])
         self.assertAlmostEqual(item["netReward"], 8848.125)
 
     def test_coinbase_candidate_blocked_when_no_output_matches_miner_split_reward(self):
         item = self._generate_single_candidate(
             "hash_no_miner_match",
             [
-                {"value": 3000.0},
-                {"value": 250.0},
-                {"value": 3000.0},
+                {"value": 3000.0, "scriptPubKey": {"addresses": ["not-the-pool-wallet"]}},
+                {"value": 250.0, "scriptPubKey": {"addresses": ["not-the-pool-wallet"]}},
+                {"value": 3000.0, "scriptPubKey": {"addresses": ["not-the-pool-wallet"]}},
             ],
         )
         self.assertEqual(item["status"], "blocked")
-        self.assertEqual(item["reason"], "blocked_missing_miner_reward_output")
+        self.assertEqual(item["reason"], "blocked_coinbase_reward_mismatch")
         self.assertIsNone(item["grossReward"])
         self.assertIsNone(item["minerRewardAmount"])
+
+    def test_coinbase_pool_address_reward_is_dynamic_for_normal_and_superblocks(self):
+        cases = (
+            ("normal_6500", 4062.5, 250.0, 2187.5),
+            ("normal_6000", 3737.5, 250.0, 2012.5),
+            ("superblock_2x_6000", 7475.0, 500.0, 4025.0),
+            ("superblock_5x_6000", 18687.5, 1250.0, 10062.5),
+        )
+        pool_address = payout_helper.expected_pool_reward_address()
+        for candidate_hash, miner_amount, foundation_amount, masternode_amount in cases:
+            with self.subTest(candidate_hash=candidate_hash):
+                item = self._generate_single_candidate(
+                    candidate_hash,
+                    [
+                        {"value": foundation_amount, "scriptPubKey": {"addresses": ["foundation"]}},
+                        {"value": masternode_amount, "scriptPubKey": {"addresses": ["masternode"]}},
+                        {"value": miner_amount, "scriptPubKey": {"addresses": [pool_address]}},
+                    ],
+                )
+                self.assertEqual(item["status"], "ready_for_manual_review")
+                self.assertEqual(item["minerRewardAmount"], miner_amount)
+                self.assertAlmostEqual(item["netReward"], miner_amount * 0.99)
+
+    def test_payout_value_conservation_counts_carried_payment_once(self):
+        result = payout_helper.payout_value_conservation(
+            [
+                {"candidateId": "source-a", "netReward": 80.0},
+                {"candidateId": "source-b", "netReward": 70.0},
+            ],
+            [
+                {
+                    "action": "manual_payment_recorded",
+                    "txid": "carry-tx", "wallet": "walletA", "amount": 150.0,
+                    "candidate_id": "source-b", "carrySourceCandidateIds": ["source-a"],
+                },
+                {
+                    "action": "manual_payment_recorded",
+                    "txid": "carry-tx", "wallet": "walletA", "amount": 150.0,
+                    "candidate_id": "source-b", "carrySourceCandidateIds": ["source-a"],
+                },
+            ],
+        )
+        self.assertEqual(result["netMinerRewardTotal"], 150.0)
+        self.assertEqual(result["uniqueSuccessfulOutgoingTotal"], 150.0)
+        self.assertTrue(result["conserved"])
+
+    def test_wallet_watchdog_detects_unexpected_depletion(self):
+        state_path = self.tmp_path / "watchdog-state.json"
+        watchdog_output = self.tmp_path / "watchdog.json"
+        payments_path = self.tmp_path / "watchdog-payments.json"
+        args = argparse.Namespace(
+            wallet="pool-wallet", explorer="https://unused.example", accepted_candidates=str(self.accepted_path),
+            payment_actions=str(self.actions_log), payments_snapshot=str(payments_path),
+            state=str(state_path), output=str(watchdog_output), balance=1000.0,
+        )
+        baseline = pool_wallet_monitor.build_watchdog_snapshot(args)
+        self.assertEqual(baseline["status"], "baseline")
+        self.accepted_path.write_text(json.dumps({"accepted_candidates": [{
+            "candidate_hash": "wallet-reward-source", "lifecycle_status": "confirmed",
+            "minerRewardAmount": 100.0, "coinbaseMatchesExpectedPoolWallet": True,
+        }]}), encoding="utf-8")
+        args.balance = 500.0
+        snapshot = pool_wallet_monitor.build_watchdog_snapshot(args)
+        self.assertEqual(snapshot["expectedDelta"], 100.0)
+        self.assertEqual(snapshot["actualDelta"], -500.0)
+        self.assertEqual(snapshot["accountingDifference"], -600.0)
+        self.assertEqual(snapshot["unexpectedDecrease"], 600.0)
+        self.assertEqual(snapshot["status"], "critical")
+        args.balance = 700.0
+        increase = pool_wallet_monitor.build_watchdog_snapshot(args)
+        self.assertEqual(increase["expectedDelta"], 0.0)
+        self.assertEqual(increase["actualDelta"], 200.0)
+        self.assertEqual(increase["unexpectedIncrease"], 200.0)
+        self.assertEqual(increase["status"], "warning")
 
     def test_record_payment_and_duplicate_handling(self):
         # Record first payment
@@ -1119,7 +1205,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertIn("BLOCKED", res_review.stdout)
         self.assertRegex(
             res_review.stdout,
-            r"blocked_(coinbase_lookup_unavailable|missing_miner_reward_output)",
+            r"blocked_(coinbase_lookup_unavailable|missing_miner_reward_output|coinbase_reward_mismatch)",
         )
 
         # Test backward compatibility (old candidates format)
@@ -1576,7 +1662,7 @@ class PayoutAccountingTests(unittest.TestCase):
                     "matched_height": 300,
                     "submit_timestamp": "2026-06-06T12:00:00Z",
                     "coinbase_outputs": [
-                        {"value": 3900.0},
+                        {"value": 3900.0, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}},
                         {"value": 2100.0},
                         {"value": 250.0},
                     ],
@@ -1628,7 +1714,7 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertEqual(item["totalBlockReward"], 6250.0)
         self.assertAlmostEqual(item["minerGrossReward"], 3900.0)
         self.assertEqual(item["grossReward"], item["minerGrossReward"])
-        self.assertEqual(item["rewardSource"], "coinbase_detected_miner_split_reward")
+        self.assertEqual(item["rewardSource"], "coinbase_expected_pool_address_output")
         self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [2100.0, 250.0])
         self.assertIsNone(item["reason"])
 
@@ -1716,13 +1802,13 @@ class PayoutAccountingTests(unittest.TestCase):
                         "vout": [
                             {"value": 2362.5},
                             {"value": 250.0},
-                            {"value": 4387.5}
+                            {"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}}
                         ]
                     }
                 elif txid == "coinbase_tx_hash_456":
                     return {
                         "vout": [
-                            {"value": 4387.5},
+                            {"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}},
                             {"value": 2362.5},
                             {"value": 250.0}
                         ]
@@ -1730,7 +1816,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 elif txid == "coinbase_tx_hash_789":
                     return {
                         "vout": [
-                            {"value": 4387.5},
+                            {"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}},
                             {"value": 2362.5},
                             {"value": 250.0}
                         ]
@@ -1838,12 +1924,12 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertEqual(c1["totalBlockReward"], 7000.0)
             self.assertEqual(c1["minerGrossReward"], 4387.5)
             self.assertEqual(c1["grossReward"], c1["minerGrossReward"])
-            self.assertEqual(c1["rewardSource"], "coinbase_detected_miner_split_reward")
+            self.assertEqual(c1["rewardSource"], "coinbase_expected_pool_address_output")
             self.assertEqual(c1["coinbaseTxid"], "coinbase_tx_hash_123")
             self.assertEqual(c1["minerRewardOutputIndex"], 2)
             self.assertEqual(c1["minerRewardAmount"], 4387.5)
             self.assertEqual(c1["masternodeRewardAmount"], 2362.5)
-            self.assertEqual(c1["specialRewardAmount"], 250.0)
+            self.assertIsNone(c1["specialRewardAmount"])
             self.assertEqual([out["value"] for out in c1["excludedCoinbaseOutputs"]], [2362.5, 250.0])
             self.assertIsNone(c1["reason"])
 
@@ -1874,7 +1960,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 return {"confirmations": 12, "tx": ["coinbaseprefblockhash00000001"]}
             if method == "getrawtransaction":
                 self.assertEqual(params, ["coinbaseprefblockhash00000001", 1])
-                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+                return {"vout": [{"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}}, {"value": 2362.5}, {"value": 250.0}]}
             if method == "getblockhash":
                 self.fail("getblockhash should not be called when candidate blockHash resolves")
             return None
@@ -1909,7 +1995,7 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertEqual(item["coinbaseTxid"], "coinbaseprefblockhash00000001")
             self.assertEqual(item["coinbaseTotalReward"], 7000.0)
             self.assertEqual(item["minerRewardAmount"], 4387.5)
-            self.assertEqual(item["specialRewardAmount"], 250.0)
+            self.assertIsNone(item["specialRewardAmount"])
             self.assertNotEqual(item["blockedReason"], "blocked_missing_miner_reward_output")
             self.assertEqual([call[0] for call in rpc_calls], ["getblock", "getrawtransaction"])
         finally:
@@ -1935,7 +2021,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 return {"confirmations": 12, "tx": ["coinbasefallbackheight000001"]}
             if method == "getrawtransaction":
                 self.assertEqual(params, ["coinbasefallbackheight000001", 1])
-                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+                return {"vout": [{"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}}, {"value": 2362.5}, {"value": 250.0}]}
             return None
 
         payout_helper.query_rpc = mock_query_rpc
@@ -1988,7 +2074,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 return {"confirmations": 12, "tx": ["coinbaseretrypermission0001"]}
             if method == "getrawtransaction":
                 self.assertEqual(params, ["coinbaseretrypermission0001", 1])
-                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+                return {"vout": [{"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}}, {"value": 2362.5}, {"value": 250.0}]}
             return None
 
         payout_helper.query_rpc = mock_query_rpc
@@ -2057,7 +2143,7 @@ class PayoutAccountingTests(unittest.TestCase):
                     "confirmations": 12,
                     "tx": [{
                         "txid": "coinbaseverbose2fallback001",
-                        "vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}],
+                        "vout": [{"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}}, {"value": 2362.5}, {"value": 250.0}],
                     }],
                 }
             return None
@@ -2333,7 +2419,7 @@ class PayoutAccountingTests(unittest.TestCase):
                 return {"confirmations": 12, "tx": ["coinbase64hex000000000000001"]}
             if method == "getrawtransaction":
                 self.assertEqual(params, ["coinbase64hex000000000000001", 1])
-                return {"vout": [{"value": 4387.5}, {"value": 2362.5}, {"value": 250.0}]}
+                return {"vout": [{"value": 4387.5, "scriptPubKey": {"addresses": [payout_helper.expected_pool_reward_address()]}}, {"value": 2362.5}, {"value": 250.0}]}
             if method == "getblockhash":
                 self.fail("getblockhash should not be called when 64-hex candidate_hash resolves")
             return None
