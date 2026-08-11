@@ -3208,7 +3208,13 @@ def payout_wallet_send_preflight(
             with candidates_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                loaded = data.get("items") or data.get("candidates") or []
+                loaded = (
+                    data.get("items")
+                    or data.get("candidates")
+                    or data.get("payout_candidates")
+                    or data.get("solo_payout_candidates")
+                    or []
+                )
                 if isinstance(loaded, list):
                     candidates = loaded
         except Exception as exc:
@@ -3241,7 +3247,7 @@ def payout_wallet_send_preflight(
     if matching_payout is None:
         return finish("blocked_wallet_not_in_candidate")
 
-    if matching_payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send_preview"}:
+    if matching_payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send_preview", "ready"}:
         return finish("blocked_payout_not_ready")
 
     try:
@@ -3361,7 +3367,13 @@ def payout_wallet_send_once(
             with candidates_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                loaded = data.get("items") or data.get("candidates") or []
+                loaded = (
+                    data.get("items")
+                    or data.get("candidates")
+                    or data.get("payout_candidates")
+                    or data.get("solo_payout_candidates")
+                    or []
+                )
                 if isinstance(loaded, list):
                     candidates = loaded
         except Exception as exc:
@@ -3394,7 +3406,7 @@ def payout_wallet_send_once(
     if matching_payout is None:
         return finish("blocked_wallet_not_in_candidate")
 
-    if matching_payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send_preview"}:
+    if matching_payout.get("status") not in {"pending_manual_payment", "ready_for_wallet_send_preview", "ready"}:
         return finish("blocked_payout_not_ready")
 
     try:
