@@ -388,13 +388,56 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 {
                     "miningMode": "solo",
                     "hashrate": 0,
+                    "estimatedHashrate": 0,
                     "miners": 0,
                     "workers": 0,
                     "blocksFound": 0,
                     "status": "ok",
                 }
             )
-        return jsonify(data)
+        pool_stats = data.get("pool", {})
+        if not isinstance(pool_stats, dict):
+            pool_stats = {}
+
+        miners_val = data.get("miners")
+        if isinstance(miners_val, int):
+            miners_count = miners_val
+        elif isinstance(miners_val, dict):
+            miners_count = pool_stats.get("activeMiners", len(miners_val))
+        else:
+            miners_count = pool_stats.get("activeMiners", 0)
+
+        workers_val = data.get("workers")
+        if isinstance(workers_val, int):
+            workers_count = workers_val
+        else:
+            sessions_dict = data.get("activeSessions")
+            if isinstance(sessions_dict, dict):
+                workers_count = pool_stats.get("activeWorkers", len(sessions_dict))
+            else:
+                workers_count = pool_stats.get("activeWorkers", 0)
+
+        hashrate_val = (
+            pool_stats.get("poolHashrate")
+            or pool_stats.get("hashrate")
+            or data.get("hashrate")
+            or data.get("estimatedHashrate")
+            or 0
+        )
+
+        response_payload = dict(data)
+        response_payload.update(
+            {
+                "miningMode": "solo",
+                "status": "ok",
+                "hashrate": hashrate_val,
+                "estimatedHashrate": hashrate_val,
+                "miners": miners_count,
+                "workers": workers_count,
+                "blocksFound": data.get("blocksFound", 0),
+            }
+        )
+        return jsonify(response_payload)
 
     @app.get("/api/solo/accepted-candidates")
     def solo_accepted_candidates():

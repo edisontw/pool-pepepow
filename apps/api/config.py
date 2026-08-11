@@ -30,15 +30,21 @@ def load_config() -> AppConfig:
     default_fallback_snapshot = base_dir / "data" / "mock" / "pool-snapshot.json"
     default_runtime_snapshot = Path("/var/lib/pepepow-pool/pool-snapshot.json")
     default_activity_snapshot = Path("/var/lib/pepepow-pool/activity-snapshot.json")
-    default_solo_activity_snapshot = Path("/var/lib/pepepow-pool/solo/activity-snapshot.json")
-    default_solo_accepted_candidates = Path("/var/lib/pepepow-pool/solo/accepted-candidates.json")
-    default_solo_payments_snapshot = Path("/var/lib/pepepow-pool/solo/solo-payments-snapshot.json")
     legacy_snapshot_path = os.getenv("PEPEPOW_POOL_API_SNAPSHOT_PATH")
-
     runtime_snapshot_path = os.getenv(
         "PEPEPOW_POOL_API_RUNTIME_SNAPSHOT_PATH",
         legacy_snapshot_path or str(default_runtime_snapshot),
     )
+    activity_snapshot_path = Path(
+        os.getenv(
+            "PEPEPOW_POOL_API_ACTIVITY_SNAPSHOT_PATH",
+            str(default_activity_snapshot),
+        )
+    ).expanduser()
+
+    default_solo_activity_snapshot = activity_snapshot_path.parent / "solo" / "activity-snapshot.json"
+    default_solo_accepted_candidates = activity_snapshot_path.parent / "solo" / "accepted-candidates.json"
+    default_solo_payments_snapshot = activity_snapshot_path.parent / "solo" / "solo-payments-snapshot.json"
 
     return AppConfig(
         app_name="pepepow-pool-api",
@@ -52,12 +58,7 @@ def load_config() -> AppConfig:
                 str(default_fallback_snapshot),
             )
         ).expanduser(),
-        activity_snapshot_path=Path(
-            os.getenv(
-                "PEPEPOW_POOL_API_ACTIVITY_SNAPSHOT_PATH",
-                str(default_activity_snapshot),
-            )
-        ).expanduser(),
+        activity_snapshot_path=activity_snapshot_path,
         solo_activity_snapshot_path=Path(
             os.getenv(
                 "PEPEPOW_POOL_API_SOLO_ACTIVITY_SNAPSHOT_PATH",
