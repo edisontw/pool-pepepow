@@ -1400,6 +1400,94 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             self.assertEqual(len(res.get_json()["items"]), 1)
 
+    def test_solo_miner_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            solo_summary_path = tmp_path / "solo-activity.json"
+            solo_cands_path = tmp_path / "solo-candidates.json"
+            solo_payments_path = tmp_path / "solo-payments.json"
+
+            solo_summary_path.write_text(
+                json.dumps(
+                    {
+                        "miningMode": "solo",
+                        "miners": {
+                            "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD": {
+                                "summary": {"hashrate": 800000, "workers": 1},
+                                "workers": [{"name": "SOLOTEST", "hashrate": 800000}],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            solo_cands_path.write_text(
+                json.dumps(
+                    {
+                        "updated_at": "2026-08-11T14:31:02Z",
+                        "accepted_candidates": [
+                            {
+                                "candidate_hash": "00000000b6240c251676dfe0b7adb200ade3c891ee81d5d6621fa23e08cd79ae",
+                                "matched_height": 4845284,
+                                "wallet": "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD",
+                                "worker": "SOLOTEST",
+                                "lifecycle_status": "immature",
+                                "confirmations": 20,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            solo_payments_path.write_text(
+                json.dumps({"updated_at": "2026-08-11T14:31:02Z", "items": []}),
+                encoding="utf-8",
+            )
+
+            runtime_snapshot_path = tmp_path / "pool-snapshot.json"
+            runtime_snapshot_path.write_text(json.dumps(make_runtime_snapshot()), encoding="utf-8")
+
+            config = make_config(runtime_snapshot_path, FALLBACK_SNAPSHOT_PATH)
+            config = replace(
+                config,
+                solo_activity_snapshot_path=solo_summary_path,
+                solo_accepted_candidates_path=solo_cands_path,
+                solo_payments_snapshot_path=solo_payments_path,
+            )
+            app = create_app(config)
+            client = app.test_client()
+
+            # 1. Valid wallet with active SOLO miner
+            res = client.get("/api/solo/miner/PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data["miningMode"], "solo")
+            self.assertTrue(data["found"])
+            self.assertEqual(data["wallet"], "PL8s5WjXUGhHVSo743dwEXGtsifV5YpdcD")
+            self.assertEqual(data["summary"]["blocksFound"], 1)
+            self.assertEqual(len(data["workers"]), 1)
+            self.assertEqual(data["workers"][0]["name"], "SOLOTEST")
+            self.assertEqual(len(data["blocks"]), 1)
+            self.assertEqual(data["blocks"][0]["height"], 4845284)
+            self.assertEqual(data["blocks"][0]["lifecycleStatus"], "immature")
+            self.assertEqual(len(data["payments"]), 0)
+
+            # 2. Valid wallet with no SOLO activity
+            res_no_solo = client.get("/api/solo/miner/PEPEPOW1KnownWalletAddress000000")
+            self.assertEqual(res_no_solo.status_code, 200)
+            data_no_solo = res_no_solo.get_json()
+            self.assertEqual(data_no_solo["miningMode"], "solo")
+            self.assertFalse(data_no_solo["found"])
+
+            # 3. Invalid wallet
+            res_invalid = client.get("/api/solo/miner/invalid-wallet-string!")
+            self.assertEqual(res_invalid.status_code, 400)
+
+            # 4. Pool miner lookup unchanged
+            res_pool = client.get("/api/miner/PEPEPOW1KnownWalletAddress000000")
+            self.assertEqual(res_pool.status_code, 200)
+            self.assertTrue(res_pool.get_json()["found"])
+
 
 if __name__ == "__main__":
     unittest.main()

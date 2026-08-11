@@ -806,13 +806,14 @@
     let priceData = null;
 
     try {
-      const [poolRes, networkRes, blocksRes, paymentsRes, operatorStatusRes, priceRes] = await Promise.all([
+      const [poolRes, networkRes, blocksRes, paymentsRes, operatorStatusRes, priceRes, soloRes] = await Promise.all([
         fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({})),
         fetchJson(`${config.apiBaseUrl}/network/summary`).catch(() => ({})),
         fetchJson(`${config.apiBaseUrl}/blocks`).catch(() => ({ items: [] })),
         fetchJson(`${config.apiBaseUrl}/payments`).catch(() => ({ items: [] })),
         fetchJson(`${config.apiBaseUrl}/operator-status`).catch(() => null),
-        fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null)
+        fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null),
+        fetchJson(`${config.apiBaseUrl}/solo/summary`).catch(() => ({}))
       ]);
       pool = poolRes;
       network = networkRes;
@@ -820,6 +821,11 @@
       payments = paymentsRes;
       operatorStatus = operatorStatusRes;
       priceData = priceRes;
+      const soloSummary = soloRes || {};
+      setText("solo-hashrate", formatHashrate(soloSummary.hashrate || 0));
+      setText("solo-miners", formatNumber(soloSummary.miners || 0));
+      setText("solo-workers", formatNumber(soloSummary.workers || 0));
+      setText("solo-blocks-found", formatNumber(soloSummary.blocks || 0));
     } catch (_err) {
       // Gracefully continue with defaults
     }
@@ -910,8 +916,9 @@
 
   async function lookupMiner(config, wallet) {
     // Fetch miner data plus supporting context in parallel
-    const [result, pool, network, priceData, allPayments] = await Promise.all([
-      fetchJson(`${config.apiBaseUrl}/miner/${encodeURIComponent(wallet)}`),
+    const [result, soloResult, pool, network, priceData, allPayments] = await Promise.all([
+      fetchJson(`${config.apiBaseUrl}/miner/${encodeURIComponent(wallet)}`).catch(() => ({ found: false })),
+      fetchJson(`${config.apiBaseUrl}/solo/miner/${encodeURIComponent(wallet)}`).catch(() => ({ found: false })),
       fetchJson(`${config.apiBaseUrl}/pool/summary`).catch(() => ({})),
       fetchJson(`${config.apiBaseUrl}/network/summary`).catch(() => ({})),
       fetchJson(`${config.apiBaseUrl}/price/pepew-usdt`).catch(() => null),
@@ -920,54 +927,119 @@
 
     let htmlContent = "";
 
-    if (!result.found) {
+    const poolFound = result && result.found;
+    const soloFound = soloResult && soloResult.found;
+
+    if (!poolFound && !soloFound) {
       htmlContent += `<div class="empty-state"><strong>No active miner data found for ${escapeHtml(wallet)}.</strong><p class="muted">Miner statistics are generated from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</p><a class="button" href="/connect.html">How to start mining</a></div>`;
     } else {
-      const summary = result.summary || {};
-      const workers = Array.isArray(result.workers) ? result.workers : [];
+      if (poolFound) {
+        htmlContent += `<h2 style="margin-bottom:0.75rem;">POOL MINING</h2>`;
+        const summary = result.summary || {};
+        const workers = Array.isArray(result.workers) ? result.workers : [];
 
-      htmlContent += renderMinerSummaryMetrics([
-        {
-          label: "Active Workers",
-          value: formatNumber(summary.activeWorkers)
-        },
-        {
-          label: "Estimated Hashrate",
-          value: formatHashrate(summary.hashrate),
-          note: "Pool-side estimate from accepted shares, not the miner's exact local GPU hashrate."
-        },
-        {
-          label: "Accepted Shares",
-          value: formatNumber(summary.acceptedShares),
-          note: "Shares accepted by the pool. This does not imply a confirmed block or recorded payment."
-        },
-        {
-          label: "Last Share",
-          value: formatDate(summary.lastShareAt)
+        htmlContent += renderMinerSummaryMetrics([
+          {
+            label: "Active Workers",
+            value: formatNumber(summary.activeWorkers)
+          },
+          {
+            label: "Estimated Hashrate",
+            value: formatHashrate(summary.hashrate),
+            note: "Pool-side estimate from accepted shares, not the miner's exact local GPU hashrate."
+          },
+          {
+            label: "Accepted Shares",
+            value: formatNumber(summary.acceptedShares),
+            note: "Shares accepted by the pool. This does not imply a confirmed block or recorded payment."
+          },
+          {
+            label: "Last Share",
+            value: formatDate(summary.lastShareAt)
+          }
+        ]);
+
+        htmlContent += "<h3>Workers</h3>";
+        htmlContent += renderTable(workers, [
+          { key: "name", label: "Worker" },
+          { key: "acceptedShares", label: "Accepted shares", render: formatNumber },
+          { key: "hashrate", label: "Estimated hashrate", render: formatHashrate },
+          { key: "lastShareAt", label: "Last Share", render: formatDate }
+        ]);
+
+        const apiPayments = paymentsForWallet(allPayments, wallet);
+        const recentPayments = Array.isArray(result.recentPayments) ? result.recentPayments : [];
+        minerRecordedPayments = apiPayments.length > 0 ? apiPayments : recentPayments;
+        minerRecordedPaymentsPage = 0;
+
+        htmlContent += "<h3>Recorded payments</h3>";
+        htmlContent += `<div id="miner-recorded-payments">${renderMinerRecordedPayments()}</div>`;
+
+        renderMinerRewardAnalysis(result, wallet, pool, network, priceData);
+      }
+
+      if (soloFound) {
+        htmlContent += `<h2 style="margin-top:2rem; margin-bottom:0.75rem;">PURE SOLO MINING</h2>`;
+        const soloSummary = soloResult.summary || {};
+        const soloWorkers = Array.isArray(soloResult.workers) ? soloResult.workers : [];
+        const soloBlocks = Array.isArray(soloResult.blocks) ? soloResult.blocks : [];
+        const soloPayments = Array.isArray(soloResult.payments) ? soloResult.payments : [];
+
+        htmlContent += renderMinerSummaryMetrics([
+          {
+            label: "SOLO Workers",
+            value: formatNumber(soloSummary.workers || soloWorkers.length)
+          },
+          {
+            label: "SOLO Estimated Hashrate",
+            value: formatHashrate(soloSummary.hashrate),
+            note: "SOLO stratum estimated hashrate from accepted shares."
+          },
+          {
+            label: "SOLO Blocks Found",
+            value: formatNumber(soloSummary.blocksFound || soloBlocks.length),
+            note: "Blocks mined directly by this wallet on port 39334."
+          }
+        ]);
+
+        if (soloWorkers.length > 0) {
+          htmlContent += "<h3>SOLO Workers</h3>";
+          htmlContent += renderTable(soloWorkers, [
+            { key: "name", label: "Worker" },
+            { key: "acceptedShares", label: "Accepted shares", render: formatNumber },
+            { key: "hashrate", label: "Estimated hashrate", render: formatHashrate },
+            { key: "lastShareAt", label: "Last Share", render: formatDate }
+          ]);
         }
-      ]);
 
-      htmlContent += "<h3>Workers</h3>";
-      htmlContent += renderTable(workers, [
-        { key: "name", label: "Worker" },
-        { key: "acceptedShares", label: "Accepted shares", render: formatNumber },
-        { key: "hashrate", label: "Estimated hashrate", render: formatHashrate },
-        { key: "lastShareAt", label: "Last Share", render: formatDate }
-      ]);
+        if (soloBlocks.length > 0) {
+          htmlContent += "<h3>SOLO Blocks Found</h3>";
+          htmlContent += renderTable(soloBlocks, [
+            { key: "height", label: "Height", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
+            { key: "hash", label: "Block Hash", render: (val) => renderValueWithCopyAndExplorer(val, "block") },
+            { key: "lifecycleStatus", label: "Status", render: renderStatusLabel },
+            { key: "confirmations", label: "Confirmations", render: renderOptionalNumber },
+            { key: "timestamp", label: "Time", render: formatDate }
+          ]);
+        }
+
+        htmlContent += "<h3>Recorded SOLO Payments</h3>";
+        if (soloPayments.length > 0) {
+          htmlContent += renderTable(soloPayments, [
+            { key: "wallet", label: "Wallet", render: (val) => renderValueWithCopyAndExplorer(val, "address") },
+            { key: "paidAt", label: "Paid", render: (_val, item) => formatDate(item.paidAt || item.timestamp) },
+            { key: "amount", label: "Amount", render: formatNumber },
+            { key: "txid", label: "TxID", render: (val) => renderValueWithCopyAndExplorer(val, "txid") },
+            { key: "blockHeight", label: "Blocks", render: renderPaymentBlocks },
+            { key: "confirmations", label: "Confirms", render: renderOptionalNumber }
+          ]);
+        } else {
+          htmlContent += `<div class="empty-state"><strong>No SOLO payments recorded yet</strong><p class="muted">SOLO candidates pay 100% net miner reward upon block confirmation (101 confirmations).</p></div>`;
+        }
+      }
     }
 
-    const apiPayments = paymentsForWallet(allPayments, wallet);
-    const recentPayments = Array.isArray(result.recentPayments) ? result.recentPayments : [];
-    minerRecordedPayments = apiPayments.length > 0 ? apiPayments : recentPayments;
-    minerRecordedPaymentsPage = 0;
-
-    htmlContent += "<h3>Recorded payments</h3>";
-    htmlContent += `<div id="miner-recorded-payments">${renderMinerRecordedPayments()}</div>`;
-
     setHtml("miner-result", htmlContent);
-
-    // Render wallet-specific Miner Reward Analysis (only after successful lookup)
-    renderMinerRewardAnalysis(result, wallet, pool, network, priceData);
   }
 
   // ---- Miner wallet persistence (isolated to renderMiner) ----
@@ -1045,6 +1117,9 @@
     setText("connect-algorithm", "hoohash-pepew / hoohashv110-pepew");
     setText("connect-endpoint", endpoint);
     setHtml("sample-command", escapeHtml(sampleCommand).replace("YOUR_WALLET", '<mark>YOUR_WALLET</mark>'));
+
+    setupCopyButton("copy-endpoint-btn", "connect-endpoint");
+    setupCopyButton("copy-solo-endpoint-btn", "connect-solo-endpoint");
   }
 
   async function run() {

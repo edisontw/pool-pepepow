@@ -443,7 +443,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     def solo_accepted_candidates():
         data = _load_json_dict(
             app_config.solo_accepted_candidates_path,
-            app_config.solo_accepted_candidates_path,
+            app_config.activity_snapshot_path.parent / "solo" / "accepted-candidates.json",
         )
         candidates = data.get("accepted_candidates", [])
         if not isinstance(candidates, list):
@@ -460,7 +460,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     def solo_payments():
         data = _load_json_dict(
             app_config.solo_payments_snapshot_path,
-            app_config.solo_payments_snapshot_path,
+            app_config.activity_snapshot_path.parent / "solo" / "solo-payments-snapshot.json",
         )
         items = data.get("items", [])
         if not isinstance(items, list):
@@ -470,6 +470,80 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "updated_at": data.get("updated_at"),
                 "miningMode": "solo",
                 "items": [item for item in items if isinstance(item, dict)],
+            }
+        )
+
+    @app.get("/api/solo/miner/<wallet>")
+    def solo_miner(wallet: str):
+        if not wallet_pattern.fullmatch(wallet):
+            return json_error(HTTPStatus.BAD_REQUEST, "Wallet format is invalid")
+
+        solo_activity = _load_json_dict(
+            app_config.solo_activity_snapshot_path,
+            app_config.activity_snapshot_path.parent / "solo" / "activity-snapshot.json",
+        )
+        solo_cand_data = _load_json_dict(
+            app_config.solo_accepted_candidates_path,
+            app_config.activity_snapshot_path.parent / "solo" / "accepted-candidates.json",
+        )
+        solo_candidates = solo_cand_data.get("accepted_candidates", [])
+        if not isinstance(solo_candidates, list):
+            solo_candidates = []
+
+        solo_pay_data = _load_json_dict(
+            app_config.solo_payments_snapshot_path,
+            app_config.activity_snapshot_path.parent / "solo" / "solo-payments-snapshot.json",
+        )
+        solo_payments_raw = solo_pay_data.get("items", [])
+        if not isinstance(solo_payments_raw, list):
+            solo_payments_raw = []
+
+        miners = solo_activity.get("miners", {})
+        miner_record = miners.get(wallet) if isinstance(miners, dict) else None
+
+        wallet_blocks = []
+        for c in solo_candidates:
+            if isinstance(c, dict) and c.get("wallet") == wallet:
+                wallet_blocks.append(
+                    {
+                        "hash": c.get("candidate_hash") or c.get("hash"),
+                        "height": c.get("matched_height") or c.get("height") or c.get("block_height"),
+                        "lifecycleStatus": c.get("lifecycle_status") or c.get("lifecycleStatus") or "immature",
+                        "confirmations": c.get("confirmations") or 0,
+                        "timestamp": c.get("submit_timestamp") or c.get("timestamp"),
+                        "worker": c.get("worker"),
+                    }
+                )
+
+        wallet_payments = []
+        for p in solo_payments_raw:
+            if isinstance(p, dict) and p.get("wallet") == wallet:
+                wallet_payments.append(_normalize_payment_item(p))
+
+        found = (miner_record is not None) or (len(wallet_blocks) > 0) or (len(wallet_payments) > 0)
+
+        summary = (
+            dict(miner_record.get("summary", {}))
+            if miner_record and isinstance(miner_record.get("summary"), dict)
+            else {"hashrate": 0, "workers": 0}
+        )
+        summary["blocksFound"] = len(wallet_blocks)
+
+        workers = (
+            miner_record.get("workers", [])
+            if miner_record and isinstance(miner_record.get("workers"), list)
+            else []
+        )
+
+        return jsonify(
+            {
+                "miningMode": "solo",
+                "wallet": wallet,
+                "found": found,
+                "summary": summary,
+                "workers": workers,
+                "blocks": wallet_blocks,
+                "payments": wallet_payments,
             }
         )
 

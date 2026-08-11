@@ -1270,8 +1270,16 @@ operator_status_service() {
 solo_payout_refresh_service() {
   local solo_runtime="${RUNTIME_DIR}/solo"
   if [[ -d "${solo_runtime}" ]]; then
-    RUNTIME_DIR="${solo_runtime}" candidate_followup_service candidate-followup 200 --record >/dev/null 2>&1 || true
-    RUNTIME_DIR="${solo_runtime}" accepted_candidates_service >/dev/null 2>&1 || true
+    RUNTIME_DIR="${solo_runtime}" \
+    CANDIDATE_EVENT_LOG="${solo_runtime}/candidate-events.jsonl" \
+    FOLLOWUP_EVENT_LOG="${solo_runtime}/candidate-followup-events.jsonl" \
+    CANDIDATE_OUTCOME_EVENT_LOG="${solo_runtime}/candidate-outcome-events.jsonl" \
+      candidate_followup_service candidate-followup 200 --record >/dev/null 2>&1 || true
+
+    python3 "${SCRIPT_DIR}/track_accepted_candidates.py" \
+      "${solo_runtime}/candidate-outcome-events.jsonl" \
+      "${solo_runtime}/accepted-candidates.json" >/dev/null 2>&1 || true
+
     python3 "${SCRIPT_DIR}/solo_payout_helper.py" \
       --accepted-candidates "${solo_runtime}/accepted-candidates.json" \
       --output "${solo_runtime}/solo-payout-candidates.json" >/dev/null 2>&1 || true
