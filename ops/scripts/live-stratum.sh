@@ -1543,7 +1543,10 @@ solo_auto_payout_once_service() {
     return 1
   fi
   solo_payout_refresh_service
-  local max_sends="${PEPEPOW_SOLO_AUTO_PAYOUT_MAX_SENDS:-5}"
+  # Use the scheduled wallet ceiling unless SOLO is deliberately given a
+  # narrower override.  The wallet helper still enforces this as its
+  # independent real-send budget.
+  local max_sends="${PEPEPOW_SOLO_AUTO_PAYOUT_MAX_SENDS:-${REAL_WALLET_PAYOUT_MAX_SENDS}}"
   PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET=true \
     python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
       --candidates "${solo_runtime}/solo-payout-candidates.json" \
