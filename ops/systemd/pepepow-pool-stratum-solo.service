@@ -5,18 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pepepow
-Group=pepepow
-WorkingDirectory=/opt/pepepow-pool/apps/pool-core
-EnvironmentFile=-/opt/pepepow-pool/ops/env/pool-stratum-solo.env
-ExecStart=/usr/bin/python3 /opt/pepepow-pool/apps/pool-core/stratum_ingress.py
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/pool-pepepow/apps/pool-core
+EnvironmentFile=/home/ubuntu/pool-pepepow/.runtime/systemd-smoke/stratum-solo.env
+ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/apps/pool-core/stratum_ingress.py
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/var/lib/pepepow-pool
 
 [Install]
 WantedBy=multi-user.target
