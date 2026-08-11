@@ -1534,6 +1534,25 @@ auto_payout_once_service() {
   return "${auto_payout_rc}"
 }
 
+solo_auto_payout_once_service() {
+  ensure_runtime_dir
+  local solo_runtime="${RUNTIME_DIR}/solo"
+  if [[ ! -d "${solo_runtime}" ]]; then
+    echo "solo runtime directory missing: ${solo_runtime}" >&2
+    return 1
+  fi
+  solo_payout_refresh_service
+  local max_sends="${PEPEPOW_SOLO_AUTO_PAYOUT_MAX_SENDS:-5}"
+  python3 "${SCRIPT_DIR}/payout_helper.py" auto-payout-once \
+    --candidates "${solo_runtime}/solo-payout-candidates.json" \
+    --actions-log "${solo_runtime}/solo-payment-actions.jsonl" \
+    --payments-snapshot "${solo_runtime}/solo-payments-snapshot.json" \
+    --output "${solo_runtime}/solo-auto-payout-once-result.json" \
+    --max-sends "${max_sends}" \
+    --allow-any-wallet \
+    --min-payout 0.00000001
+}
+
 record_payment_service() {
   ensure_runtime_dir
   local candidate_id="${2:-}"
@@ -4298,6 +4317,9 @@ case "${SUBCOMMAND}" in
     ;;
   auto-payout-once)
     auto_payout_once_service
+    ;;
+  solo-auto-payout-once)
+    solo_auto_payout_once_service
     ;;
   record-payment)
     record_payment_service "$@"
