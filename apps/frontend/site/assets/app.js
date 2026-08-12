@@ -825,7 +825,7 @@
       setText("solo-hashrate", formatHashrate(soloSummary.hashrate || 0));
       setText("solo-miners", formatNumber(soloSummary.miners || 0));
       setText("solo-workers", formatNumber(soloSummary.workers || 0));
-      setText("solo-blocks-found", formatNumber(soloSummary.blocks || 0));
+      setText("solo-blocks-found", formatNumber(soloSummary.blocksFound || soloSummary.blocks || 0));
     } catch (_err) {
       // Gracefully continue with defaults
     }

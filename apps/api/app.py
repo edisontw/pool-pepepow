@@ -383,6 +383,17 @@ def create_app(config: AppConfig | None = None) -> Flask:
             app_config.solo_activity_snapshot_path,
             app_config.solo_activity_snapshot_path,
         )
+        solo_cand_data = _load_json_dict(
+            app_config.solo_accepted_candidates_path,
+            app_config.activity_snapshot_path.parent / "solo" / "accepted-candidates.json",
+        )
+        solo_candidates = solo_cand_data.get("accepted_candidates", [])
+        if not isinstance(solo_candidates, list):
+            solo_candidates = []
+        solo_blocks_found = sum(
+            1 for c in solo_candidates if isinstance(c, dict) and _normalize_block_status(c) != "orphan"
+        )
+
         if not data:
             return jsonify(
                 {
@@ -391,7 +402,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                     "estimatedHashrate": 0,
                     "miners": 0,
                     "workers": 0,
-                    "blocksFound": 0,
+                    "blocksFound": solo_blocks_found,
                     "status": "ok",
                 }
             )
@@ -434,7 +445,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 "estimatedHashrate": hashrate_val,
                 "miners": miners_count,
                 "workers": workers_count,
-                "blocksFound": data.get("blocksFound", 0),
+                "blocksFound": solo_blocks_found,
             }
         )
         return jsonify(response_payload)
@@ -504,16 +515,17 @@ def create_app(config: AppConfig | None = None) -> Flask:
         wallet_blocks = []
         for c in solo_candidates:
             if isinstance(c, dict) and c.get("wallet") == wallet:
-                wallet_blocks.append(
-                    {
-                        "hash": c.get("candidate_hash") or c.get("hash"),
-                        "height": c.get("matched_height") or c.get("height") or c.get("block_height"),
-                        "lifecycleStatus": c.get("lifecycle_status") or c.get("lifecycleStatus") or "immature",
-                        "confirmations": c.get("confirmations") or 0,
-                        "timestamp": c.get("submit_timestamp") or c.get("timestamp"),
-                        "worker": c.get("worker"),
-                    }
-                )
+                if _normalize_block_status(c) != "orphan":
+                    wallet_blocks.append(
+                        {
+                            "hash": c.get("candidate_hash") or c.get("hash"),
+                            "height": c.get("matched_height") or c.get("height") or c.get("block_height"),
+                            "lifecycleStatus": c.get("lifecycle_status") or c.get("lifecycleStatus") or "immature",
+                            "confirmations": c.get("confirmations") or 0,
+                            "timestamp": c.get("submit_timestamp") or c.get("timestamp"),
+                            "worker": c.get("worker"),
+                        }
+                    )
 
         wallet_payments = []
         for p in solo_payments_raw:
