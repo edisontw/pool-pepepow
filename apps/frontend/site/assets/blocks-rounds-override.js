@@ -1,6 +1,8 @@
 (function () {
   const PAGE_SIZE = 20;
   const REFRESH_MS = 120000;
+  const CACHE_KEY = "pepepow_rounds_cache_v1";
+  const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let roundItems = [];
   let roundPage = 0;
 
@@ -150,6 +152,23 @@
     document.head.appendChild(style);
   }
 
+  function loadCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
+      return cached.items.filter(function (item) { return item && typeof item === "object"; });
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveCache(items) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items: items }));
+    } catch (_error) {}
+  }
+
   function renderTable() {
     const target = document.getElementById("rounds-table");
     if (!target) return;
@@ -192,12 +211,14 @@
       const payload = window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
         ? await window.PepepowUI.fetchJson("/api/rounds")
         : await fetch("/api/rounds", { cache: "no-store" }).then(function (response) {
-          return response.ok ? response.json() : { items: [] };
+          return response.ok ? response.json() : {};
         });
-      roundItems = Array.isArray(payload.items) ? payload.items : [];
+      if (!Array.isArray(payload.items)) return;
+      roundItems = payload.items;
+      saveCache(roundItems);
       renderTable();
     } catch (_error) {
-      // Keep the previous rendered table.
+      // Keep cached/previous data visible.
     }
   }
 
@@ -208,10 +229,18 @@
     renderTable();
   });
 
-  document.addEventListener("DOMContentLoaded", function () {
+  function init() {
     if (document.body.dataset.page !== "blocks") return;
     installStyles();
+    const cached = loadCache();
+    if (cached.length > 0) {
+      roundItems = cached;
+      renderTable();
+    }
     refreshRoundsTable();
     window.setInterval(refreshRoundsTable, REFRESH_MS);
-  });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true });
+  else init();
 })();
