@@ -1,6 +1,8 @@
 (function () {
   const PAGE_SIZE = 20;
   const REFRESH_MS = 120000;
+  const CACHE_KEY = "pepepow_blocks_found_cache_v1";
+  const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let blockItems = [];
   let blockPage = 0;
 
@@ -128,6 +130,23 @@
     document.head.appendChild(style);
   }
 
+  function loadCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
+      return cached.items.filter(function (item) { return item && typeof item === "object"; });
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveCache(items) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items: items }));
+    } catch (_error) {}
+  }
+
   function renderTable() {
     const target = document.getElementById("accepted-candidates-table");
     if (!target) return;
@@ -175,10 +194,14 @@
     if (document.body.dataset.page !== "blocks") return;
     try {
       const [poolPayload, soloPayload] = await Promise.all([
-        fetchJson("/api/accepted-candidates").catch(function () { return { items: [] }; }),
-        fetchJson("/api/solo/accepted-candidates").catch(function () { return { accepted_candidates: [] }; })
+        fetchJson("/api/accepted-candidates").catch(function () { return {}; }),
+        fetchJson("/api/solo/accepted-candidates").catch(function () { return {}; })
       ]);
-      const poolItems = Array.isArray(poolPayload.items) ? poolPayload.items.map(function (item) {
+      const poolValid = Array.isArray(poolPayload.items);
+      const soloValid = Array.isArray(soloPayload.accepted_candidates) || Array.isArray(soloPayload.items);
+      if (!poolValid && !soloValid) return;
+
+      const poolItems = poolValid ? poolPayload.items.map(function (item) {
         return Object.assign({}, item, { miningMode: "pool" });
       }) : [];
       const rawSoloItems = Array.isArray(soloPayload.accepted_candidates)
@@ -188,6 +211,7 @@
         return Object.assign({}, item, { miningMode: "solo" });
       });
       blockItems = poolItems.concat(soloItems);
+      saveCache(blockItems);
       renderTable();
     } catch (_error) {
       // Keep the previous rendered table.
@@ -201,10 +225,18 @@
     renderTable();
   });
 
-  document.addEventListener("DOMContentLoaded", function () {
+  function init() {
     if (document.body.dataset.page !== "blocks") return;
     installStyles();
+    const cached = loadCache();
+    if (cached.length > 0) {
+      blockItems = cached;
+      renderTable();
+    }
     refreshPoolFoundBlocks();
     window.setInterval(refreshPoolFoundBlocks, REFRESH_MS);
-  });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true });
+  else init();
 })();
