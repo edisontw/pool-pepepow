@@ -6,7 +6,7 @@
     soloStratumHost: "stratum+tcp://pool.pepepow.net:39334"
   };
 
-  const FRONTEND_BUILD = "dashboard-fix-v7";
+  const FRONTEND_BUILD = "reward-schedule-v1";
   console.log("PEPEPOW Frontend Build:", FRONTEND_BUILD);
   const MINER_PAYMENTS_PAGE_SIZE = 10;
   const API_CACHE_DEFAULT_TTL_MS = 30000;
@@ -99,7 +99,7 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
+      .replace(/\"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
 
@@ -522,7 +522,9 @@
     renderTable,
     renderValueWithCopyAndExplorer,
     setHtml,
-    setText
+    setText,
+    blockRewardAtHeight,
+    readNetworkHeight
   };
 
   async function fetchOptionalHealth(config) {
@@ -541,6 +543,41 @@
         "Host baseline: core + API + stratum; no local frontend service expected. Deployment metadata only, not a failure."
       );
     }
+  }
+
+  const REWARD_SCHEDULE_START_HEIGHT = 2189200;
+  const REWARD_FIRST_REDUCTION_HEIGHT = 2318801;
+  const REWARD_AT_START = 16000;
+  const REWARD_REDUCTION_INTERVAL = 129600;
+  const REWARD_REDUCTION_AMOUNT = 500;
+  const MIN_BLOCK_REWARD = 5000;
+  const BLOCK_TIME_SECONDS = 20;
+  const DEVELOPER_FEE_RATIO = 0.05;
+  const MINER_REWARD_RATIO = 0.65;
+
+  function readNetworkHeight(network) {
+    if (!network || typeof network !== "object") return null;
+    const candidates = [
+      network.height,
+      network.blockHeight,
+      network.currentHeight,
+      network.chainHeight,
+      network.blocks
+    ];
+    for (const value of candidates) {
+      const height = Number(value);
+      if (Number.isFinite(height) && height >= 0) return height;
+    }
+    return null;
+  }
+
+  function blockRewardAtHeight(height) {
+    const h = Number(height);
+    if (!Number.isFinite(h) || h < REWARD_SCHEDULE_START_HEIGHT) return null;
+    const reductions = h < REWARD_FIRST_REDUCTION_HEIGHT
+      ? 0
+      : Math.floor((h - REWARD_FIRST_REDUCTION_HEIGHT) / REWARD_REDUCTION_INTERVAL) + 1;
+    return Math.max(MIN_BLOCK_REWARD, REWARD_AT_START - reductions * REWARD_REDUCTION_AMOUNT);
   }
 
   // ---- Miner Reward Analysis helpers ----
@@ -575,17 +612,15 @@
     if (typeof hashrateHps !== "number" || !isFinite(hashrateHps) || hashrateHps <= 0) return null;
     const netHash = network ? network.networkHashrate : null;
     if (typeof netHash !== "number" || netHash <= 0) return null;
+    const currentReward = blockRewardAtHeight(readNetworkHeight(network));
+    if (currentReward === null) return null;
 
-    const BLOCK_TIME_SECONDS = 20;
-    const TOTAL_BLOCK_REWARD = 6500;
-    const DEVELOPER_FEE_RATIO = 0.05;
-    const MINER_REWARD_RATIO = 0.65;
     const poolFeeRatio = (pool && typeof pool.feePercent === "number" && isFinite(pool.feePercent) && pool.feePercent > 0)
       ? pool.feePercent / 100
       : 0;
 
     const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
-    const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio);
+    const minerRewardPerBlock = currentReward * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio);
 
     const rewardPerDay = (hashrateHps / netHash) * blocksPerDay * minerRewardPerBlock;
     return {
@@ -694,9 +729,10 @@
     const unitVal = unitSelect.value;
 
     const netHash = network ? network.networkHashrate : null;
+    const currentReward = blockRewardAtHeight(readNetworkHeight(network));
     const isNetValid = (typeof netHash === "number" && netHash > 0);
 
-    if (isNaN(hashrateVal) || hashrateVal < 0 || !isNetValid) {
+    if (isNaN(hashrateVal) || hashrateVal < 0 || !isNetValid || currentReward === null) {
       setText("calc-pepew-hour", "-");
       setText("calc-pepew-day", "-");
       setText("calc-pepew-week", "-");
@@ -713,16 +749,12 @@
       userHashrateHps = hashrateVal * 1000000;
     }
 
-    const BLOCK_TIME_SECONDS = 20;
-    const TOTAL_BLOCK_REWARD = 6500;
-    const DEVELOPER_FEE_RATIO = 0.05;
-    const MINER_REWARD_RATIO = 0.65;
     const poolFeeRatio = (pool && typeof pool.feePercent === "number" && isFinite(pool.feePercent) && pool.feePercent > 0)
       ? pool.feePercent / 100
       : 0;
 
     const blocksPerDay = 86400 / BLOCK_TIME_SECONDS;
-    const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio);
+    const minerRewardPerBlock = currentReward * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio);
 
     const rewardPerDay = (userHashrateHps / netHash) * blocksPerDay * minerRewardPerBlock;
     const rewardPerHour = rewardPerDay / 24;
@@ -747,7 +779,6 @@
     setText("calc-usdt-day", usdtPerDayStr);
     setText("calc-usdt-week", usdtPerWeekStr);
   }
-
   async function renderDashboard(config) {
     renderDeploymentBaselineNote(null);
     fetchOptionalHealth(config).then(renderDeploymentBaselineNote);
