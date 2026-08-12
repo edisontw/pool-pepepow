@@ -1,5 +1,7 @@
 (function () {
   const PAGE_SIZE = 20;
+  const CACHE_KEY = "pepepow_payments_cache_v1";
+  const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let paymentItems = [];
   let paymentPage = 0;
   let rendering = false;
@@ -120,6 +122,23 @@
     document.head.appendChild(style);
   }
 
+  function loadCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
+      return cached.items.filter((item) => item && typeof item === "object");
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveCache(items) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items }));
+    } catch (_error) {}
+  }
+
   function renderPaymentsTable() {
     const target = document.getElementById("payments-table");
     if (!target || rendering) return;
@@ -165,9 +184,9 @@
         return await window.PepepowUI.fetchJson(url);
       }
       const response = await fetch(url, { cache: "no-store" });
-      return response.ok ? response.json() : { items: [] };
+      return response.ok ? response.json() : {};
     } catch (_error) {
-      return { items: [] };
+      return {};
     }
   }
 
@@ -176,17 +195,24 @@
       fetchJson("/api/payments"),
       fetchJson("/api/solo/payments")
     ]);
-    const poolItems = Array.isArray(poolPayments.items) ? poolPayments.items.map((item) => Object.assign({}, item, { miningMode: "pool" })) : [];
-    const soloItems = Array.isArray(soloPayments.items) ? soloPayments.items.map((item) => Object.assign({}, item, { miningMode: "solo" })) : [];
+    const poolValid = Array.isArray(poolPayments.items);
+    const soloValid = Array.isArray(soloPayments.items);
+    if (!poolValid && !soloValid) return false;
+
+    const poolItems = poolValid ? poolPayments.items.map((item) => Object.assign({}, item, { miningMode: "pool" })) : [];
+    const soloItems = soloValid ? soloPayments.items.map((item) => Object.assign({}, item, { miningMode: "solo" })) : [];
     paymentItems = poolItems.concat(soloItems);
     paymentItems.sort((a, b) => String(b.paidAt || b.timestamp || "").localeCompare(String(a.paidAt || a.timestamp || "")));
+    saveCache(paymentItems);
+    return true;
   }
 
-  async function run() {
-    if (document.body.dataset.page !== "payments") return;
-    installStyles();
-    await loadPayments();
+  async function refreshPayments() {
+    const updated = await loadPayments();
+    if (updated) renderPaymentsTable();
+  }
 
+  function installHandlers() {
     document.addEventListener("click", (event) => {
       const button = event.target.closest("[data-payment-page]");
       if (!button || button.disabled) return;
@@ -199,9 +225,20 @@
       if (!button || !navigator.clipboard) return;
       navigator.clipboard.writeText(button.getAttribute("data-copy-value") || "").catch(() => {});
     });
-
-    renderPaymentsTable();
   }
 
-  document.addEventListener("DOMContentLoaded", run);
+  function run() {
+    if (document.body.dataset.page !== "payments") return;
+    installStyles();
+    installHandlers();
+    const cached = loadCache();
+    if (cached.length > 0) {
+      paymentItems = cached;
+      renderPaymentsTable();
+    }
+    refreshPayments();
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run, { once: true });
+  else run();
 })();
