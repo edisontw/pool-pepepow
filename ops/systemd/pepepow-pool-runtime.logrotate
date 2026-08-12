@@ -1,6 +1,11 @@
 # Install with:
 #   sudo cp ops/systemd/pepepow-pool-runtime.logrotate /etc/logrotate.d/pepepow-pool-runtime
+#
+# share-events.jsonl is intentionally excluded. Stratum rotates that file
+# internally by byte size and sequence retention so recovery metadata stays
+# coherent. Payment action JSONL is also excluded to preserve payout replay/audit.
 
+# Legacy checkout-local Pool runtime.
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/*.log
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/*-evidence.jsonl
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/candidate-events.jsonl
@@ -12,6 +17,46 @@
     copytruncate
     compress
     maxage 7
+    missingok
+    notifempty
+}
+
+# Current production Pool observation logs. Keep these separate from share-events
+# and payment-actions so Stratum recovery and payout replay remain authoritative.
+/var/lib/pepepow-pool/*.log
+/var/lib/pepepow-pool/*-evidence.jsonl
+/var/lib/pepepow-pool/candidate-events.jsonl
+/var/lib/pepepow-pool/candidate-followup-events.jsonl
+/var/lib/pepepow-pool/candidate-outcome-events.jsonl {
+    su ubuntu ubuntu
+    size 32M
+    rotate 8
+    copytruncate
+    compress
+    maxage 30
+    missingok
+    notifempty
+}
+
+# Pure SOLO production and legacy observation logs. SOLO lifecycle now keeps the
+# canonical accepted-candidates snapshot incrementally, so raw observation logs
+# can be rotated without dropping historical candidates from the public snapshot.
+/var/lib/pepepow-pool/solo/*.log
+/var/lib/pepepow-pool/solo/*-evidence.jsonl
+/var/lib/pepepow-pool/solo/candidate-events.jsonl
+/var/lib/pepepow-pool/solo/candidate-followup-events.jsonl
+/var/lib/pepepow-pool/solo/candidate-outcome-events.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/*.log
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/*-evidence.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/candidate-events.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/candidate-followup-events.jsonl
+/home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/candidate-outcome-events.jsonl {
+    su ubuntu ubuntu
+    size 32M
+    rotate 8
+    copytruncate
+    compress
+    maxage 30
     missingok
     notifempty
 }
