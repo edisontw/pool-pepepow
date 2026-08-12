@@ -20,18 +20,6 @@ SNAPSHOT_NAMES = {
     "payout-candidates.json",
     "payments-snapshot.json",
     "rounds-snapshot.json",
-    "solo-payout-candidates.json",
-    "solo-payments-snapshot.json",
-}
-
-# These are reconstructable/runtime observation logs. Keep payment action logs out
-# of destructive trimming because they are part of payout replay/audit safety.
-BOUNDED_JSONL_NAMES = {
-    "candidate-events.jsonl",
-    "candidate-followup-events.jsonl",
-    "candidate-outcome-events.jsonl",
-    "notify-debug-capture.jsonl",
-    "share-hash-probe.jsonl",
 }
 
 
@@ -64,7 +52,7 @@ def is_target(path: Path) -> bool:
     return (
         name.endswith(".log")
         or name.endswith("-evidence.jsonl")
-        or name in BOUNDED_JSONL_NAMES
+        or name == "candidate-outcome-events.jsonl"
     )
 
 
