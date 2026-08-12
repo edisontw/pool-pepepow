@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "solo_lifecycle_refresh.py"
@@ -107,6 +108,86 @@ class SoloLifecycleRefreshTests(unittest.TestCase):
 
         current["followupNote"] = "different error"
         self.assertTrue(MODULE._followup_changed(previous, current))
+
+    def test_incremental_snapshot_preserves_existing_candidates_and_merges_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = root / "accepted-candidates.json"
+            pool_snapshot = root / "pool-snapshot.json"
+            accepted.write_text(
+                json.dumps(
+                    {
+                        "updated_at": "2026-08-12T00:00:00Z",
+                        "accepted_candidates": [
+                            {
+                                "candidate_hash": "old",
+                                "submit_timestamp": "2026-08-12T00:00:00Z",
+                                "lifecycle_status": "confirmed",
+                                "mining_mode": "solo",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pool_snapshot.write_text(
+                json.dumps({"network": {"height": 1000}, "blocks": []}),
+                encoding="utf-8",
+            )
+
+            def fake_normalize(row, _blocks, _height):
+                block_hash = row.get("candidateBlockHash") or row.get("candidate_hash")
+                return {
+                    "candidate_hash": block_hash,
+                    "submit_timestamp": row.get("candidateTimestamp") or row.get("submit_timestamp"),
+                    "lifecycle_status": "confirmed" if block_hash == "old" else "submit_accepted",
+                    "mining_mode": "solo",
+                }
+
+            with mock.patch.object(MODULE, "_normalized_record_from_outcome", side_effect=fake_normalize):
+                count = MODULE._merge_incremental_accepted_candidates(
+                    outcome_rows=[
+                        {
+                            "candidateBlockHash": "new",
+                            "candidateTimestamp": "2026-08-12T00:01:00Z",
+                        }
+                    ],
+                    accepted_candidates=accepted,
+                    pool_snapshot=pool_snapshot,
+                )
+
+            payload = json.loads(accepted.read_text(encoding="utf-8"))
+            self.assertEqual(count, 2)
+            self.assertEqual(
+                [item["candidate_hash"] for item in payload["accepted_candidates"]],
+                ["old", "new"],
+            )
+
+    def test_existing_snapshot_avoids_full_outcome_rescan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = root / "accepted-candidates.json"
+            pool_snapshot = root / "pool-snapshot.json"
+            outcome_events = root / "candidate-outcome-events.jsonl"
+            accepted.write_text(json.dumps({"accepted_candidates": []}), encoding="utf-8")
+            pool_snapshot.write_text(
+                json.dumps({"network": {"height": 1}, "blocks": []}),
+                encoding="utf-8",
+            )
+            outcome_events.write_text("", encoding="utf-8")
+
+            with mock.patch.object(MODULE.subprocess, "run") as run_mock:
+                mode, count = MODULE._rebuild_accepted_candidates(
+                    repo_root=root,
+                    outcome_events=outcome_events,
+                    outcome_rows=[],
+                    accepted_candidates=accepted,
+                    pool_snapshot=pool_snapshot,
+                )
+
+            run_mock.assert_not_called()
+            self.assertEqual(mode, "incremental")
+            self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":
