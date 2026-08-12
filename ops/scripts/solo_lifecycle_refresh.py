@@ -124,13 +124,172 @@ def _followup_changed(
     return any(previous.get(key) != current.get(key) for key in keys)
 
 
+def _load_json_dict(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _load_chain_context(pool_snapshot: Path) -> tuple[list[dict[str, Any]], int]:
+    payload = _load_json_dict(pool_snapshot) or {}
+    blocks = payload.get("blocks", [])
+    if not isinstance(blocks, list):
+        blocks = []
+    try:
+        height = int((payload.get("network") or {}).get("height") or 0)
+    except (TypeError, ValueError, AttributeError):
+        height = 0
+    return [item for item in blocks if isinstance(item, dict)], max(0, height)
+
+
+def _normalized_record_from_outcome(
+    row: dict[str, Any],
+    snapshot_blocks: list[dict[str, Any]],
+    current_height: int,
+) -> dict[str, Any] | None:
+    block_hash = row.get("candidateBlockHash")
+    if not isinstance(block_hash, str) or not block_hash:
+        return None
+
+    scripts_dir = Path(__file__).resolve().parent
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from track_accepted_candidates import map_lifecycle_status  # noqa: E402
+
+    lifecycle_status, confirmations, maturity_label = map_lifecycle_status(
+        row, snapshot_blocks, current_height
+    )
+    return {
+        "candidate_hash": block_hash,
+        "job_id": row.get("jobId"),
+        "submit_timestamp": (
+            row.get("submitblockSubmittedAt")
+            or row.get("candidateTimestamp")
+            or row.get("timestamp")
+        ),
+        "daemon_result": row.get("submitblockDaemonResult"),
+        "followup_status": row.get("followupStatus"),
+        "matched_height": row.get("followupObservedHeight"),
+        "matched_block_hash": row.get("followupObservedBlockHash"),
+        "lifecycle_status": lifecycle_status,
+        "confirmations": confirmations,
+        "maturity_label": maturity_label,
+        "wallet": row.get("wallet"),
+        "worker": row.get("worker"),
+        "mining_mode": row.get("miningMode") or row.get("mining_mode") or "pool",
+    }
+
+
+def _refresh_existing_record(
+    record: dict[str, Any],
+    snapshot_blocks: list[dict[str, Any]],
+    current_height: int,
+) -> dict[str, Any]:
+    current = dict(record)
+    lifecycle = str(current.get("lifecycle_status") or "")
+    followup_status = current.get("followup_status")
+    if not followup_status and lifecycle in {"chain_match_found", "immature", "confirmed"}:
+        followup_status = "match-found"
+    elif not followup_status and lifecycle == "orphan":
+        followup_status = "no-match-found"
+
+    pseudo_outcome = {
+        "candidateBlockHash": current.get("candidate_hash"),
+        "jobId": current.get("job_id"),
+        "candidateTimestamp": current.get("submit_timestamp"),
+        "submitblockDaemonResult": current.get("daemon_result"),
+        "followupStatus": followup_status,
+        "followupObservedHeight": current.get("matched_height"),
+        "followupObservedBlockHash": current.get("matched_block_hash"),
+        "wallet": current.get("wallet"),
+        "worker": current.get("worker"),
+        "miningMode": current.get("mining_mode") or "solo",
+    }
+    refreshed = _normalized_record_from_outcome(
+        pseudo_outcome, snapshot_blocks, current_height
+    )
+    return refreshed or current
+
+
+def _merge_incremental_accepted_candidates(
+    *,
+    outcome_rows: list[dict[str, Any]],
+    accepted_candidates: Path,
+    pool_snapshot: Path,
+) -> int:
+    existing_payload = _load_json_dict(accepted_candidates)
+    if not existing_payload or not isinstance(existing_payload.get("accepted_candidates"), list):
+        return -1
+
+    snapshot_blocks, current_height = _load_chain_context(pool_snapshot)
+    merged: dict[str, dict[str, Any]] = {}
+    for item in existing_payload["accepted_candidates"]:
+        if not isinstance(item, dict):
+            continue
+        block_hash = item.get("candidate_hash")
+        if not isinstance(block_hash, str) or not block_hash:
+            continue
+        merged[block_hash] = _refresh_existing_record(
+            item, snapshot_blocks, current_height
+        )
+
+    for row in outcome_rows:
+        normalized = _normalized_record_from_outcome(
+            row, snapshot_blocks, current_height
+        )
+        if normalized is not None:
+            merged[normalized["candidate_hash"]] = normalized
+
+    def sort_key(item: dict[str, Any]) -> datetime:
+        return _parse_iso(item.get("submit_timestamp")) or datetime.min.replace(tzinfo=timezone.utc)
+
+    accepted_list = sorted(merged.values(), key=sort_key)
+    _write_json_atomic(
+        accepted_candidates,
+        {
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "accepted_candidates": accepted_list,
+        },
+    )
+    return len(accepted_list)
+
+
 def _rebuild_accepted_candidates(
     *,
     repo_root: Path,
     outcome_events: Path,
+    outcome_rows: list[dict[str, Any]],
     accepted_candidates: Path,
     pool_snapshot: Path,
-) -> None:
+) -> tuple[str, int | None]:
+    merged_count = _merge_incremental_accepted_candidates(
+        outcome_rows=outcome_rows,
+        accepted_candidates=accepted_candidates,
+        pool_snapshot=pool_snapshot,
+    )
+    if merged_count >= 0:
+        return "incremental", merged_count
+
+    # Bootstrap only: if no valid persisted snapshot exists yet, build it once
+    # from the complete outcome log. Normal minute-by-minute refreshes never
+    # rescan the growing JSONL again.
     cmd = [
         sys.executable,
         str(repo_root / "ops" / "scripts" / "track_accepted_candidates.py"),
@@ -140,6 +299,9 @@ def _rebuild_accepted_candidates(
         str(pool_snapshot),
     ]
     subprocess.run(cmd, check=True)
+    payload = _load_json_dict(accepted_candidates) or {}
+    items = payload.get("accepted_candidates", [])
+    return "bootstrap-full-scan", len(items) if isinstance(items, list) else None
 
 
 def main() -> int:
@@ -224,9 +386,12 @@ def main() -> int:
                 if isinstance(block_hash, str):
                     latest_outcomes[block_hash] = followup
 
-    _rebuild_accepted_candidates(
+    # Refresh the tail after any new followup outcome was appended in this run.
+    outcomes = _tail_json_objects(args.outcome_events, args.max_outcomes)
+    refresh_mode, accepted_count = _rebuild_accepted_candidates(
         repo_root=repo_root,
         outcome_events=args.outcome_events,
+        outcome_rows=outcomes,
         accepted_candidates=args.accepted_candidates,
         pool_snapshot=args.pool_snapshot,
     )
@@ -234,10 +399,13 @@ def main() -> int:
     print(
         "solo-lifecycle-refresh:"
         f" candidates_tail={len(candidates)}"
+        f" outcomes_tail={len(outcomes)}"
         f" pending={len(pending)}"
         f" checked={checked}"
         f" recorded={recorded}"
         f" rpc_errors={rpc_errors}"
+        f" snapshot_refresh={refresh_mode}"
+        f" accepted_candidates={accepted_count if accepted_count is not None else 'unknown'}"
     )
     return 1 if rpc_errors else 0
 
