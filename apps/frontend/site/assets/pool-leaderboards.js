@@ -1,13 +1,8 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
-  const MAX_MINER_LOOKUPS = 20;
-  const BLOCK_TIME_SECONDS = 20;
-  const TOTAL_BLOCK_REWARD = 6500;
-  const DEVELOPER_FEE_RATIO = 0.05;
-  const MINER_REWARD_RATIO = 0.65;
-  const NON_ORPHAN_RATE = 0.75;
+  const CACHE_KEY = "pepepow_combined_leaderboard_v1";
+  const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let cachedLeaderboardItems = [];
-  let cachedShareLabel = "accepted shares";
   let cachedLastPoolBlockText = "";
   let cachedLastPoolBlockHtml = "";
 
@@ -64,33 +59,80 @@
     return 0;
   }
 
-  function normalize(pool) {
-    const source = Array.isArray(pool.workerDistribution) ? pool.workerDistribution : [];
-    return source.map((item) => ({
+  function distributionSource(summary) {
+    if (!summary || typeof summary !== "object") return [];
+    if (Array.isArray(summary.workerDistribution)) return summary.workerDistribution;
+    if (summary.pool && typeof summary.pool === "object" && Array.isArray(summary.pool.workerDistribution)) {
+      return summary.pool.workerDistribution;
+    }
+    return [];
+  }
+
+  function normalize(summary, miningMode) {
+    return distributionSource(summary).map((item) => ({
       wallet: String(item.wallet || item.address || item.miner || item.username || item.name || "unknown"),
+      miningMode,
       hashrate: numeric(item.hashrate, item.hashrateHps, item.hashrate_hps, item.estimatedHashrate),
-      shares: numeric(item.totalAcceptedShares, item.acceptedShares, item.shareCount, item.shares, item.accepted_share_count, item.shares15m),
+      shares: numeric(item.acceptedShares, item.totalAcceptedShares, item.shareCount, item.shares, item.accepted_share_count, item.shares15m),
       activeWorkers: numeric(item.activeWorkers, item.workerCount, item.workers)
     })).filter((item) => item.wallet && item.wallet !== "unknown");
   }
 
+  function loadCache() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
+      return cached.items.filter((item) => item && typeof item === "object");
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveCache(items) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items }));
+    } catch (_error) {}
+  }
+
+  function installStyles() {
+    if (document.getElementById("combined-leaderboard-styles")) return;
+    const style = document.createElement("style");
+    style.id = "combined-leaderboard-styles";
+    style.textContent = `
+      #pool-leaderboards .leaderboard-row { grid-template-columns: 2.6rem 3.5rem minmax(0, 1fr) auto; }
+      #pool-leaderboards .leaderboard-mode { display: inline-flex; justify-content: center; padding: .2rem .35rem; border-radius: 999px; font-size: .65rem; font-weight: 800; letter-spacing: .05em; border: 1px solid rgba(255,255,255,.12); color: var(--muted); }
+      #pool-leaderboards .leaderboard-mode.is-solo { border-color: rgba(255,212,90,.35); color: #ffd45a; background: rgba(255,212,90,.08); }
+      #pool-leaderboards .leaderboard-mode.is-pool { border-color: rgba(55,196,255,.3); color: var(--accent-alt); background: rgba(55,196,255,.07); }
+      #pool-leaderboards .leaderboard-wallet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #pool-leaderboards .leaderboard-value { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      @media (max-width: 520px) { #pool-leaderboards .leaderboard-row { grid-template-columns: 2.2rem 3.25rem minmax(0, 1fr) auto; gap: .4rem; } }
+    `;
+    document.head.appendChild(style);
+  }
+
   function rows(items, mode) {
     const sorted = items.slice().sort((a, b) => mode === "hashrate" ? b.hashrate - a.hashrate : b.shares - a.shares).slice(0, 5);
-    if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) return `<div class="leaderboard-empty">No active data available.</div>`;
+    if (sorted.length === 0 || sorted.every((item) => (mode === "hashrate" ? item.hashrate : item.shares) <= 0)) {
+      return `<div class="leaderboard-empty">No active POOL or SOLO data available.</div>`;
+    }
     return sorted.map((item, idx) => {
       const value = mode === "hashrate" ? formatHashrate(item.hashrate) : formatNumber(item.shares);
       const wallet = escapeHtml(item.wallet);
       const compact = escapeHtml(compactWallet(item.wallet));
       const lookupUrl = escapeHtml(minerLookupUrl(item.wallet));
+      const modeLabel = item.miningMode === "solo" ? "SOLO" : "POOL";
       return `<div class="leaderboard-row">
         <span class="leaderboard-rank">#${idx + 1}</span>
+        <span class="leaderboard-mode is-${escapeHtml(item.miningMode)}">${modeLabel}</span>
         <a class="leaderboard-wallet" href="${lookupUrl}" title="Miner lookup: ${wallet}">${compact}</a>
         <span class="leaderboard-value">${escapeHtml(value)}</span>
       </div>`;
     }).join("");
   }
 
-  function renderItems(items, shareLabel) {
+  function renderItems(items, label) {
     const target = document.querySelector(".mining-outlook");
     if (!target) return;
     let box = document.getElementById("pool-leaderboards");
@@ -100,7 +142,20 @@
       box.className = "leaderboard-grid";
       target.appendChild(box);
     }
-    box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>recent window</span></div>${rows(items, "hashrate")}</section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Shares Ranking</h4><span>${escapeHtml(shareLabel)}</span></div>${rows(items, "shares")}</section>`;
+    box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>${escapeHtml(label)}</span></div>${rows(items, "hashrate")}</section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Shares Ranking</h4><span>${escapeHtml(label)}</span></div>${rows(items, "shares")}</section>`;
+  }
+
+  function renderLoading() {
+    const target = document.querySelector(".mining-outlook");
+    if (!target) return;
+    let box = document.getElementById("pool-leaderboards");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "pool-leaderboards";
+      box.className = "leaderboard-grid";
+      target.appendChild(box);
+    }
+    box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>POOL + SOLO</span></div><div class="leaderboard-empty">Loading ranking snapshot...</div></section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Shares Ranking</h4><span>POOL + SOLO</span></div><div class="leaderboard-empty">Loading ranking snapshot...</div></section>`;
   }
 
   async function fetchJson(url) {
@@ -112,41 +167,23 @@
     return response.json();
   }
 
-  async function enrichTotalSharesFromMinerApi(items) {
-    const candidates = items.filter((item) => item.wallet && item.wallet !== "unknown").sort((a, b) => b.hashrate - a.hashrate).slice(0, MAX_MINER_LOOKUPS);
-    if (candidates.length === 0) return items;
-    const results = await Promise.all(candidates.map(async (item) => {
-      try {
-        const payload = await fetchJson(`/api/miner/${encodeURIComponent(item.wallet)}`);
-        const summary = payload && payload.summary ? payload.summary : {};
-        return [item.wallet, numeric(summary.acceptedShares, summary.shareCount, item.shares)];
-      } catch (_error) {
-        return [item.wallet, item.shares];
-      }
-    }));
-    const sharesByWallet = new Map(results);
-    return items.map((item) => ({ ...item, shares: sharesByWallet.get(item.wallet) || item.shares }));
-  }
-
-  function useCachedLeaderboard() {
-    if (cachedLeaderboardItems.length === 0) return false;
-    renderItems(cachedLeaderboardItems, `${cachedShareLabel} · cached`);
-    return true;
-  }
-
   async function refreshLeaderboards() {
     if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
     try {
-      const pool = await fetchJson("/api/pool/summary");
-      const items = normalize(pool || {});
-      if (items.length === 0) { useCachedLeaderboard(); return; }
-      renderItems(items, "loading totals");
-      const enriched = await enrichTotalSharesFromMinerApi(items);
-      cachedLeaderboardItems = enriched;
-      cachedShareLabel = "accepted shares";
-      renderItems(enriched, cachedShareLabel);
+      const [pool, solo] = await Promise.all([
+        fetchJson("/api/pool/summary").catch(() => ({})),
+        fetchJson("/api/solo/summary").catch(() => ({}))
+      ]);
+      const items = [...normalize(pool, "pool"), ...normalize(solo, "solo")];
+      if (items.length === 0) {
+        if (cachedLeaderboardItems.length > 0) renderItems(cachedLeaderboardItems, "POOL + SOLO · cached");
+        return;
+      }
+      cachedLeaderboardItems = items;
+      saveCache(items);
+      renderItems(items, "POOL + SOLO · recent accepted shares");
     } catch (_error) {
-      useCachedLeaderboard();
+      if (cachedLeaderboardItems.length > 0) renderItems(cachedLeaderboardItems, "POOL + SOLO · cached");
     }
   }
 
@@ -189,10 +226,11 @@
       const observed = observedPoolBlockItems(payload).sort((a, b) => numeric(b.matchedHeight, Date.parse(b.submitTimestamp)) - numeric(a.matchedHeight, Date.parse(a.submitTimestamp)));
       if (observed.length === 0) { restoreLastPoolBlockText(); return; }
       const latest = observed[0];
-      const height = numeric(latest.matchedHeight);
-      const status = String(latest.lifecycleStatus || "observed").replace(/_/g, " ");
-      const time = formatDate(latest.submitTimestamp);
-      setLastPoolBlockSummary({ height, status, time });
+      setLastPoolBlockSummary({
+        height: numeric(latest.matchedHeight),
+        status: String(latest.lifecycleStatus || "observed").replace(/_/g, " "),
+        time: formatDate(latest.submitTimestamp)
+      });
     } catch (_error) {
       restoreLastPoolBlockText();
     }
@@ -205,101 +243,17 @@
     observer.observe(node, { childList: true, characterData: true, subtree: true });
   }
 
-  function setText(id, value) {
-    const node = document.getElementById(id);
-    if (node) node.textContent = value;
-  }
-
-  function unitToHps(value, unit) {
-    let hps = Number(value);
-    if (!Number.isFinite(hps) || hps < 0) return null;
-    if (unit === "KH") hps *= 1000;
-    if (unit === "MH") hps *= 1000000;
-    return hps;
-  }
-
-  function poolFeeRatio(pool) {
-    return pool && typeof pool.feePercent === "number" && Number.isFinite(pool.feePercent) && pool.feePercent > 0
-      ? pool.feePercent / 100
-      : 0;
-  }
-
-  function relabelOrphanAdjustedCalculator() {
-    [
-      ["calc-pepew-hour", "Orphan-adjusted PEPEW / Hour"],
-      ["calc-pepew-day", "Orphan-adjusted PEPEW / Day"],
-      ["calc-pepew-week", "Orphan-adjusted PEPEW / Week"],
-      ["calc-usdt-day", "Orphan-adjusted USDT / Day"],
-      ["calc-usdt-week", "Orphan-adjusted USDT / Week"]
-    ].forEach(([id, label]) => {
-      const labelNode = document.getElementById(id)?.closest("div")?.querySelector("span");
-      if (labelNode) labelNode.textContent = label;
-    });
-
-    const warning = document.querySelector(".estimate-warning");
-    if (warning) {
-      warning.innerHTML = "⚠️ <strong>Orphan-adjusted theoretical estimate.</strong> Uses current block reward 6500 × 95% developer-fee remainder × 65% miner share × pool fee × 75% non-orphan rate. Actual recorded payments can still differ because of pool luck, network hashrate changes, and payment timing.";
-    }
-  }
-
-  async function refreshOrphanAdjustedCalculator() {
-    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
-    const hashrateInput = document.getElementById("calc-hashrate");
-    const unitSelect = document.getElementById("calc-unit");
-    if (!hashrateInput || !unitSelect) return;
-    relabelOrphanAdjustedCalculator();
-
-    const userHashrateHps = unitToHps(hashrateInput.value, unitSelect.value);
-    if (!userHashrateHps) return;
-
-    try {
-      const [network, pool, price] = await Promise.all([
-        fetchJson("/api/network/summary").catch(() => null),
-        fetchJson("/api/pool/summary").catch(() => null),
-        fetchJson("/api/price/pepew-usdt").catch(() => null)
-      ]);
-      const netHashrate = network && typeof network.networkHashrate === "number" ? network.networkHashrate : null;
-      if (!netHashrate || netHashrate <= 0) return;
-
-      const minerRewardPerBlock = TOTAL_BLOCK_REWARD * (1 - DEVELOPER_FEE_RATIO) * MINER_REWARD_RATIO * (1 - poolFeeRatio(pool)) * NON_ORPHAN_RATE;
-      const rewardPerDay = (userHashrateHps / netHashrate) * (86400 / BLOCK_TIME_SECONDS) * minerRewardPerBlock;
-      const rewardPerHour = rewardPerDay / 24;
-      const rewardPerWeek = rewardPerDay * 7;
-
-      setText("calc-pepew-hour", formatNumber(Math.round(rewardPerHour * 100) / 100));
-      setText("calc-pepew-day", formatNumber(Math.round(rewardPerDay * 100) / 100));
-      setText("calc-pepew-week", formatNumber(Math.round(rewardPerWeek * 100) / 100));
-
-      if (price && typeof price.price === "number") {
-        setText("calc-usdt-day", "$" + (rewardPerDay * price.price).toFixed(2));
-        setText("calc-usdt-week", "$" + (rewardPerWeek * price.price).toFixed(2));
-      }
-    } catch (_error) {
-      relabelOrphanAdjustedCalculator();
-    }
-  }
-
-  function installOrphanAdjustedCalculator() {
-    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
-    const hashrateInput = document.getElementById("calc-hashrate");
-    const unitSelect = document.getElementById("calc-unit");
-    if (hashrateInput) hashrateInput.addEventListener("input", () => window.setTimeout(refreshOrphanAdjustedCalculator, 0));
-    if (unitSelect) unitSelect.addEventListener("change", () => window.setTimeout(refreshOrphanAdjustedCalculator, 0));
-    relabelOrphanAdjustedCalculator();
-    refreshOrphanAdjustedCalculator();
-    window.setTimeout(refreshOrphanAdjustedCalculator, 1500);
-    window.setTimeout(refreshOrphanAdjustedCalculator, 4500);
-  }
-
   async function refresh() {
-    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock(), refreshOrphanAdjustedCalculator()]);
+    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock()]);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    installStyles();
     installLastPoolBlockGuard();
-    installOrphanAdjustedCalculator();
+    cachedLeaderboardItems = loadCache();
+    if (cachedLeaderboardItems.length > 0) renderItems(cachedLeaderboardItems, "POOL + SOLO · cached");
+    else renderLoading();
     refresh();
-    window.setTimeout(refreshLastObservedPoolBlock, 1500);
     window.setInterval(refresh, REFRESH_MS);
   });
 })();
