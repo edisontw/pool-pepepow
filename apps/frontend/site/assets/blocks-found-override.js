@@ -1,10 +1,12 @@
 (function () {
   const PAGE_SIZE = 20;
   const REFRESH_MS = 120000;
-  const CACHE_KEY = "pepepow_blocks_found_cache_v1";
+  const CACHE_KEY = "pepepow_blocks_found_page_cache_v2";
   const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let blockItems = [];
+  let blockTotal = 0;
   let blockPage = 0;
+  let loadingPage = false;
 
   function escapeHtml(value) {
     return String(value == null ? "" : value)
@@ -133,17 +135,21 @@
   function loadCache() {
     try {
       const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
-      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
-      return cached.items.filter(function (item) { return item && typeof item === "object"; });
+      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return null;
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return null;
+      return {
+        items: cached.items.filter(function (item) { return item && typeof item === "object"; }),
+        total: Number.isFinite(Number(cached.total)) ? Number(cached.total) : cached.items.length,
+        page: Number.isFinite(Number(cached.page)) ? Number(cached.page) : 0
+      };
     } catch (_error) {
-      return [];
+      return null;
     }
   }
 
-  function saveCache(items) {
+  function saveCache() {
     try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items: items }));
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items: blockItems, total: blockTotal, page: blockPage }));
     } catch (_error) {}
   }
 
@@ -152,19 +158,15 @@
     if (!target) return;
 
     if (!Array.isArray(blockItems) || blockItems.length === 0) {
-      target.innerHTML = '<div class="muted">No Pool or Pure SOLO block candidates found in this snapshot window.</div>';
+      if (blockTotal === 0) target.innerHTML = '<div class="muted">No Pool or Pure SOLO block candidates found in this snapshot window.</div>';
       return;
     }
 
-    const sorted = blockItems.slice().sort(function (a, b) {
-      return String(itemTime(b) || "").localeCompare(String(itemTime(a) || ""));
-    });
-    const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(blockTotal / PAGE_SIZE));
     blockPage = Math.min(Math.max(blockPage, 0), totalPages - 1);
     const start = blockPage * PAGE_SIZE;
-    const visible = sorted.slice(start, start + PAGE_SIZE);
 
-    const rows = visible.map(function (item) {
+    const rows = blockItems.map(function (item) {
       return '<tr>' +
         '<td data-label="Time">' + escapeHtml(formatDate(itemTime(item))) + '</td>' +
         '<td data-label="Mode">' + modeBadge(item) + '</td>' +
@@ -176,65 +178,59 @@
     }).join("");
 
     target.innerHTML = '<div class="table-wrap"><table class="pool-found-blocks-table"><thead><tr><th>Time</th><th>Mode</th><th>Candidate hash</th><th>Height</th><th>Status</th><th>Confirms</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-      '<div class="table-pagination"><span class="muted">Showing ' + (start + 1) + '-' + Math.min(start + PAGE_SIZE, sorted.length) + ' of ' + sorted.length + '</span>' +
-      '<button class="copy-mini" type="button" data-pool-blocks-page="' + (blockPage - 1) + '" ' + (blockPage <= 0 ? "disabled" : "") + '>Prev</button>' +
+      '<div class="table-pagination"><span class="muted">Showing ' + (start + 1) + '-' + Math.min(start + blockItems.length, blockTotal) + ' of ' + blockTotal + '</span>' +
+      '<button class="copy-mini" type="button" data-pool-blocks-page="' + (blockPage - 1) + '" ' + (blockPage <= 0 || loadingPage ? "disabled" : "") + '>Prev</button>' +
       '<span class="muted">Page ' + (blockPage + 1) + ' / ' + totalPages + '</span>' +
-      '<button class="copy-mini" type="button" data-pool-blocks-page="' + (blockPage + 1) + '" ' + (blockPage >= totalPages - 1 ? "disabled" : "") + '>Next</button></div>';
+      '<button class="copy-mini" type="button" data-pool-blocks-page="' + (blockPage + 1) + '" ' + (blockPage >= totalPages - 1 || loadingPage ? "disabled" : "") + '>Next</button></div>';
   }
 
   async function fetchJson(url) {
-    if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
-      return window.PepepowUI.fetchJson(url);
-    }
     const response = await fetch(url, { cache: "no-store" });
-    return response.ok ? response.json() : {};
+    if (!response.ok) throw new Error("request failed");
+    return response.json();
   }
 
-  async function refreshPoolFoundBlocks() {
-    if (document.body.dataset.page !== "blocks") return;
+  async function loadPage(page) {
+    if (document.body.dataset.page !== "blocks" || loadingPage) return false;
+    loadingPage = true;
+    renderTable();
     try {
-      const [poolPayload, soloPayload] = await Promise.all([
-        fetchJson("/api/accepted-candidates").catch(function () { return {}; }),
-        fetchJson("/api/solo/accepted-candidates").catch(function () { return {}; })
-      ]);
-      const poolValid = Array.isArray(poolPayload.items);
-      const soloValid = Array.isArray(soloPayload.accepted_candidates) || Array.isArray(soloPayload.items);
-      if (!poolValid && !soloValid) return;
-
-      const poolItems = poolValid ? poolPayload.items.map(function (item) {
-        return Object.assign({}, item, { miningMode: "pool" });
-      }) : [];
-      const rawSoloItems = Array.isArray(soloPayload.accepted_candidates)
-        ? soloPayload.accepted_candidates
-        : (Array.isArray(soloPayload.items) ? soloPayload.items : []);
-      const soloItems = rawSoloItems.map(function (item) {
-        return Object.assign({}, item, { miningMode: "solo" });
-      });
-      blockItems = poolItems.concat(soloItems);
-      saveCache(blockItems);
-      renderTable();
+      const offset = page * PAGE_SIZE;
+      const payload = await fetchJson("/api/public/block-observations?limit=" + PAGE_SIZE + "&offset=" + offset);
+      if (!payload || !Array.isArray(payload.items)) return false;
+      blockItems = payload.items;
+      blockTotal = Number.isFinite(Number(payload.total)) ? Number(payload.total) : blockItems.length;
+      blockPage = page;
+      saveCache();
+      return true;
     } catch (_error) {
-      // Keep the previous rendered table.
+      return false;
+    } finally {
+      loadingPage = false;
+      renderTable();
     }
   }
 
   document.addEventListener("click", function (event) {
     const button = event.target.closest("[data-pool-blocks-page]");
-    if (!button || button.disabled) return;
-    blockPage = Number(button.getAttribute("data-pool-blocks-page"));
-    renderTable();
+    if (!button || button.disabled || loadingPage) return;
+    const nextPage = Number(button.getAttribute("data-pool-blocks-page"));
+    if (!Number.isFinite(nextPage) || nextPage < 0) return;
+    loadPage(nextPage);
   });
 
   function init() {
     if (document.body.dataset.page !== "blocks") return;
     installStyles();
     const cached = loadCache();
-    if (cached.length > 0) {
-      blockItems = cached;
+    if (cached) {
+      blockItems = cached.items;
+      blockTotal = cached.total;
+      blockPage = cached.page;
       renderTable();
     }
-    refreshPoolFoundBlocks();
-    window.setInterval(refreshPoolFoundBlocks, REFRESH_MS);
+    loadPage(blockPage);
+    window.setInterval(function () { loadPage(blockPage); }, REFRESH_MS);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, { once: true });
