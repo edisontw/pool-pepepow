@@ -4,6 +4,12 @@
 Generates read-only SOLO payout candidates for confirmed SOLO blocks.
 SOLO candidates pay 100% of the net miner reward (minerRewardAmount - soloPoolFee)
 to the block finder.
+
+The output keeps the SOLO-specific ``solo_payout_candidates`` collection and
+also exposes the same rows through the standard ``items`` collection consumed
+by the shared guarded payout sender. Eligible payout rows use the standard
+``pending_manual_payment`` status so the sender can re-validate aggregate
+sources before any wallet RPC send.
 """
 
 from __future__ import annotations
@@ -76,7 +82,7 @@ def build_solo_payout_candidate(
             {
                 "wallet": wallet,
                 "amount": net_reward,
-                "status": "ready",
+                "status": "pending_manual_payment",
             }
         )
 
@@ -156,8 +162,13 @@ def generate_solo_payout_candidates(
     if not accepted_candidates_path.exists():
         empty = {
             "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "solo_fee_percent": solo_fee_percent,
+            "min_confirmations": min_confirmations,
             "solo_payout_candidates": [],
+            "items": [],
         }
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(empty, indent=2, sort_keys=True), encoding="utf-8")
         return empty
 
     try:
@@ -165,7 +176,13 @@ def generate_solo_payout_candidates(
         accepted_list = cand_data.get("accepted_candidates", [])
     except Exception as exc:
         print(f"Error reading accepted candidates: {exc}", file=sys.stderr)
-        return {"updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "solo_payout_candidates": []}
+        return {
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "solo_fee_percent": solo_fee_percent,
+            "min_confirmations": min_confirmations,
+            "solo_payout_candidates": [],
+            "items": [],
+        }
 
     paid_pairs = set()
     if actions_log_path and actions_log_path.exists():
@@ -205,6 +222,7 @@ def generate_solo_payout_candidates(
         "solo_fee_percent": solo_fee_percent,
         "min_confirmations": min_confirmations,
         "solo_payout_candidates": solo_candidates,
+        "items": solo_candidates,
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
