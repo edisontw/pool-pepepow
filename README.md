@@ -3,41 +3,43 @@
 PEPEPOW-only community mining pool for a single operator-managed Ubuntu host.
 
 This repository is focused on a lightweight, maintainable PEPEPOW pool stack for
-community testing, learning, and controlled public mining. It is intentionally
-single-coin, snapshot/API-driven, and suitable for a small ARM64 Oracle Cloud
-instance.
+community testing, learning, and public mining. It is intentionally single-coin,
+snapshot/API-driven, and suitable for a small ARM64 Oracle Cloud instance.
 
 The current stack includes:
 
 - public static website
 - read-only public API
-- active Stratum ingress
+- shared Pool Stratum mining on `39333`
+- Pure SOLO Stratum mining on `39334`
 - daemon-template-backed mining jobs
 - share/activity snapshots
-- candidate follow-up observation
-- guarded submitblock validation
-- round and payout review tooling
-- public manual payment history
-- private operator-owned guarded wallet payout tooling
+- candidate follow-up and block lifecycle tracking
+- guarded production `submitblock`
+- Pool round/accounting and payout tooling
+- Pure SOLO finder-only payout accounting with a configurable SOLO fee
+- scheduled private wallet payout tooling with persistent replay protection
+- public Pool and SOLO block/payment/miner views
 
-Automatic wallet payout tooling exists only as an operator-controlled private
-path. It is not a public payout control surface and must not be exposed through
-the website or API.
+Daemon RPC, wallet RPC, submit controls, payout controls, raw runtime files, and
+operator configuration remain private. Public frontend/API surfaces are read-only
+and snapshot-driven.
 
 ---
 
 ## Status
 
-Current target: **single-coin PEPEPOW community pool MVP**
+Current target: **single-coin PEPEPOW community Pool + Pure SOLO production stack**
 
 Operational goals:
 
-- miners can connect and submit shares
-- frontend shows pool, network, blocks, payments, and miner lookup data
+- Pool miners connect to `pool.pepepow.net:39333`
+- Pure SOLO miners connect to `pool.pepepow.net:39334`
+- Pool and SOLO shares, candidates, accounting, and payment records stay isolated
+- valid block candidates can be submitted automatically through guarded private daemon RPC
+- mature Pool and SOLO payouts can be processed by the private scheduled payout workflow
 - public API reads snapshots only
-- Stratum, daemon RPC, wallet RPC, submit controls, and payout controls remain
-  separated
-- payout records are public only after they are recorded as completed actions
+- frontend shows Pool/SOLO status, network, blocks, payments, and miner lookup data
 - the stack stays simple enough for 1 vCPU / 6 GB RAM
 
 Not goals:
@@ -50,6 +52,24 @@ Not goals:
 - public wallet RPC
 - Redis dependency
 - large analytics backend
+
+---
+
+## Mining Endpoints
+
+```text
+Pool Mining
+stratum+tcp://pool.pepepow.net:39333
+
+Pure SOLO Mining
+stratum+tcp://pool.pepepow.net:39334
+```
+
+Pool Mining uses the shared Pool reward/accounting flow.
+
+Pure SOLO attributes a valid block to the authenticated finder and pays that
+finder the pool-controlled miner reward after the configured SOLO fee. It does
+not claim the finder receives unrelated coinbase allocations.
 
 ---
 
@@ -78,31 +98,28 @@ apps/
 
   frontend/site/
     Static HTML/CSS/JS public website.
-    Must consume public API endpoints only.
+    Consumes public API endpoints only.
 
   pool-core/
-    Stratum ingress, template-backed mining jobs, share accounting,
+    Stratum ingress, template-backed jobs, share validation,
     activity snapshots, candidate events, and guarded submitblock path.
 
 ops/
   scripts/
-    Deployment and operator helpers.
-    Includes payout review, carry, preflight, guarded one-shot send,
-    and private wallet payout commands.
+    Deployment and operator helpers, candidate lifecycle tracking,
+    Pool/SOLO payout generation, replay guards, and scheduled payout commands.
 
   systemd/
-    Example systemd units.
+    systemd units for Pool/SOLO Stratum and supporting services.
 
   nginx/
-    Example nginx HTTPS and API reverse-proxy configuration.
+    HTTPS/static frontend/API reverse-proxy examples.
 
 docs/
-  Deployment docs, architecture notes, runbooks, benchmarks, and
-  operational records.
+  Deployment docs, architecture notes, runbooks, benchmarks, and milestones.
 
 tests/
-  Focused Python tests for API, payout accounting, Stratum ingress,
-  and related operational logic.
+  Focused tests for API, Stratum, Pool/SOLO accounting, payout, and ops behavior.
 ```
 
 ---
@@ -113,10 +130,11 @@ Public components:
 
 - HTTPS website
 - read-only HTTPS API
-- Stratum mining endpoint
-- block view
-- miner lookup
-- manual payment history
+- Pool Stratum `39333`
+- Pure SOLO Stratum `39334`
+- Pool/SOLO block views
+- Pool/SOLO miner lookup
+- recorded Pool/SOLO payment history
 - MiningPoolStats-compatible `/api/stats`
 - secondary `/api/status`
 
@@ -124,10 +142,9 @@ Private/operator-only components:
 
 - daemon RPC
 - wallet RPC
-- submitblock controls
-- payout candidate review commands
+- submitblock configuration/controls
+- payout configuration/controls
 - wallet send commands
-- admin controls
 - raw runtime snapshots
 - raw event logs
 
@@ -138,7 +155,7 @@ commands, raw JSONL files, or internal runtime files.
 
 ## Current Public API
 
-Common endpoints:
+Common Pool endpoints:
 
 ```text
 GET /api/health
@@ -151,14 +168,22 @@ GET /api/stats
 GET /api/status
 ```
 
+Pure SOLO endpoints:
+
+```text
+GET /api/solo/summary
+GET /api/solo/accepted-candidates
+GET /api/solo/payments
+GET /api/solo/miner/<wallet>
+```
+
 API rules:
 
 - public endpoints are read-only
-- request paths should read snapshots or summaries
-- no public endpoint should parse large raw runtime logs
-- no endpoint should expose daemon RPC, wallet RPC, submit controls, or payout
-  controls
-- malformed or missing snapshots should degrade safely
+- request paths read snapshots or summaries
+- no public endpoint parses large raw runtime logs
+- no endpoint exposes daemon RPC, wallet RPC, submit controls, or payout controls
+- malformed or missing snapshots degrade safely
 
 ---
 
@@ -169,37 +194,22 @@ The website is a static frontend under `apps/frontend/site`.
 Rules:
 
 - each page should have one clear render owner
-- `app.js` should act as shared utilities/bootstrap, not as a competing renderer
-  for every table
+- `app.js` provides shared utilities/bootstrap without competing renderers
 - page-specific tables should be rendered by page-specific scripts only
-- static asset query strings should be updated consistently after frontend
-  changes
 - frontend API calls should be cache-friendly and bounded
+- Pool and SOLO statistics must remain clearly separated
 - no page should read raw runtime files directly
 
 Recommended ownership model:
 
 ```text
-index.html      homepage status, radar, calculator, general pool summary
-miner.html      wallet lookup, worker table, reward analysis
+index.html      Pool/SOLO status, radar, calculator, general summaries
+miner.html      Pool + SOLO wallet lookup and worker/block/payment views
 blocks.html     block / lifecycle table
 payments.html   recorded payment history
-connect.html    mining instructions
+connect.html    Pool 39333 / Pure SOLO 39334 instructions
 api.html        public API documentation
 ```
-
-When updating the frontend, check for duplicate render targets such as:
-
-```text
-#payments-table
-#blocks-table
-miner lookup containers
-reward analysis containers
-homepage status/radar/calculator containers
-```
-
-Duplicate render ownership can cause a page to briefly show the new layout and
-then revert to an older table after another script runs.
 
 ---
 
@@ -220,7 +230,8 @@ Expected public exposure:
 ```text
 80/tcp    optional redirect / certificate flow
 443/tcp   public website and API
-39333/tcp Stratum mining endpoint, if configured
+39333/tcp Pool Stratum mining
+39334/tcp Pure SOLO Stratum mining
 ```
 
 Expected private-only exposure:
@@ -231,7 +242,7 @@ wallet RPC
 API backend bind port, if reverse-proxied locally
 runtime snapshots
 submitblock controls
-payout commands
+payout controls
 ```
 
 ---
@@ -243,7 +254,7 @@ Common focused checks:
 ```bash
 ./ops/scripts/prelaunch-repo-check.sh
 PYTHONPATH=apps/api:ops/scripts python3 -m unittest tests.test_api_endpoints
-PYTHONPATH=ops/scripts python3 -m unittest tests.test_payout_accounting
+PYTHONPATH=ops/scripts python3 -m unittest tests.test_payout_accounting tests.test_solo_payout_helper
 bash -n ops/scripts/*.sh
 git diff --check
 ```
@@ -256,30 +267,24 @@ find apps/frontend/site/assets -maxdepth 1 -name '*.js' -print -exec node --chec
 git diff --check
 ```
 
-Broader local validation:
-
-```bash
-python3 -m unittest discover tests
-```
-
-Routine payout health checks should use bounded snapshot commands and should not
-scan full runtime JSONL files.
+Routine health checks should use bounded snapshots and generated summaries, not
+full runtime JSONL scans.
 
 ---
 
 ## Safety Rules
 
-Do not expose or automate these through the public website or public API:
+Never expose through the website or public API:
 
 - daemon RPC
 - wallet RPC
-- submitblock enable flags
+- submitblock enable/budget settings
 - wallet send commands
-- payout admin commands
+- payout admin/configuration commands
 - raw JSONL event logs
 - raw runtime snapshots
 
-Do not run broad runtime scans such as:
+Avoid broad runtime scans such as:
 
 ```bash
 cat .runtime/live-stratum/*.jsonl
@@ -289,8 +294,12 @@ pandas.read_json(...)
 
 Use bounded reads or generated snapshots instead.
 
-Real submitblock and wallet payout actions must remain explicit operator actions
-with guards such as enable flags and max-send limits.
+Production submitblock and wallet payouts are private operational paths. Safety
+comes from bounded send ceilings, candidate validation, persistent payment/action
+records, file locking, replay/idempotency guards, and private master enable/disable
+switches. Routine production operation does not require public or per-payment
+approval, but operators can disable submit or payout processing immediately when
+investigating an abnormal condition.
 
 ---
 
@@ -309,6 +318,10 @@ with guards such as enable flags and max-send limits.
 
 - [`2026-06-05 controlled submitblock success`](docs/benchmarks/2026-06-05-controlled-submitblock-success.md)
 - [`2026-06-09 first auto wallet payout self-test`](docs/benchmarks/2026-06-09-first-auto-wallet-payout-self-test.md)
+- [`2026-08-11 first Pure SOLO mainnet mining-to-payout cycle`](docs/benchmarks/2026-08-11-pure-solo-mainnet-cycle.md)
+
+The pre-SOLO baseline is retained as Git tag:
+`baseline/pre-pure-solo-20260811`.
 
 ---
 

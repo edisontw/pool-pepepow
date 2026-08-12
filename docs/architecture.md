@@ -1,82 +1,103 @@
 # PEPEPOW Pool Architecture
 
-This document is a one-page deployer and agent reference for the current
-PEPEPOW-only community pool stack.
+This document is a deployer and agent reference for the current PEPEPOW-only
+community Pool + Pure SOLO stack.
 
-The pool is a single-host deployment for a low-resource Ubuntu ARM64/aarch64
-machine. It exposes a public website, public read-only API, and public Stratum
-mining endpoint. Daemon RPC, wallet RPC, runtime files, submit controls, and
+The deployment targets one low-resource Ubuntu ARM64/aarch64 host. Public
+surfaces are the website, read-only API, Pool Stratum on `39333`, and Pure SOLO
+Stratum on `39334`. Daemon RPC, wallet RPC, runtime files, submit controls, and
 payout controls remain private/operator-only.
 
-The current stack has active Stratum ingress, daemon-template-backed mining,
-candidate follow-up, controlled submitblock validation, public manual payment
-records, and private operator-owned auto wallet payout self-test tooling. It
-does not claim public automatic payout readiness.
+The current stack has active Pool and Pure SOLO Stratum ingress,
+daemon-template-backed jobs, share validation, candidate follow-up, production
+guarded submitblock, Pool accounting, Pure SOLO finder accounting, scheduled
+private wallet payouts, replay protection, and public snapshot-driven Pool/SOLO
+views.
 
 ## ASCII Diagram
 
 ```text
-                          public internet
-                                |
-                         +------v------+
-                         |    nginx    |
-                         +------+------+
-                                |
-             +------------------+------------------+
-             |                                     |
-      static frontend                       read-only API
-  apps/frontend/site                         apps/api
-             |                                     |
-             |                            snapshot reads only
-             |                                     |
-             |        +----------------------------+----------------------------+
-             |        |                            |                            |
-             |  pool-snapshot.json        activity-snapshot.json       payments-snapshot.json
-             |        ^                            ^                            ^
-             |        |                            |                            |
-             |  pool-core producer          Stratum ingress             payout tooling
-             |        |                            |                            |
-             |  private daemon RPC      share-events.jsonl        payout-candidates.json
-             |        |                            ^
-             |     PEPEPOWd                      miners
-             |
-      API-only browser reads
+                             public internet
+                                   |
+                    +--------------+--------------+
+                    |                             |
+             +------v------+                Stratum TCP
+             |    nginx    |                 39333 / 39334
+             +------+------+                    |
+                    |                 +----------+----------+
+          +---------+---------+       |                     |
+          |                   |   Pool Stratum          SOLO Stratum
+   static frontend       read-only API   |                     |
+          |                   |          +----------+----------+
+          |             snapshot reads              |
+          |                   |              daemon-template jobs
+          |          +--------+--------+             |
+          |          |                 |          PEPEPOWd
+          |     Pool snapshots      SOLO snapshots    |
+          |          |                 |              |
+          |          +--------+--------+------ private RPC
+          |                   |
+          |             payout scheduler
+          |              /           \
+          |        Pool payout     SOLO payout
+          |              \           /
+          |               wallet RPC
+          |
+          +------ browser reads API only
 ```
 
 ## Component Table
 
 | Component | Path / service | Purpose | Boundary |
 |---|---|---|---|
-| `PEPEPOWd` | external daemon process | Chain state, block templates, submitblock target, wallet backend when used by operator tooling | Private daemon RPC and wallet RPC only |
-| pool-core producer | `apps/pool-core/producer.py`, `pepepow-pool-core.service` | Reads daemon data and writes `pool-snapshot.json` | Private process, public data only through API |
-| Stratum ingress | `apps/pool-core/stratum_ingress.py`, `pepepow-pool-stratum.service` | Miner TCP ingress, daemon-template jobs, share/activity tracking, candidate event recording | Public Stratum TCP, private runtime files |
-| API | `apps/api`, `pepepow-pool-api.service` | Serves read-only JSON from snapshots and safe sidecar snapshots | Public HTTP through nginx |
-| frontend | `apps/frontend/site`, `pepepow-pool-frontend.service` or nginx static root | Public static website | Public, API-only reads |
+| `PEPEPOWd` | external daemon | Chain state, templates, submitblock, wallet backend | RPC stays private |
+| pool-core producer | `apps/pool-core/producer.py`, `pepepow-pool-core.service` | Writes network/Pool snapshots | Private process |
+| Pool Stratum | `apps/pool-core/stratum_ingress.py`, `pepepow-pool-stratum.service` | Pool miner ingress on `39333`, shares, Pool candidates | Public TCP; private runtime |
+| Pure SOLO Stratum | same ingress code, `pepepow-pool-stratum-solo.service` | SOLO miner ingress on `39334`, isolated shares/candidates | Public TCP; private SOLO runtime |
+| API | `apps/api`, `pepepow-pool-api.service` | Read-only Pool/SOLO JSON from snapshots | Public through nginx |
+| frontend | `apps/frontend/site` | Public static website | API-only reads |
+| payout scheduler | existing payout systemd service/timer + `ops/scripts/live-stratum.sh` | Scheduled Pool + SOLO payout refresh/send workflow | Private operator service |
+| ops scripts | `ops/scripts` | Candidate lifecycle, accounting, payout/replay tooling | Operator-only shell access |
 | nginx | `ops/nginx` examples | HTTPS, static frontend, API proxy | Public web boundary |
-| ops scripts | `ops/scripts` | Health checks, Stratum ops, candidate follow-up, payout review, private self-test commands | Operator-only shell access |
+
+## Mining Modes
+
+### Pool Mining — port `39333`
+
+Pool shares enter the shared Pool round/accounting path and are paid through the
+existing Pool payout workflow.
+
+### Pure SOLO — port `39334`
+
+SOLO shares and candidates are written to an isolated SOLO runtime. A block
+finder is the authenticated Stratum wallet/worker. A confirmed SOLO block pays
+exactly one finder the pool-controlled miner reward after the configured SOLO
+fee. Pool shares do not participate in SOLO reward weighting.
+
+`miningMode` is server-defined as `pool` or `solo`; legacy events without the
+field are treated as Pool data.
 
 ## Data Flow
 
 ```text
-miner -> Stratum ingress -> share-events.jsonl
-Stratum ingress -> activity-snapshot.json
-pool-core producer -> pool-snapshot.json
+Pool miner -> 39333 -> Pool share/activity snapshot -> Pool accounting
+SOLO miner -> 39334 -> SOLO share/activity snapshot -> SOLO finder accounting
+
+candidate -> submit outcome -> candidate follow-up -> accepted-candidates
+confirmed candidate -> payout candidate -> scheduled wallet send -> payment snapshot
 API -> frontend
-candidate event -> submit outcome -> accepted-candidates snapshot
-payout candidate -> payment snapshot
 ```
 
-Details:
+Key rules:
 
-- Miners connect to Stratum on port `39333`.
-- Stratum ingress records accepted/rejected share activity and writes
-  `activity-snapshot.json`.
-- The producer reads daemon RPC privately and writes `pool-snapshot.json`.
-- The API reads snapshots and exposes public JSON endpoints.
-- The frontend reads API endpoints only.
-- Candidate follow-up creates accepted-candidate observations.
-- Payout tooling creates payout candidates and payment snapshots for public
-  payment views after operator review or private self-test sends.
+- Pool and SOLO runtime data stay separated.
+- SOLO shares never add Pool share score.
+- SOLO candidates never create Pool round boundaries.
+- Pool payout generation ignores SOLO candidates.
+- SOLO payout uses the confirmed coinbase output belonging to the configured
+  pool reward address as the authoritative `minerRewardAmount`; reward amounts
+  are not hard-coded.
+- Frontend and API never read raw JSONL on the public request path.
 
 ## Public / Private Boundary
 
@@ -84,91 +105,115 @@ Details:
 |---|---:|---|
 | Website | Yes | Static frontend via nginx |
 | API | Yes | Read-only `/api/*` JSON |
-| Stratum port `39333` | Yes | Miner-facing TCP endpoint |
-| daemon RPC | No | Bind to localhost/private network only |
-| wallet RPC | No | Operator-only |
-| raw JSONL logs | No | Runtime internals, not frontend/API public files |
-| runtime snapshots | No direct public file access | API may read and summarize |
-| submit controls | No | Operator-only guarded commands |
-| payout controls | No | Operator-only guarded commands |
-| Redis | No | Not required; if ever added, keep private |
+| Pool Stratum `39333` | Yes | Shared Pool mining |
+| Pure SOLO Stratum `39334` | Yes | Finder-only SOLO mining |
+| daemon RPC | No | Local/private only |
+| wallet RPC | No | Private scheduled/operator tooling only |
+| raw JSONL logs | No | Runtime internals |
+| runtime snapshots | No direct access | API summarizes selected snapshots |
+| submit controls | No | Private env/config only |
+| payout controls | No | Private env/config only |
+| Redis | No | Not required |
 
 ## Runtime File Ownership
 
-| File | Written by | Read by | Public? |
-|---|---|---|---|
-| `pool-snapshot.json` | pool-core producer | API | No direct public access |
-| `activity-snapshot.json` | Stratum ingress | API, ops scripts | No direct public access |
-| `share-events.jsonl` | Stratum ingress | ops/replay tooling only | No |
-| `candidate-events.jsonl` | Stratum ingress | bounded ops tooling | No |
-| `candidate-followup-events.jsonl` | follow-up tooling | ops tooling | No |
-| `accepted-candidates.json` | accepted-candidate tracker | API, ops tooling | API exposes summarized data |
-| `rounds-snapshot.json` | round tracker | API, payout tooling | API exposes summarized data |
-| `payout-candidates.json` | payout helper | payout tooling | No direct public access |
-| `payments-snapshot.json` | payout helper | API, frontend | API exposes public payment records |
-| `launch.env` | live Stratum script | systemd/ops scripts | No |
+Pool runtime examples:
+
+| File | Written/read by | Public? |
+|---|---|---:|
+| `pool-snapshot.json` | pool-core producer / API | No direct access |
+| `activity-snapshot.json` | Pool Stratum / API | No direct access |
+| `share-events.jsonl` | Pool Stratum / bounded ops tooling | No |
+| `accepted-candidates.json` | candidate tracker / API / payout | Summarized via API |
+| `rounds-snapshot.json` | round tracker / API / payout | Summarized via API |
+| `payout-candidates.json` | payout helper | No |
+| `payments-snapshot.json` | payout helper / API | Summarized via API |
+
+Pure SOLO runtime lives under the isolated `solo/` runtime path and includes:
+
+```text
+activity-snapshot.json
+share-events.jsonl
+candidate-events.jsonl
+candidate-followup-events.jsonl
+candidate-outcome-events.jsonl
+accepted-candidates.json
+solo-payout-candidates.json
+solo-payment-actions.jsonl
+solo-payments-snapshot.json
+```
+
+The API reads the safe SOLO snapshots only.
 
 ## systemd Service Ownership
 
-| Service | Owns / starts | Typical restart reason |
-|---|---|---|
-| `pepepow-pool-core.service` | pool-core snapshot producer | Producer, daemon RPC config, snapshot path changes |
-| `pepepow-pool-stratum.service` | Stratum ingress | Mining/Stratum config or pool-core runtime changes |
-| `pepepow-pool-api.service` | API service | API code/config changes |
-| `pepepow-pool-frontend.service` | Static frontend service when used | Static site changes if served by service |
-| nginx | Public web/API routing | TLS, static root, reverse proxy changes |
-| optional timers | Round refresh or private self-test jobs | Operator-reviewed scheduled tasks |
+| Service | Purpose |
+|---|---|
+| `pepepow-pool-core.service` | Pool/network snapshot producer |
+| `pepepow-pool-stratum.service` | Pool Stratum `39333` |
+| `pepepow-pool-stratum-solo.service` | Pure SOLO Stratum `39334` |
+| `pepepow-pool-api.service` | Public read-only API |
+| `pepepow-pool-auto-payout.service` + timer | Scheduled Pool/SOLO payout cycle |
+| nginx / optional frontend service | Public website/API routing |
 
-## Frontend Read Rule
+Pool and SOLO Stratum services can be restarted independently. A frontend/API
+change should not restart mining services.
 
-The frontend may read:
+## Submit and Payout Safety
 
-- public API endpoints only
+Production submitblock and wallet payout are intentionally private, automated
+operational paths rather than public controls.
 
-The frontend must not read or proxy:
+Safety is provided by:
 
-- daemon RPC
-- wallet RPC
-- raw JSONL files
-- runtime snapshots by direct file path
-- submit controls
-- payout/admin controls
+- server-side candidate validation
+- bounded production send ceilings
+- private master enable/disable switches
+- candidate-specific persistent action records
+- replay/idempotency guards
+- file locking around wallet sends
+- wallet/address/amount validation
+- Pool/SOLO accounting separation
+- maturity/orphan checks before payout
+
+The send ceilings are runaway-loop guards, not the primary duplicate-payment
+mechanism. Already-paid candidate IDs remain blocked across later scheduled runs.
 
 ## API Read Rule
 
-The API may read:
-
-- `pool-snapshot.json`
-- `activity-snapshot.json`
-- safe sidecar snapshots such as accepted candidates, rounds, and payments
-
-The API should not parse raw JSONL on the public request path unless that path
-is already implemented safely and bounded. Prefer snapshot-first reads and
-pre-aggregated sidecar files.
+The API may read Pool/SOLO snapshots and safe sidecar summaries. It must not
+expose daemon RPC, wallet RPC, submit controls, payout controls, or parse large
+raw JSONL files per request.
 
 Current public endpoints include:
 
-- `GET /api/health`
-- `GET /api/pool/summary`
-- `GET /api/network/summary`
-- `GET /api/blocks`
-- `GET /api/accepted-candidates`
-- `GET /api/rounds`
-- `GET /api/payments`
-- `GET /api/miner/<wallet>`
-- `GET /api/stats`
-- `GET /api/status`
+```text
+GET /api/health
+GET /api/pool/summary
+GET /api/network/summary
+GET /api/blocks
+GET /api/accepted-candidates
+GET /api/rounds
+GET /api/payments
+GET /api/miner/<wallet>
+GET /api/solo/summary
+GET /api/solo/accepted-candidates
+GET /api/solo/payments
+GET /api/solo/miner/<wallet>
+GET /api/stats
+GET /api/status
+```
 
 ## Agent Modification Guide
 
-Use these ownership boundaries for future changes:
+Use these ownership boundaries:
 
-- Frontend changes: `apps/frontend/site`
-- API changes: `apps/api`
-- Stratum/mining changes: `apps/pool-core`
-- Ops script changes: `ops/scripts`
-- systemd/nginx changes: `ops/systemd`, `ops/nginx`
-- Documentation changes: `docs`
+- Frontend: `apps/frontend/site`
+- API: `apps/api`
+- Stratum/mining: `apps/pool-core`
+- Ops/payout: `ops/scripts`
+- systemd/nginx: `ops/systemd`, `ops/nginx`
+- Documentation: `docs`
 
-Keep changes scoped. Do not alter Stratum, daemon RPC, wallet RPC, payout,
-nginx, or systemd behavior when the request is frontend/API/docs-only.
+Keep changes scoped. Do not alter daemon/wallet RPC, payout, nginx, or systemd
+behavior for frontend/API/docs-only tasks.
