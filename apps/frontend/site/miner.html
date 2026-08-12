@@ -28,7 +28,7 @@
           <div class="page-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Miner Lookup</h1>
-            <p class="page-subtitle">Check wallet activity, workers, recorded payments, and reward estimates.</p>
+            <p class="page-subtitle">Check Pool and Pure SOLO wallet activity, workers, blocks, and recorded payments.</p>
           </div>
         </div>
         <nav class="nav">
@@ -43,6 +43,9 @@
 
       <main class="page-single">
         <section class="panel">
+          <div class="status-strip" aria-label="Pure SOLO testing notice">
+            <div><span>Pure SOLO</span><strong>Testing on port 39334. SOLO statistics, block tracking, and payment display are still being monitored and may change.</strong></div>
+          </div>
           <form id="miner-form" class="lookup-form">
             <label for="wallet-input">PEPEPOW wallet address</label>
             <div class="lookup-row">
@@ -51,7 +54,7 @@
             </div>
           </form>
           <div id="miner-result" class="list-state empty-state">
-            <strong>Enter a wallet address to view miner status</strong>
+            <strong>Enter a wallet address to view Pool and Pure SOLO miner status</strong>
             <p class="muted">Accepted shares usually appear within about one minute after mining starts.</p>
             <a class="button" href="/connect.html">How to mine</a>
           </div>
@@ -65,8 +68,8 @@
       </main>
     </div>
 
-    <script src="/assets/miner-page-tidy.js?v=20260616-ui1"></script>
-    <script src="/assets/app.js?v=20260616-ui1"></script>
-    <script src="/assets/miner-hashrate.js?v=20260616-ui1"></script>
+    <script src="/assets/miner-page-tidy.js?v=20260812-solo2"></script>
+    <script src="/assets/app.js?v=20260812-solo2"></script>
+    <script src="/assets/miner-hashrate.js?v=20260812-solo2"></script>
   </body>
 </html>

@@ -20,7 +20,7 @@
       #accepted-candidates-table table, #rounds-table table { table-layout: auto; }
       #accepted-candidates-table th, #accepted-candidates-table td, #rounds-table th, #rounds-table td { vertical-align: top; }
       #accepted-candidates-table th:nth-child(1), #accepted-candidates-table td:nth-child(1), #rounds-table th:nth-child(1), #rounds-table td:nth-child(1) { min-width: 9rem; white-space: nowrap; }
-      #accepted-candidates-table th:nth-child(2), #accepted-candidates-table td:nth-child(2), #rounds-table th:nth-child(2), #rounds-table td:nth-child(2) { min-width: 11rem; }
+      #accepted-candidates-table th:nth-child(3), #accepted-candidates-table td:nth-child(3), #rounds-table th:nth-child(2), #rounds-table td:nth-child(2) { min-width: 11rem; }
       #rounds-table th:nth-child(4), #rounds-table td:nth-child(4) { min-width: 8.5rem; }
       #rounds-table th:nth-child(6), #rounds-table td:nth-child(6) { min-width: 13rem; }
       @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
@@ -34,7 +34,7 @@
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Blocks</h1>
-            <p class="brand-subtitle">Pool-found block observations and round attribution snapshots.</p>
+            <p class="brand-subtitle">Pool and Pure SOLO block observations with lifecycle status.</p>
           </div>
         </div>
         <nav class="nav">
@@ -51,35 +51,35 @@
         <section class="panel">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Pool-found blocks</p>
-              <h2>Pool block observations</h2>
-              <p>Blocks and candidates observed by this pool, newest observations first.</p>
+              <p class="eyebrow">Pool + Pure SOLO</p>
+              <h2>Block observations</h2>
+              <p>Pool and Pure SOLO candidates observed by this service, newest observations first.</p>
             </div>
           </div>
           <div class="status-strip" aria-label="Block status legend">
             <div><span>Confirmed</span><strong>Mature matched block</strong></div>
             <div><span>Immature</span><strong>Waiting for confirmations</strong></div>
-            <div><span>Candidate</span><strong>Pool observation only</strong></div>
+            <div><span>SOLO testing</span><strong>Pure SOLO on port 39334 is still being monitored in production testing.</strong></div>
           </div>
-          <div id="accepted-candidates-table" class="list-state">Loading pool block observations...</div>
+          <div id="accepted-candidates-table" class="list-state">Loading Pool and Pure SOLO block observations...</div>
         </section>
 
         <section class="panel">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Round attribution</p>
-              <h2>Round share attribution snapshot</h2>
-              <p>Read-only contribution snapshot for pool-found candidates and tracked rounds.</p>
+              <p class="eyebrow">Pool-only round attribution</p>
+              <h2>Pool round share attribution snapshot</h2>
+              <p>Read-only contribution snapshot for shared Pool mining only. Pure SOLO blocks are finder-only and are intentionally excluded from Pool rounds.</p>
             </div>
           </div>
-          <div id="rounds-table" class="list-state">Loading rounds...</div>
+          <div id="rounds-table" class="list-state">Loading Pool rounds...</div>
         </section>
       </main>
     </div>
 
-    <script src="/assets/time-format.js?v=20260616-ui1"></script>
-    <script src="/assets/app.js?v=20260616-ui1"></script>
-    <script src="/assets/blocks-found-override.js?v=20260616-ui1"></script>
-    <script src="/assets/blocks-rounds-override.js?v=20260616-ui1"></script>
+    <script src="/assets/time-format.js?v=20260812-solo2"></script>
+    <script src="/assets/app.js?v=20260812-solo2"></script>
+    <script src="/assets/blocks-found-override.js?v=20260812-solo2"></script>
+    <script src="/assets/blocks-rounds-override.js?v=20260812-solo2"></script>
   </body>
 </html>

@@ -17,7 +17,7 @@
       .brand-title { min-width: 0; }
       .brand-title h1 { margin: 0; }
       .brand-subtitle { margin: 10px 0 0; max-width: 680px; color: rgba(235, 245, 255, 0.72); font-size: clamp(0.95rem, 1.8vw, 1.08rem); line-height: 1.45; }
-      @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px; } }
+      @media (max-width: 640px) { .topbar .brand-lockup .brand-logo { width: 58px !important; height: 58px !important; min-width: 58px !important; max-width: 58px !important; flex-basis: 58px !important; } }
     </style>
   </head>
   <body data-page="payments">
@@ -28,7 +28,7 @@
           <div class="brand-title">
             <p class="eyebrow">PEPEPOW Lab Pool</p>
             <h1>Payments</h1>
-            <p class="brand-subtitle">Recorded PEPEPOW pool payment transactions.</p>
+            <p class="brand-subtitle">Recorded Pool and Pure SOLO PEPEPOW payment transactions.</p>
           </div>
         </div>
         <nav class="nav">
@@ -45,16 +45,20 @@
         <section class="panel payments-table-wide">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Payment history</p>
+              <p class="eyebrow">Pool + Pure SOLO</p>
               <h2>Recorded payments</h2>
+              <p>Completed Pool and Pure SOLO payment records are shown together with a Mode label.</p>
             </div>
           </div>
-          <div id="payments-table" class="list-state">Loading payments...</div>
+          <div class="status-strip" aria-label="Pure SOLO testing notice">
+            <div><span>Pure SOLO</span><strong>Testing on port 39334. SOLO payout display is still being monitored and may change.</strong></div>
+          </div>
+          <div id="payments-table" class="list-state">Loading Pool and Pure SOLO payments...</div>
         </section>
       </main>
     </div>
 
-    <script src="/assets/app.js?v=20260616-ui1"></script>
-    <script src="/assets/payments-polish.js?v=20260616-ui1"></script>
+    <script src="/assets/app.js?v=20260812-solo2"></script>
+    <script src="/assets/payments-polish.js?v=20260812-solo2"></script>
   </body>
 </html>

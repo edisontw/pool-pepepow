@@ -34,6 +34,15 @@
     return null;
   }
 
+  function miningMode(item) {
+    return String(firstValue(item.miningMode, item.mining_mode, "pool") || "pool").toLowerCase() === "solo" ? "SOLO" : "POOL";
+  }
+
+  function modeBadge(item) {
+    const mode = miningMode(item);
+    return '<span class="mining-mode-badge is-' + mode.toLowerCase() + '">' + mode + '</span>';
+  }
+
   function statusLabel(value) {
     if (!value) return "Candidate";
     return String(value).replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
@@ -115,7 +124,7 @@
     if (document.getElementById("pool-found-blocks-style")) return;
     const style = document.createElement("style");
     style.id = "pool-found-blocks-style";
-    style.textContent = ".pool-block-status{display:inline-flex;align-items:center;padding:.22rem .55rem;border-radius:999px;font-size:.78rem;font-weight:800;border:1px solid rgba(255,255,255,.12)!important;background:rgba(255,255,255,.06)!important;color:rgba(235,245,255,.86)!important}.pool-block-status.status-confirmed{color:#81f7b0!important;border-color:rgba(129,247,176,.35)!important;background:rgba(129,247,176,.12)!important}.pool-block-status.status-immature{color:#ffd45a!important;border-color:rgba(255,212,90,.38)!important;background:rgba(255,212,90,.13)!important}.pool-block-status.status-orphan{color:#ff8a8a!important;border-color:rgba(255,138,138,.4)!important;background:rgba(255,138,138,.13)!important}.pool-block-status.status-candidate{color:#8fd7ff!important;border-color:rgba(143,215,255,.35)!important;background:rgba(143,215,255,.12)!important}.table-pagination{display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap}";
+    style.textContent = ".pool-block-status{display:inline-flex;align-items:center;padding:.22rem .55rem;border-radius:999px;font-size:.78rem;font-weight:800;border:1px solid rgba(255,255,255,.12)!important;background:rgba(255,255,255,.06)!important;color:rgba(235,245,255,.86)!important}.pool-block-status.status-confirmed{color:#81f7b0!important;border-color:rgba(129,247,176,.35)!important;background:rgba(129,247,176,.12)!important}.pool-block-status.status-immature{color:#ffd45a!important;border-color:rgba(255,212,90,.38)!important;background:rgba(255,212,90,.13)!important}.pool-block-status.status-orphan{color:#ff8a8a!important;border-color:rgba(255,138,138,.4)!important;background:rgba(255,138,138,.13)!important}.pool-block-status.status-candidate{color:#8fd7ff!important;border-color:rgba(143,215,255,.35)!important;background:rgba(143,215,255,.12)!important}.mining-mode-badge{display:inline-flex;align-items:center;padding:.2rem .5rem;border-radius:999px;font-size:.74rem;font-weight:800;letter-spacing:.04em;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06)}.mining-mode-badge.is-solo{color:#ffd45a;border-color:rgba(255,212,90,.38);background:rgba(255,212,90,.12)}.mining-mode-badge.is-pool{color:#8fd7ff;border-color:rgba(143,215,255,.35);background:rgba(143,215,255,.1)}.table-pagination{display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap}";
     document.head.appendChild(style);
   }
 
@@ -124,7 +133,7 @@
     if (!target) return;
 
     if (!Array.isArray(blockItems) || blockItems.length === 0) {
-      target.innerHTML = '<div class="muted">No accepted block candidates found in this snapshot window.</div>';
+      target.innerHTML = '<div class="muted">No Pool or Pure SOLO block candidates found in this snapshot window.</div>';
       return;
     }
 
@@ -139,6 +148,7 @@
     const rows = visible.map(function (item) {
       return '<tr>' +
         '<td data-label="Time">' + escapeHtml(formatDate(itemTime(item))) + '</td>' +
+        '<td data-label="Mode">' + modeBadge(item) + '</td>' +
         '<td data-label="Candidate hash">' + candidateValue(firstValue(item.candidateHash, item.candidate_hash, item.matchedBlockHash, item.matched_block_hash, item.blockHash, item.block_hash, item.hash)) + '</td>' +
         '<td data-label="Height">' + heightValue(itemHeight(item)) + '</td>' +
         '<td data-label="Status">' + statusBadge(itemStatus(item)) + '</td>' +
@@ -146,22 +156,38 @@
         '</tr>';
     }).join("");
 
-    target.innerHTML = '<div class="table-wrap"><table class="pool-found-blocks-table"><thead><tr><th>Time</th><th>Candidate hash</th><th>Height</th><th>Status</th><th>Confirms</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    target.innerHTML = '<div class="table-wrap"><table class="pool-found-blocks-table"><thead><tr><th>Time</th><th>Mode</th><th>Candidate hash</th><th>Height</th><th>Status</th><th>Confirms</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div class="table-pagination"><span class="muted">Showing ' + (start + 1) + '-' + Math.min(start + PAGE_SIZE, sorted.length) + ' of ' + sorted.length + '</span>' +
       '<button class="copy-mini" type="button" data-pool-blocks-page="' + (blockPage - 1) + '" ' + (blockPage <= 0 ? "disabled" : "") + '>Prev</button>' +
       '<span class="muted">Page ' + (blockPage + 1) + ' / ' + totalPages + '</span>' +
       '<button class="copy-mini" type="button" data-pool-blocks-page="' + (blockPage + 1) + '" ' + (blockPage >= totalPages - 1 ? "disabled" : "") + '>Next</button></div>';
   }
 
+  async function fetchJson(url) {
+    if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
+      return window.PepepowUI.fetchJson(url);
+    }
+    const response = await fetch(url, { cache: "no-store" });
+    return response.ok ? response.json() : {};
+  }
+
   async function refreshPoolFoundBlocks() {
     if (document.body.dataset.page !== "blocks") return;
     try {
-      const payload = window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
-        ? await window.PepepowUI.fetchJson("/api/accepted-candidates")
-        : await fetch("/api/accepted-candidates", { cache: "no-store" }).then(function (response) {
-          return response.ok ? response.json() : { items: [] };
-        });
-      blockItems = Array.isArray(payload.items) ? payload.items : [];
+      const [poolPayload, soloPayload] = await Promise.all([
+        fetchJson("/api/accepted-candidates").catch(function () { return { items: [] }; }),
+        fetchJson("/api/solo/accepted-candidates").catch(function () { return { accepted_candidates: [] }; })
+      ]);
+      const poolItems = Array.isArray(poolPayload.items) ? poolPayload.items.map(function (item) {
+        return Object.assign({}, item, { miningMode: "pool" });
+      }) : [];
+      const rawSoloItems = Array.isArray(soloPayload.accepted_candidates)
+        ? soloPayload.accepted_candidates
+        : (Array.isArray(soloPayload.items) ? soloPayload.items : []);
+      const soloItems = rawSoloItems.map(function (item) {
+        return Object.assign({}, item, { miningMode: "solo" });
+      });
+      blockItems = poolItems.concat(soloItems);
       renderTable();
     } catch (_error) {
       // Keep the previous rendered table.

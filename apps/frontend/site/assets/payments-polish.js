@@ -89,6 +89,15 @@
     return `<span class="hash-actions"><span class="hash-value mono-compact" title="${escapeHtml(raw)}">${escapeHtml(shortHash(raw))}</span>${action}${explorerLink(url)}</span>`;
   }
 
+  function paymentMode(item) {
+    return String(item.miningMode || item.mining_mode || "pool").toLowerCase() === "solo" ? "SOLO" : "POOL";
+  }
+
+  function modeBadge(item) {
+    const mode = paymentMode(item);
+    return `<span class="payment-mode-badge is-${mode.toLowerCase()}">${mode}</span>`;
+  }
+
   function blockDisplay(item) {
     if (item.blockHeightRange) return escapeHtml(String(item.blockHeightRange));
     if (Array.isArray(item.blockHeights) && item.blockHeights.length > 0) {
@@ -107,7 +116,7 @@
     if (document.getElementById("payments-polish-style")) return;
     const style = document.createElement("style");
     style.id = "payments-polish-style";
-    style.textContent = ".payments-table-wide th{white-space:nowrap}.payments-table-wide th:last-child,.payments-table-wide td:last-child{min-width:4.8rem;white-space:nowrap}.payment-value-stack{display:inline-flex;flex-direction:column;align-items:flex-start;gap:.32rem}.payment-action-row{display:inline-flex;align-items:center;gap:.35rem;flex-wrap:wrap}.payment-action-row .copy-mini,.payment-action-row .explorer-link{margin:0}";
+    style.textContent = ".payments-table-wide th{white-space:nowrap}.payments-table-wide th:last-child,.payments-table-wide td:last-child{min-width:4.8rem;white-space:nowrap}.payment-value-stack{display:inline-flex;flex-direction:column;align-items:flex-start;gap:.32rem}.payment-action-row{display:inline-flex;align-items:center;gap:.35rem;flex-wrap:wrap}.payment-action-row .copy-mini,.payment-action-row .explorer-link{margin:0}.payment-mode-badge{display:inline-flex;align-items:center;padding:.2rem .5rem;border-radius:999px;font-size:.74rem;font-weight:800;letter-spacing:.04em;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06)}.payment-mode-badge.is-solo{color:#ffd45a;border-color:rgba(255,212,90,.38);background:rgba(255,212,90,.12)}.payment-mode-badge.is-pool{color:#8fd7ff;border-color:rgba(143,215,255,.35);background:rgba(143,215,255,.1)}";
     document.head.appendChild(style);
   }
 
@@ -117,7 +126,7 @@
     rendering = true;
 
     if (!Array.isArray(paymentItems) || paymentItems.length === 0) {
-      target.innerHTML = '<div class="muted" data-payments-polished="1">No manual payment records are currently available in the public snapshot.</div>';
+      target.innerHTML = '<div class="muted" data-payments-polished="1">No Pool or Pure SOLO payment records are currently available in the public snapshots.</div>';
       rendering = false;
       return;
     }
@@ -129,6 +138,7 @@
 
     const rows = visible.map((item) => `<tr>
       <td data-label="Time">${escapeHtml(formatDate(item.paidAt || item.timestamp))}</td>
+      <td data-label="Mode">${modeBadge(item)}</td>
       <td data-label="Wallet">${valueWithActions(item.wallet, "address")}</td>
       <td data-label="Amount"><span class="payment-amount">${escapeHtml(formatNumber(item.amount))}</span></td>
       <td data-label="TxID">${valueWithActions(item.txid, "txid")}</td>
@@ -137,7 +147,7 @@
     </tr>`).join("");
 
     target.innerHTML = `<div class="table-wrap" data-payments-polished="1"><table class="payments-table-wide" data-polished="1">
-      <thead><tr><th>Time</th><th>Wallet</th><th>Amount</th><th>TxID</th><th>Blocks</th><th>Confirms</th></tr></thead>
+      <thead><tr><th>Time</th><th>Mode</th><th>Wallet</th><th>Amount</th><th>TxID</th><th>Blocks</th><th>Confirms</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <div class="table-pagination" data-payments-polished="1" style="display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap;">
@@ -162,18 +172,14 @@
   }
 
   async function loadPayments() {
-    const payments = await fetchJson("/api/payments");
-    paymentItems = Array.isArray(payments.items) ? payments.items : [];
+    const [poolPayments, soloPayments] = await Promise.all([
+      fetchJson("/api/payments"),
+      fetchJson("/api/solo/payments")
+    ]);
+    const poolItems = Array.isArray(poolPayments.items) ? poolPayments.items.map((item) => Object.assign({}, item, { miningMode: "pool" })) : [];
+    const soloItems = Array.isArray(soloPayments.items) ? soloPayments.items.map((item) => Object.assign({}, item, { miningMode: "solo" })) : [];
+    paymentItems = poolItems.concat(soloItems);
     paymentItems.sort((a, b) => String(b.paidAt || b.timestamp || "").localeCompare(String(a.paidAt || a.timestamp || "")));
-  }
-
-  function needsPolish() {
-    const target = document.getElementById("payments-table");
-    if (!target) return false;
-    const header = target.querySelector("thead tr");
-    if (!header) return true;
-    const columns = Array.from(header.children).map((node) => node.textContent.trim()).join("|");
-    return columns !== "Time|Wallet|Amount|TxID|Blocks|Confirms";
   }
 
   async function run() {
