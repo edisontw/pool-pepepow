@@ -44,6 +44,7 @@ class SoloPayoutHelperTests(unittest.TestCase):
         self.assertEqual(len(cand["payouts"]), 1)
         self.assertEqual(cand["payouts"][0]["wallet"], "Pabcdef12345")
         self.assertEqual(cand["payouts"][0]["amount"], 6435.0)
+        self.assertEqual(cand["payouts"][0]["status"], "pending_manual_payment")
 
     def test_evaluate_solo_eligibility(self):
         base_cand = {
@@ -141,6 +142,17 @@ class SoloPayoutHelperTests(unittest.TestCase):
             self.assertEqual(cands[0]["candidateHash"], "solo_block_1")
             self.assertEqual(cands[0]["netReward"], 6435.0)
             self.assertTrue(cands[0]["eligibleForPayout"])
+
+            # Shared aggregate sender validates sources through the standard
+            # items collection and accepts pending_manual_payment rows.
+            self.assertEqual(res["items"], cands)
+            self.assertEqual(res["items"][0]["candidateId"], "solo:solo_block_1")
+            self.assertEqual(
+                res["items"][0]["payouts"][0]["status"],
+                "pending_manual_payment",
+            )
+            persisted = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["items"], persisted["solo_payout_candidates"])
 
     def test_operational_solo_auto_payout_and_isolation(self):
         import payout_helper
