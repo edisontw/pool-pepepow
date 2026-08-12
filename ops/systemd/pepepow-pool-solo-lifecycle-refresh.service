@@ -1,0 +1,17 @@
+[Unit]
+Description=PEPEPOW Pure SOLO Lifecycle Refresh
+After=network-online.target pepepow-pool-stratum-solo.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/pool-pepepow
+EnvironmentFile=/home/ubuntu/pool-pepepow/ops/env/pool-stratum-solo.env
+ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/ops/scripts/solo_lifecycle_refresh.py --candidate-events /var/lib/pepepow-pool/solo/candidate-events.jsonl --followup-events /var/lib/pepepow-pool/solo/candidate-followup-events.jsonl --outcome-events /var/lib/pepepow-pool/solo/candidate-outcome-events.jsonl --accepted-candidates /var/lib/pepepow-pool/solo/accepted-candidates.json --pool-snapshot /var/lib/pepepow-pool/pool-snapshot.json
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
