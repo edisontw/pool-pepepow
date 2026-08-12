@@ -1,10 +1,13 @@
 (function () {
   const PAGE_SIZE = 20;
-  const CACHE_KEY = "pepepow_payments_cache_v1";
+  const REFRESH_MS = 120000;
+  const CACHE_KEY = "pepepow_payments_page_cache_v2";
   const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let paymentItems = [];
+  let paymentTotal = 0;
   let paymentPage = 0;
   let rendering = false;
+  let loadingPage = false;
 
   function shortHash(value) {
     const raw = String(value || "");
@@ -118,24 +121,28 @@
     if (document.getElementById("payments-polish-style")) return;
     const style = document.createElement("style");
     style.id = "payments-polish-style";
-    style.textContent = ".payments-table-wide th{white-space:nowrap}.payments-table-wide th:last-child,.payments-table-wide td:last-child{min-width:4.8rem;white-space:nowrap}.payment-value-stack{display:inline-flex;flex-direction:column;align-items:flex-start;gap:.32rem}.payment-action-row{display:inline-flex;align-items:center;gap:.35rem;flex-wrap:wrap}.payment-action-row .copy-mini,.payment-action-row .explorer-link{margin:0}.payment-mode-badge{display:inline-flex;align-items:center;padding:.2rem .5rem;border-radius:999px;font-size:.74rem;font-weight:800;letter-spacing:.04em;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06)}.payment-mode-badge.is-solo{color:#ffd45a;border-color:rgba(255,212,90,.38);background:rgba(255,212,90,.12)}.payment-mode-badge.is-pool{color:#8fd7ff;border-color:rgba(143,215,255,.35);background:rgba(143,215,255,.1)}";
+    style.textContent = ".payments-table-wide th{white-space:nowrap}.payments-table-wide th:last-child,.payments-table-wide td:last-child{min-width:4.8rem;white-space:nowrap}.payment-value-stack{display:inline-flex;flex-direction:column;align-items:flex-start;gap:.32rem}.payment-action-row{display:inline-flex;align-items:center;gap:.35rem;flex-wrap:wrap}.payment-action-row .copy-mini,.payment-action-row .explorer-link{margin:0}.payment-mode-badge{display:inline-flex;align-items:center;padding:.2rem .5rem;border-radius:999px;font-size:.74rem;font-weight:800;letter-spacing:.04em;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06)}.payment-mode-badge.is-solo{color:#ffd45a;border-color:rgba(255,212,90,.38);background:rgba(255,212,90,.12)}.payment-mode-badge.is-pool{color:#8fd7ff;border-color:rgba(143,215,255,.35);background:rgba(143,215,255,.1)}.table-pagination{display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap}";
     document.head.appendChild(style);
   }
 
   function loadCache() {
     try {
       const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
-      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
-      return cached.items.filter((item) => item && typeof item === "object");
+      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return null;
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return null;
+      return {
+        items: cached.items.filter((item) => item && typeof item === "object"),
+        total: Number.isFinite(Number(cached.total)) ? Number(cached.total) : cached.items.length,
+        page: Number.isFinite(Number(cached.page)) ? Number(cached.page) : 0
+      };
     } catch (_error) {
-      return [];
+      return null;
     }
   }
 
-  function saveCache(items) {
+  function saveCache() {
     try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items }));
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), items: paymentItems, total: paymentTotal, page: paymentPage }));
     } catch (_error) {}
   }
 
@@ -145,17 +152,16 @@
     rendering = true;
 
     if (!Array.isArray(paymentItems) || paymentItems.length === 0) {
-      target.innerHTML = '<div class="muted" data-payments-polished="1">No Pool or Pure SOLO payment records are currently available in the public snapshots.</div>';
+      if (paymentTotal === 0) target.innerHTML = '<div class="muted" data-payments-polished="1">No Pool or Pure SOLO payment records are currently available in the public snapshots.</div>';
       rendering = false;
       return;
     }
 
-    const totalPages = Math.max(1, Math.ceil(paymentItems.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(paymentTotal / PAGE_SIZE));
     paymentPage = Math.min(Math.max(paymentPage, 0), totalPages - 1);
     const start = paymentPage * PAGE_SIZE;
-    const visible = paymentItems.slice(start, start + PAGE_SIZE);
 
-    const rows = visible.map((item) => `<tr>
+    const rows = paymentItems.map((item) => `<tr>
       <td data-label="Time">${escapeHtml(formatDate(item.paidAt || item.timestamp))}</td>
       <td data-label="Mode">${modeBadge(item)}</td>
       <td data-label="Wallet">${valueWithActions(item.wallet, "address")}</td>
@@ -169,55 +175,49 @@
       <thead><tr><th>Time</th><th>Mode</th><th>Wallet</th><th>Amount</th><th>TxID</th><th>Blocks</th><th>Confirms</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <div class="table-pagination" data-payments-polished="1" style="display:flex;gap:.65rem;align-items:center;justify-content:flex-end;margin-top:.75rem;flex-wrap:wrap;">
-      <span class="muted">Showing ${start + 1}-${Math.min(start + PAGE_SIZE, paymentItems.length)} of ${paymentItems.length}</span>
-      <button class="copy-mini" type="button" data-payment-page="${paymentPage - 1}" ${paymentPage <= 0 ? "disabled" : ""}>Prev</button>
+    <div class="table-pagination" data-payments-polished="1">
+      <span class="muted">Showing ${start + 1}-${Math.min(start + paymentItems.length, paymentTotal)} of ${paymentTotal}</span>
+      <button class="copy-mini" type="button" data-payment-page="${paymentPage - 1}" ${paymentPage <= 0 || loadingPage ? "disabled" : ""}>Prev</button>
       <span class="muted">Page ${paymentPage + 1} / ${totalPages}</span>
-      <button class="copy-mini" type="button" data-payment-page="${paymentPage + 1}" ${paymentPage >= totalPages - 1 ? "disabled" : ""}>Next</button>
+      <button class="copy-mini" type="button" data-payment-page="${paymentPage + 1}" ${paymentPage >= totalPages - 1 || loadingPage ? "disabled" : ""}>Next</button>
     </div>`;
     window.setTimeout(() => { rendering = false; }, 0);
   }
 
   async function fetchJson(url) {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error("request failed");
+    return response.json();
+  }
+
+  async function loadPage(page) {
+    if (document.body.dataset.page !== "payments" || loadingPage) return false;
+    loadingPage = true;
+    renderPaymentsTable();
     try {
-      if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
-        return await window.PepepowUI.fetchJson(url);
-      }
-      const response = await fetch(url, { cache: "no-store" });
-      return response.ok ? response.json() : {};
+      const offset = page * PAGE_SIZE;
+      const payload = await fetchJson(`/api/public/payments?limit=${PAGE_SIZE}&offset=${offset}`);
+      if (!payload || !Array.isArray(payload.items)) return false;
+      paymentItems = payload.items;
+      paymentTotal = Number.isFinite(Number(payload.total)) ? Number(payload.total) : paymentItems.length;
+      paymentPage = page;
+      saveCache();
+      return true;
     } catch (_error) {
-      return {};
+      return false;
+    } finally {
+      loadingPage = false;
+      renderPaymentsTable();
     }
-  }
-
-  async function loadPayments() {
-    const [poolPayments, soloPayments] = await Promise.all([
-      fetchJson("/api/payments"),
-      fetchJson("/api/solo/payments")
-    ]);
-    const poolValid = Array.isArray(poolPayments.items);
-    const soloValid = Array.isArray(soloPayments.items);
-    if (!poolValid && !soloValid) return false;
-
-    const poolItems = poolValid ? poolPayments.items.map((item) => Object.assign({}, item, { miningMode: "pool" })) : [];
-    const soloItems = soloValid ? soloPayments.items.map((item) => Object.assign({}, item, { miningMode: "solo" })) : [];
-    paymentItems = poolItems.concat(soloItems);
-    paymentItems.sort((a, b) => String(b.paidAt || b.timestamp || "").localeCompare(String(a.paidAt || a.timestamp || "")));
-    saveCache(paymentItems);
-    return true;
-  }
-
-  async function refreshPayments() {
-    const updated = await loadPayments();
-    if (updated) renderPaymentsTable();
   }
 
   function installHandlers() {
     document.addEventListener("click", (event) => {
       const button = event.target.closest("[data-payment-page]");
-      if (!button || button.disabled) return;
-      paymentPage = Number(button.getAttribute("data-payment-page"));
-      renderPaymentsTable();
+      if (!button || button.disabled || loadingPage) return;
+      const nextPage = Number(button.getAttribute("data-payment-page"));
+      if (!Number.isFinite(nextPage) || nextPage < 0) return;
+      loadPage(nextPage);
     });
 
     document.addEventListener("click", (event) => {
@@ -232,11 +232,14 @@
     installStyles();
     installHandlers();
     const cached = loadCache();
-    if (cached.length > 0) {
-      paymentItems = cached;
+    if (cached) {
+      paymentItems = cached.items;
+      paymentTotal = cached.total;
+      paymentPage = cached.page;
       renderPaymentsTable();
     }
-    refreshPayments();
+    loadPage(paymentPage);
+    window.setInterval(() => loadPage(paymentPage), REFRESH_MS);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run, { once: true });
