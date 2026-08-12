@@ -38,9 +38,11 @@
     notifempty
 }
 
-# Pure SOLO production and legacy observation logs. SOLO lifecycle now keeps the
-# canonical accepted-candidates snapshot incrementally, so raw observation logs
-# can be rotated without dropping historical candidates from the public snapshot.
+# Pure SOLO production and legacy observation logs. SOLO lifecycle keeps the
+# canonical accepted-candidates snapshot incrementally, so these reconstructable
+# raw observation/evidence files can use tighter retention. share-events.jsonl
+# and solo-payment-actions.jsonl remain excluded for Stratum recovery and payout
+# replay/audit safety respectively.
 /var/lib/pepepow-pool/solo/*.log
 /var/lib/pepepow-pool/solo/*-evidence.jsonl
 /var/lib/pepepow-pool/solo/candidate-events.jsonl
@@ -52,11 +54,11 @@
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/candidate-followup-events.jsonl
 /home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/candidate-outcome-events.jsonl {
     su ubuntu ubuntu
-    size 32M
-    rotate 8
+    size 16M
+    rotate 4
     copytruncate
     compress
-    maxage 30
+    maxage 14
     missingok
     notifempty
 }
