@@ -1,10 +1,11 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
-  const CACHE_KEY = "pepepow_combined_leaderboard_v1";
+  const CACHE_KEY = "pepepow_combined_leaderboard_v2";
   const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let cachedLeaderboardItems = [];
   let cachedLastPoolBlockText = "";
   let cachedLastPoolBlockHtml = "";
+  let leaderboardObserver = null;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -68,8 +69,27 @@
     return [];
   }
 
+  function minerSnapshotSource(summary) {
+    if (!summary || typeof summary !== "object" || !summary.miners || typeof summary.miners !== "object" || Array.isArray(summary.miners)) {
+      return [];
+    }
+    return Object.entries(summary.miners).map(([wallet, record]) => {
+      const miner = record && typeof record === "object" ? record : {};
+      const minerSummary = miner.summary && typeof miner.summary === "object" ? miner.summary : {};
+      const workers = Array.isArray(miner.workers) ? miner.workers : [];
+      return {
+        wallet,
+        hashrate: numeric(minerSummary.hashrate, minerSummary.estimatedHashrate, minerSummary.hashrateHps),
+        acceptedShares: numeric(minerSummary.acceptedShares, minerSummary.shareCount, minerSummary.shares),
+        activeWorkers: numeric(minerSummary.activeWorkers, minerSummary.workers, workers.length)
+      };
+    });
+  }
+
   function normalize(summary, miningMode) {
-    return distributionSource(summary).map((item) => ({
+    const distribution = distributionSource(summary);
+    const source = distribution.length > 0 ? distribution : minerSnapshotSource(summary);
+    return source.map((item) => ({
       wallet: String(item.wallet || item.address || item.miner || item.username || item.name || "unknown"),
       miningMode,
       hashrate: numeric(item.hashrate, item.hashrateHps, item.hashrate_hps, item.estimatedHashrate),
@@ -158,6 +178,17 @@
     box.innerHTML = `<section class="leaderboard-card"><div class="leaderboard-head"><h4>Live Hashrate Ranking</h4><span>POOL + SOLO</span></div><div class="leaderboard-empty">Loading ranking snapshot...</div></section><section class="leaderboard-card"><div class="leaderboard-head"><h4>Shares Ranking</h4><span>POOL + SOLO</span></div><div class="leaderboard-empty">Loading ranking snapshot...</div></section>`;
   }
 
+  function installLeaderboardGuard() {
+    const box = document.getElementById("pool-leaderboards");
+    if (!box || leaderboardObserver) return;
+    leaderboardObserver = new MutationObserver(() => {
+      if (cachedLeaderboardItems.length === 0) return;
+      if (box.querySelector(".leaderboard-mode")) return;
+      renderItems(cachedLeaderboardItems, "POOL + SOLO · recent accepted shares");
+    });
+    leaderboardObserver.observe(box, { childList: true, subtree: true });
+  }
+
   async function fetchJson(url) {
     if (window.PepepowUI && typeof window.PepepowUI.fetchJson === "function") {
       return window.PepepowUI.fetchJson(url);
@@ -182,6 +213,7 @@
       cachedLeaderboardItems = items;
       saveCache(items);
       renderItems(items, "POOL + SOLO · recent accepted shares");
+      installLeaderboardGuard();
     } catch (_error) {
       if (cachedLeaderboardItems.length > 0) renderItems(cachedLeaderboardItems, "POOL + SOLO · cached");
     }
@@ -253,6 +285,7 @@
     cachedLeaderboardItems = loadCache();
     if (cachedLeaderboardItems.length > 0) renderItems(cachedLeaderboardItems, "POOL + SOLO · cached");
     else renderLoading();
+    installLeaderboardGuard();
     refresh();
     window.setInterval(refresh, REFRESH_MS);
   });
