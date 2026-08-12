@@ -1,6 +1,7 @@
 (function () {
   const REFRESH_MS = 60 * 1000;
   const CACHE_KEY = "pepepow_combined_leaderboard_v2";
+  const DASHBOARD_CACHE_KEY = "pepepow_dashboard_fast_v1";
   const CACHE_MAX_AGE_MS = 15 * 60 * 1000;
   let cachedLeaderboardItems = [];
   let cachedLastPoolBlockText = "";
@@ -41,6 +42,11 @@
     }
     if (unit === "H/s") return `${scaled.toFixed(0)} H/s`;
     return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${unit}`;
+  }
+
+  function setText(id, value) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = value;
   }
 
   function compactWallet(value) {
@@ -98,15 +104,21 @@
     })).filter((item) => item.wallet && item.wallet !== "unknown");
   }
 
-  function loadCache() {
+  function loadTimedCache(key) {
     try {
-      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (!cached || !Array.isArray(cached.items) || typeof cached.t !== "number") return [];
-      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return [];
-      return cached.items.filter((item) => item && typeof item === "object");
+      const cached = JSON.parse(localStorage.getItem(key) || "null");
+      if (!cached || typeof cached.t !== "number") return null;
+      if (Date.now() - cached.t > CACHE_MAX_AGE_MS) return null;
+      return cached;
     } catch (_error) {
-      return [];
+      return null;
     }
+  }
+
+  function loadCache() {
+    const cached = loadTimedCache(CACHE_KEY);
+    if (!cached || !Array.isArray(cached.items)) return [];
+    return cached.items.filter((item) => item && typeof item === "object");
   }
 
   function saveCache(items) {
@@ -116,18 +128,95 @@
     } catch (_error) {}
   }
 
+  function readPoolHashrate(summary) {
+    if (!summary || typeof summary !== "object") return 0;
+    const pool = summary.pool && typeof summary.pool === "object" ? summary.pool : {};
+    return numeric(
+      summary.poolHashrate,
+      summary.hashrate,
+      summary.estimatedHashrate,
+      pool.poolHashrate,
+      pool.hashrate,
+      pool.estimatedHashrate
+    );
+  }
+
+  function dashboardState(pool, network, solo) {
+    return {
+      poolHashrate: readPoolHashrate(pool),
+      activeMiners: numeric(pool && pool.activeMiners),
+      activeWorkers: numeric(pool && pool.activeWorkers),
+      poolStatus: pool && pool.poolStatus ? String(pool.poolStatus) : "",
+      algorithm: pool && pool.algorithm ? String(pool.algorithm) : "",
+      networkHeight: numeric(network && network.height),
+      networkDifficulty: numeric(network && network.difficulty),
+      networkHashrate: numeric(network && network.networkHashrate),
+      networkSynced: Boolean(network && network.synced),
+      soloHashrate: numeric(solo && solo.hashrate, solo && solo.estimatedHashrate),
+      soloMiners: numeric(solo && solo.miners),
+      soloWorkers: numeric(solo && solo.workers),
+      soloBlocksFound: numeric(solo && solo.blocksFound, solo && solo.blocks)
+    };
+  }
+
+  function renderDashboardState(state) {
+    if (!state || typeof state !== "object") return;
+    setText("pool-hashrate", formatHashrate(numeric(state.poolHashrate)));
+    setText("active-miners", formatNumber(numeric(state.activeMiners)));
+    setText("active-workers", formatNumber(numeric(state.activeWorkers)));
+    setText("network-height", numeric(state.networkHeight) > 0 ? formatNumber(numeric(state.networkHeight)) : "-");
+    setText("network-difficulty", numeric(state.networkDifficulty) > 0 ? formatNumber(numeric(state.networkDifficulty)) : "-");
+    setText("network-hashrate", formatHashrate(numeric(state.networkHashrate)));
+    setText("network-sync", state.networkSynced ? "Synced" : "Syncing");
+    setText("solo-hashrate", formatHashrate(numeric(state.soloHashrate)));
+    setText("solo-miners", formatNumber(numeric(state.soloMiners)));
+    setText("solo-workers", formatNumber(numeric(state.soloWorkers)));
+    setText("solo-blocks-found", formatNumber(numeric(state.soloBlocksFound)));
+    setText("radar-network-hashrate", formatHashrate(numeric(state.networkHashrate)));
+    setText("radar-pool-hashrate", formatHashrate(numeric(state.poolHashrate)));
+
+    const netHash = numeric(state.networkHashrate);
+    const poolHash = numeric(state.poolHashrate);
+    if (netHash > 0 && poolHash >= 0) {
+      const share = poolHash / netHash;
+      setText("radar-pool-share", `${(share * 100).toFixed(2)}%`);
+      setText("radar-visibility-signal", share < 0.05 ? "Low" : share < 0.15 ? "Medium" : "Good");
+      setText("radar-reward-variance", share < 0.05 ? "High" : share < 0.15 ? "Medium" : "Lower");
+    }
+
+    if (state.algorithm) {
+      setText("algorithm", state.algorithm.includes("hoohash") ? "hoohash-pepew / hoohashv110-pepew" : state.algorithm);
+    }
+    if (state.poolStatus) {
+      const lower = state.poolStatus.toLowerCase();
+      setText("pool-status", ["online", "ok", "healthy"].includes(lower) ? "Pool Operational" : state.poolStatus);
+    }
+  }
+
+  function saveDashboardState(state) {
+    try {
+      localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ t: Date.now(), state }));
+    } catch (_error) {}
+  }
+
+  function renderCachedDashboard() {
+    const cached = loadTimedCache(DASHBOARD_CACHE_KEY);
+    if (cached && cached.state) renderDashboardState(cached.state);
+  }
+
   function installStyles() {
     if (document.getElementById("combined-leaderboard-styles")) return;
     const style = document.createElement("style");
     style.id = "combined-leaderboard-styles";
     style.textContent = `
-      #pool-leaderboards .leaderboard-row { grid-template-columns: 2.6rem 3.5rem minmax(0, 1fr) auto; }
-      #pool-leaderboards .leaderboard-mode { display: inline-flex; justify-content: center; padding: .2rem .35rem; border-radius: 999px; font-size: .65rem; font-weight: 800; letter-spacing: .05em; border: 1px solid rgba(255,255,255,.12); color: var(--muted); }
+      #pool-leaderboards .leaderboard-row { grid-template-columns: 2.2rem minmax(0, 1fr) auto; gap: .55rem; align-items: center; }
+      #pool-leaderboards .leaderboard-rank { grid-column: 1; grid-row: 1; }
+      #pool-leaderboards .leaderboard-mode { grid-column: 2; grid-row: 1; display: inline-flex; justify-content: center; justify-self: start; width: 3.35rem; box-sizing: border-box; padding: .2rem .35rem; border-radius: 999px; font-size: .65rem; font-weight: 800; letter-spacing: .05em; border: 1px solid rgba(255,255,255,.12); color: var(--muted); }
       #pool-leaderboards .leaderboard-mode.is-solo { border-color: rgba(255,212,90,.35); color: #ffd45a; background: rgba(255,212,90,.08); }
       #pool-leaderboards .leaderboard-mode.is-pool { border-color: rgba(55,196,255,.3); color: var(--accent-alt); background: rgba(55,196,255,.07); }
-      #pool-leaderboards .leaderboard-wallet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      #pool-leaderboards .leaderboard-value { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
-      @media (max-width: 520px) { #pool-leaderboards .leaderboard-row { grid-template-columns: 2.2rem 3.25rem minmax(0, 1fr) auto; gap: .4rem; } }
+      #pool-leaderboards .leaderboard-wallet { grid-column: 2; grid-row: 1; min-width: 0; padding-left: 3.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #pool-leaderboards .leaderboard-value { grid-column: 3; grid-row: 1; justify-self: end; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+      @media (max-width: 520px) { #pool-leaderboards .leaderboard-row { grid-template-columns: 2rem minmax(0, 1fr) auto; gap: .4rem; } #pool-leaderboards .leaderboard-mode { width: 3.15rem; } #pool-leaderboards .leaderboard-wallet { padding-left: 3.55rem; } }
     `;
     document.head.appendChild(style);
   }
@@ -196,6 +285,22 @@
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) throw new Error("request failed");
     return response.json();
+  }
+
+  async function refreshFastDashboard() {
+    if (!["home", "dashboard"].includes(document.body.dataset.page || "")) return;
+    try {
+      const [pool, network, solo] = await Promise.all([
+        fetchJson("/api/pool/summary").catch(() => ({})),
+        fetchJson("/api/network/summary").catch(() => ({})),
+        fetchJson("/api/solo/summary").catch(() => ({}))
+      ]);
+      const state = dashboardState(pool, network, solo);
+      renderDashboardState(state);
+      saveDashboardState(state);
+    } catch (_error) {
+      // Cached values remain visible while the normal dashboard renderer continues loading.
+    }
   }
 
   async function refreshLeaderboards() {
@@ -276,12 +381,13 @@
   }
 
   async function refresh() {
-    await Promise.all([refreshLeaderboards(), refreshLastObservedPoolBlock()]);
+    await Promise.all([refreshFastDashboard(), refreshLeaderboards(), refreshLastObservedPoolBlock()]);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     installStyles();
     installLastPoolBlockGuard();
+    renderCachedDashboard();
     cachedLeaderboardItems = loadCache();
     if (cachedLeaderboardItems.length > 0) renderItems(cachedLeaderboardItems, "POOL + SOLO · cached");
     else renderLoading();
