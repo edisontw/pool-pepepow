@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from waitress import serve
 
 from config import AppConfig, load_config
@@ -377,6 +377,120 @@ def create_app(config: AppConfig | None = None) -> Flask:
             return jsonify(data)
         return jsonify({"items": []})
 
+    @app.get("/api/public/block-observations")
+    def public_block_observations():
+        limit, offset = _bounded_pagination_args()
+        items = []
+        for c in _load_json_items(
+            app_config.activity_snapshot_path.parent / "accepted-candidates.json",
+            app_config.runtime_snapshot_path.parent / "accepted-candidates.json",
+            "accepted_candidates",
+        ):
+            items.append(
+                {
+                    "miningMode": "pool",
+                    "candidateHash": c.get("candidate_hash"),
+                    "jobId": c.get("job_id"),
+                    "submitTimestamp": c.get("submit_timestamp"),
+                    "submitblockDaemonResult": c.get("daemon_result"),
+                    "followupStatus": c.get("followup_status"),
+                    "matchedHeight": c.get("matched_height"),
+                    "matchedBlockHash": c.get("matched_block_hash"),
+                    "lifecycleStatus": c.get("lifecycle_status"),
+                    "confirmations": c.get("confirmations"),
+                    "maturityLabel": c.get("maturity_label"),
+                }
+            )
+
+        solo_data = _load_json_dict(
+            app_config.solo_accepted_candidates_path,
+            app_config.activity_snapshot_path.parent / "solo" / "accepted-candidates.json",
+        )
+        solo_candidates = solo_data.get("accepted_candidates", [])
+        if isinstance(solo_candidates, list):
+            for candidate in solo_candidates:
+                if isinstance(candidate, dict):
+                    item = dict(candidate)
+                    item["miningMode"] = "solo"
+                    items.append(item)
+
+        items.sort(
+            key=lambda item: str(
+                _first_present(
+                    item,
+                    "submitTimestamp",
+                    "submit_timestamp",
+                    "foundAt",
+                    "found_at",
+                    "timestamp",
+                    "createdAt",
+                    "created_at",
+                    "updatedAt",
+                    "updated_at",
+                )
+                or ""
+            ),
+            reverse=True,
+        )
+        total = len(items)
+        page_items = items[offset : offset + limit]
+        return jsonify(
+            {
+                "items": page_items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "hasMore": offset + len(page_items) < total,
+            }
+        )
+
+    @app.get("/api/public/payments")
+    def public_payments():
+        limit, offset = _bounded_pagination_args()
+        items = []
+
+        pool_data = _load_json_dict(
+            app_config.activity_snapshot_path.parent / "payments-snapshot.json",
+            app_config.runtime_snapshot_path.parent / "payments-snapshot.json",
+        )
+        pool_items = pool_data.get("items", [])
+        if isinstance(pool_items, list):
+            for payment in pool_items:
+                if isinstance(payment, dict):
+                    item = dict(payment)
+                    item["miningMode"] = "pool"
+                    items.append(item)
+
+        solo_data = _load_json_dict(
+            app_config.solo_payments_snapshot_path,
+            app_config.activity_snapshot_path.parent / "solo" / "solo-payments-snapshot.json",
+        )
+        solo_items = solo_data.get("items", [])
+        if isinstance(solo_items, list):
+            for payment in solo_items:
+                if isinstance(payment, dict):
+                    item = dict(payment)
+                    item["miningMode"] = "solo"
+                    items.append(item)
+
+        items.sort(
+            key=lambda item: str(
+                _first_present(item, "paidAt", "timestamp", "createdAt", "created_at") or ""
+            ),
+            reverse=True,
+        )
+        total = len(items)
+        page_items = items[offset : offset + limit]
+        return jsonify(
+            {
+                "items": page_items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "hasMore": offset + len(page_items) < total,
+            }
+        )
+
     @app.get("/api/solo/summary")
     def solo_summary():
         data = _load_json_dict(
@@ -716,6 +830,18 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bounded_pagination_args(default_limit: int = 20, max_limit: int = 100) -> tuple[int, int]:
+    try:
+        limit = int(request.args.get("limit", default_limit))
+    except (TypeError, ValueError):
+        limit = default_limit
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return max(1, min(limit, max_limit)), max(0, offset)
 
 
 def _parse_time_ms(value: Any) -> int:
