@@ -13,6 +13,6 @@ These unit files target the current production Ubuntu deployment layout under `/
 
 The canonical SOLO runtime remains `/var/lib/pepepow-pool/solo` and is the only SOLO source used by lifecycle/payout/accounting. The API-only merged block/payment history is written under `/var/lib/pepepow-pool/solo-public`; this preserves legacy display history without adding old records back into payout inputs or replay guards.
 
-The hourly Pool payout keeps its existing runtime. The SOLO payout drop-in runs the existing `solo-auto-payout-once` command with `PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/var/lib/pepepow-pool`, so its isolated payout files are written under `/var/lib/pepepow-pool/solo`. It inherits the parent service's guarded wallet-payout enablement and MAX_SENDS ceiling.
+The hourly Pool payout keeps its existing runtime. The SOLO payout drop-in runs the existing `solo-auto-payout-once` command with `PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/var/lib/pepepow-pool`, so its isolated payout files are written under `/var/lib/pepepow-pool/solo`. It inherits the parent service's guarded wallet-payout enablement but uses its own bounded `PEPEPOW_SOLO_AUTO_PAYOUT_MAX_SENDS=10` ceiling.
 
 The SOLO lifecycle refresher reads a bounded tail of candidate/outcome JSONL, skips candidates already confirmed by `match-found`, and uses the persistent SOLO environment file for daemon RPC credentials. It does not send payouts or call `submitblock`.
