@@ -33,7 +33,7 @@ The systemd unit is:
 pepepow-pool-stratum-solo.service
 ```
 
-Before starting Python, the unit runs:
+Before starting Python, the unit runs the preflight through `/usr/bin/bash`:
 
 ```text
 ops/scripts/check-solo-production-env.sh
@@ -73,7 +73,7 @@ PEPEPOW_REAL_SUBMITBLOCK_MAX_SENDS=1000
 Run the non-secret preflight directly:
 
 ```bash
-./ops/scripts/check-solo-production-env.sh ops/env/pool-stratum-solo.env
+bash ops/scripts/check-solo-production-env.sh ops/env/pool-stratum-solo.env
 ```
 
 Expected result:
