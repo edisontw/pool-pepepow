@@ -648,28 +648,23 @@
     return null;
   }
 
-  /**
-   * Render Miner Reward Analysis into #miner-reward-analysis.
-   * Only called after a successful wallet lookup.
-   */
-  function renderMinerRewardAnalysis(minerResult, wallet, pool, network, price) {
-    const container = document.getElementById("miner-reward-analysis");
-    if (!container) return;
-
-    if (!minerResult || !minerResult.found) {
-      container.innerHTML = "";
-      return;
-    }
-
+  function renderSingleModeRewardAnalysis(minerResult, wallet, pool, network, price, mode) {
+    if (!minerResult) return "";
     const summary = minerResult.summary || {};
+    const isSolo = mode === "solo";
     const hashrateHps = readMinerHashrateHps(minerResult);
-    const rewards = calculateRewards(hashrateHps, network, pool);
     const acceptedRate = chooseMinerAcceptedRate(minerResult);
     const pepewPrice = (price && typeof price.price === "number") ? price.price : null;
 
-    const activeWorkers = formatNumber(summary.activeWorkers);
+    const workersList = Array.isArray(minerResult.workers) ? minerResult.workers : [];
+    const rawWorkersCount = summary.activeWorkers !== undefined && summary.activeWorkers !== null
+      ? summary.activeWorkers
+      : (summary.workers !== undefined && summary.workers !== null ? summary.workers : workersList.length);
+    const activeWorkers = formatNumber(rawWorkersCount);
     const acceptedShares = formatNumber(summary.acceptedShares);
     const hashrateStr = hashrateHps !== null ? formatHashrate(hashrateHps) : "Unavailable";
+
+    const title = isSolo ? "Pure SOLO Miner Analysis" : "Pool Miner Reward Analysis";
 
     let rows = "";
     rows += `<div><span>Wallet</span><strong>${escapeHtml(wallet)}</strong></div>`;
@@ -687,37 +682,71 @@
       rows += `<div style="grid-column: 1 / -1;"><span>Accepted Rate</span><strong style="font-weight:400; color: var(--muted); font-size:0.9em;">Accepted-rate impact is not shown because no reliable recent accepted-rate field is available.</strong></div>`;
     }
 
-    if (rewards) {
-      const pepewHour = formatNumber(Math.round(rewards.rewardPerHour * 100) / 100);
-      const pepewDay  = formatNumber(Math.round(rewards.rewardPerDay  * 100) / 100);
-      const pepewWeek = formatNumber(Math.round(rewards.rewardPerWeek * 100) / 100);
-      rows += `<div><span>Estimated PEPEW / Hour</span><strong>${escapeHtml(pepewHour)}</strong></div>`;
-      rows += `<div><span>Estimated PEPEW / Day</span><strong>${escapeHtml(pepewDay)}</strong></div>`;
-      rows += `<div><span>Estimated PEPEW / Week</span><strong>${escapeHtml(pepewWeek)}</strong></div>`;
-
-      if (pepewPrice !== null) {
-        const usdtDay  = "$" + (rewards.rewardPerDay  * pepewPrice).toFixed(2);
-        const usdtWeek = "$" + (rewards.rewardPerWeek * pepewPrice).toFixed(2);
-        rows += `<div><span>Estimated USDT / Day</span><strong>${escapeHtml(usdtDay)}</strong></div>`;
-        rows += `<div><span>Estimated USDT / Week</span><strong>${escapeHtml(usdtWeek)}</strong></div>`;
-      }
+    if (isSolo) {
+      rows += `<div style="grid-column: 1 / -1;"><span>Estimated Rewards</span><strong style="font-weight:400; color: var(--muted); font-size:0.9em;">SOLO reward estimate is not shown because the future daemon-derived miner reward is not available from the public snapshot.</strong></div>`;
     } else {
-      rows += `<div style="grid-column: 1 / -1;"><span>Estimated Rewards</span><strong style="font-weight:400; color: var(--muted); font-size:0.9em;">Reward estimates unavailable — network hashrate or miner hashrate data is missing. May fluctuate with pool luck and current network hashrate.</strong></div>`;
+      const rewards = calculateRewards(hashrateHps, network, pool);
+      if (rewards) {
+        const pepewHour = formatNumber(Math.round(rewards.rewardPerHour * 100) / 100);
+        const pepewDay  = formatNumber(Math.round(rewards.rewardPerDay  * 100) / 100);
+        const pepewWeek = formatNumber(Math.round(rewards.rewardPerWeek * 100) / 100);
+        rows += `<div><span>Estimated PEPEW / Hour</span><strong>${escapeHtml(pepewHour)}</strong></div>`;
+        rows += `<div><span>Estimated PEPEW / Day</span><strong>${escapeHtml(pepewDay)}</strong></div>`;
+        rows += `<div><span>Estimated PEPEW / Week</span><strong>${escapeHtml(pepewWeek)}</strong></div>`;
+
+        if (pepewPrice !== null) {
+          const usdtDay  = "$" + (rewards.rewardPerDay  * pepewPrice).toFixed(2);
+          const usdtWeek = "$" + (rewards.rewardPerWeek * pepewPrice).toFixed(2);
+          rows += `<div><span>Estimated USDT / Day</span><strong>${escapeHtml(usdtDay)}</strong></div>`;
+          rows += `<div><span>Estimated USDT / Week</span><strong>${escapeHtml(usdtWeek)}</strong></div>`;
+        }
+      } else {
+        rows += `<div style="grid-column: 1 / -1;"><span>Estimated Rewards</span><strong style="font-weight:400; color: var(--muted); font-size:0.9em;">Reward estimates unavailable — network hashrate or miner hashrate data is missing. May fluctuate with pool luck and current network hashrate.</strong></div>`;
+      }
     }
 
-    container.innerHTML = `
+    const footerNote = isSolo
+      ? "* Pure SOLO mining. Net miner reward (100% minus SOLO fee) is paid directly to the block finder upon block confirmation (101 confirmations)."
+      : "* Estimated only. Based on current activity: observed hashrate, current network hashrate, and pool settings. Actual results may fluctuate with pool luck, network hashrate changes, and accepted share activity. Not a guaranteed or pending payout figure.";
+
+    return `
       <section class="panel" style="margin-top: 1.25rem;">
         <p class="eyebrow">Wallet-Specific</p>
-        <h3>Miner Reward Analysis</h3>
+        <h3>${escapeHtml(title)}</h3>
         <div class="metric-grid">
           ${rows}
         </div>
         <p class="muted small-gap" style="font-size: 0.82rem; margin-top: 1rem; line-height: 1.4;">
-          * Estimated only. Based on current activity: observed hashrate, current network hashrate, and pool settings.
-            Actual results may fluctuate with pool luck, network hashrate changes, and accepted share activity.
-            Not a guaranteed or pending payout figure.
+          ${footerNote}
         </p>
       </section>`;
+  }
+
+  /**
+   * Render Miner Reward Analysis into #miner-reward-analysis.
+   * Supports mode-aware rendering for Pool, SOLO, or both.
+   */
+  function renderMinerRewardAnalysis(poolResult, soloResult, wallet, pool, network, price, activeInfo) {
+    const container = document.getElementById("miner-reward-analysis");
+    if (!container) return;
+
+    const { isPoolActive, isSoloActive, poolFound, soloFound } = activeInfo || {};
+
+    let html = "";
+    if (isPoolActive && isSoloActive) {
+      html += renderSingleModeRewardAnalysis(poolResult, wallet, pool, network, price, "pool");
+      html += renderSingleModeRewardAnalysis(soloResult, wallet, pool, network, price, "solo");
+    } else if (isSoloActive) {
+      html += renderSingleModeRewardAnalysis(soloResult, wallet, pool, network, price, "solo");
+    } else if (isPoolActive) {
+      html += renderSingleModeRewardAnalysis(poolResult, wallet, pool, network, price, "pool");
+    } else if (soloFound) {
+      html += renderSingleModeRewardAnalysis(soloResult, wallet, pool, network, price, "solo");
+    } else if (poolFound) {
+      html += renderSingleModeRewardAnalysis(poolResult, wallet, pool, network, price, "pool");
+    }
+
+    container.innerHTML = html;
   }
 
   function updateCalculator(network, pepewUsdtPrice, pool) {
@@ -961,6 +990,16 @@
     const poolFound = result && result.found;
     const soloFound = soloResult && soloResult.found;
 
+    const poolHashrate = readMinerHashrateHps(result) || 0;
+    const poolWorkersCount = (result && result.summary && typeof result.summary.activeWorkers === "number") ? result.summary.activeWorkers : 0;
+    const isPoolActive = poolFound && (poolHashrate > 0 || poolWorkersCount > 0);
+
+    const soloHashrate = readMinerHashrateHps(soloResult) || 0;
+    const soloWorkersCount = (soloResult && soloResult.summary && (typeof soloResult.summary.activeWorkers === "number" || typeof soloResult.summary.workers === "number"))
+      ? (soloResult.summary.activeWorkers || soloResult.summary.workers)
+      : (Array.isArray(soloResult.workers) ? soloResult.workers.filter((w) => w && w.hashrate > 0).length : 0);
+    const isSoloActive = soloFound && (soloHashrate > 0 || soloWorkersCount > 0);
+
     if (!poolFound && !soloFound) {
       htmlContent += `<div class="empty-state"><strong>No active miner data found for ${escapeHtml(wallet)}.</strong><p class="muted">Miner statistics are generated from active share submissions and are only retained while there is active mining activity within the snapshot tracking window. If you just started mining, it may take up to a minute for your first accepted share to appear here.</p><a class="button" href="/connect.html">How to start mining</a></div>`;
     } else {
@@ -1005,8 +1044,6 @@
 
         htmlContent += "<h3>Recorded payments</h3>";
         htmlContent += `<div id="miner-recorded-payments">${renderMinerRecordedPayments()}</div>`;
-
-        renderMinerRewardAnalysis(result, wallet, pool, network, priceData);
       }
 
       if (soloFound) {
@@ -1068,6 +1105,8 @@
           htmlContent += `<div class="empty-state"><strong>No SOLO payments recorded yet</strong><p class="muted">SOLO candidates pay 100% net miner reward upon block confirmation (101 confirmations).</p></div>`;
         }
       }
+
+      renderMinerRewardAnalysis(result, soloResult, wallet, pool, network, priceData, { isPoolActive, isSoloActive, poolFound, soloFound });
     }
 
     setHtml("miner-result", htmlContent);

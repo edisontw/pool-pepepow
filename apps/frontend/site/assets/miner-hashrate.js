@@ -60,7 +60,7 @@
       .slice(-MAX_POINTS);
   }
 
-  function appendPoint(points, hashrate) {
+  function appendPoint(points, hashrate, mode) {
     const normalized = normalizeSeries(points);
     if (typeof hashrate !== "number" || !Number.isFinite(hashrate) || hashrate < 0) return normalized;
     const now = Date.now();
@@ -68,9 +68,12 @@
     if (last && now - last.t < SAMPLE_INTERVAL_MS * 0.75) {
       last.t = now;
       last.h = hashrate;
+      if (mode) last.m = mode;
       return normalized;
     }
-    normalized.push({ t: now, h: hashrate });
+    const newPoint = { t: now, h: hashrate };
+    if (mode) newPoint.m = mode;
+    normalized.push(newPoint);
     return normalizeSeries(normalized);
   }
 
@@ -97,7 +100,7 @@
     document.head.appendChild(style);
   }
 
-  function renderChart(points, wallet) {
+  function renderChart(points, wallet, activeMode) {
     const container = document.getElementById("miner-hashrate-chart");
     if (!container) return;
     const series = normalizeSeries(points);
@@ -130,6 +133,8 @@
     const path = xy.map((point, idx) => `${idx === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
     const fillPath = `${path} L${xy[xy.length - 1].x.toFixed(1)} ${height - padBottom} L${xy[0].x.toFixed(1)} ${height - padBottom} Z`;
     const latest = series[series.length - 1];
+    const mode = activeMode || (latest ? latest.m : null);
+    const modeLabel = mode === "solo" ? " — Pure SOLO" : (mode === "pool" ? " — Pool" : (mode === "both" ? " — Pool & SOLO" : ""));
     const mid = min + span / 2;
     const yTop = padTop;
     const yMid = padTop + chartH / 2;
@@ -138,7 +143,7 @@
     const sampleLabel = `${series.length} sample${series.length === 1 ? "" : "s"}`;
 
     container.innerHTML = `
-      <div class="miner-chart-head"><h3>Miner Hashrate Trend</h3><span>${escapeHtml(sampleLabel)}</span></div>
+      <div class="miner-chart-head"><h3>Miner Hashrate Trend${escapeHtml(modeLabel)}</h3><span>${escapeHtml(sampleLabel)}</span></div>
       <div class="miner-chart-meta">
         <span><b>Latest</b> ${escapeHtml(formatHashrate(latest.h))}</span>
         <span><b>Peak</b> ${escapeHtml(formatHashrate(max))}</span>
@@ -174,18 +179,53 @@
   async function sampleWallet(apiBaseUrl, wallet) {
     if (!wallet) return;
     try {
-      const url = `${apiBaseUrl}/miner/${encodeURIComponent(wallet)}`;
-      const payload = window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
-        ? await window.PepepowUI.fetchJson(url)
-        : await fetch(url, { cache: "no-store" }).then((response) => response.ok ? response.json() : null);
-      if (!payload) return;
-      const hashrate = payload && payload.summary && typeof payload.summary.hashrate === "number" ? payload.summary.hashrate : null;
+      const fetchHelper = (path) => {
+        const url = `${apiBaseUrl}${path}`;
+        return window.PepepowUI && typeof window.PepepowUI.fetchJson === "function"
+          ? window.PepepowUI.fetchJson(url).catch(() => null)
+          : fetch(url, { cache: "no-store" }).then((response) => response.ok ? response.json() : null).catch(() => null);
+      };
+
+      const [poolPayload, soloPayload] = await Promise.all([
+        fetchHelper(`/miner/${encodeURIComponent(wallet)}`),
+        fetchHelper(`/solo/miner/${encodeURIComponent(wallet)}`)
+      ]);
+
+      const poolHashrate = (poolPayload && poolPayload.found && poolPayload.summary && typeof poolPayload.summary.hashrate === "number" && poolPayload.summary.hashrate > 0)
+        ? poolPayload.summary.hashrate : 0;
+      const soloHashrate = (soloPayload && soloPayload.found && soloPayload.summary && typeof soloPayload.summary.hashrate === "number" && soloPayload.summary.hashrate > 0)
+        ? soloPayload.summary.hashrate : 0;
+
+      let selectedHashrate = null;
+      let selectedMode = null;
+
+      if (soloHashrate > 0 && poolHashrate <= 0) {
+        selectedHashrate = soloHashrate;
+        selectedMode = "solo";
+      } else if (poolHashrate > 0 && soloHashrate <= 0) {
+        selectedHashrate = poolHashrate;
+        selectedMode = "pool";
+      } else if (soloHashrate > 0 && poolHashrate > 0) {
+        selectedHashrate = soloHashrate + poolHashrate;
+        selectedMode = "both";
+      } else {
+        if (soloPayload && soloPayload.found) {
+          selectedHashrate = 0;
+          selectedMode = "solo";
+        } else if (poolPayload && poolPayload.found) {
+          selectedHashrate = 0;
+          selectedMode = "pool";
+        }
+      }
+
       let series = loadSeries(wallet);
-      series = appendPoint(series, hashrate);
-      saveSeries(wallet, series);
-      renderChart(series, wallet);
+      if (selectedHashrate !== null) {
+        series = appendPoint(series, selectedHashrate, selectedMode);
+        saveSeries(wallet, series);
+      }
+      renderChart(series, wallet, selectedMode);
     } catch (_error) {
-      renderChart(loadSeries(wallet), wallet);
+      renderChart(loadSeries(wallet), wallet, null);
     }
   }
 
