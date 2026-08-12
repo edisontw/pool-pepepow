@@ -11,10 +11,6 @@ WorkingDirectory=/home/ubuntu/pool-pepepow
 EnvironmentFile=/home/ubuntu/pool-pepepow/ops/env/pool-stratum-solo.env
 ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/ops/scripts/solo_lifecycle_refresh.py --candidate-events /var/lib/pepepow-pool/solo/candidate-events.jsonl --followup-events /var/lib/pepepow-pool/solo/candidate-followup-events.jsonl --outcome-events /var/lib/pepepow-pool/solo/candidate-outcome-events.jsonl --accepted-candidates /var/lib/pepepow-pool/solo/accepted-candidates.json --pool-snapshot /var/lib/pepepow-pool/pool-snapshot.json
 ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/ops/scripts/build_solo_public_snapshot.py --current-candidates /var/lib/pepepow-pool/solo/accepted-candidates.json --legacy-candidates /home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/accepted-candidates.json --current-payments /var/lib/pepepow-pool/solo/solo-payments-snapshot.json --legacy-payments /home/ubuntu/pool-pepepow/.runtime/live-stratum/solo/solo-payments-snapshot.json --output-candidates /var/lib/pepepow-pool/solo-public/accepted-candidates.json --output-payments /var/lib/pepepow-pool/solo-public/solo-payments-snapshot.json
-# Keep high-volume reconstructable SOLO observation JSONL bounded. share-events.jsonl
-# is excluded here because Stratum already rotates it internally by byte size and
-# sequence retention. Payment action JSONL is also excluded to preserve payout audit/replay.
-ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/ops/scripts/rotate_runtime_logs.py --runtime-dir /var/lib/pepepow-pool/solo --max-bytes 32MB --keep-lines 20000
 NoNewPrivileges=true
 PrivateTmp=true
 
