@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,21 @@ LIFECYCLE_STATUSES = {
     "orphan",
     "unknown",
 }
+
+
+def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
+    """Replace a JSON snapshot atomically so concurrent readers never see a partial file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_path = tempfile.mkstemp(prefix=f".{output_path.name}.", dir=output_path.parent)
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(temp_path, output_path)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
 
 def map_lifecycle_status(row: dict[str, Any], snapshot_blocks: list[dict[str, Any]], current_height: int) -> tuple[str, int | None, str | None]:
     followup_status = row.get("followupStatus")
@@ -118,24 +135,24 @@ def map_lifecycle_status(row: dict[str, Any], snapshot_blocks: list[dict[str, An
     # Check for candidate_recorded
     return "candidate_recorded", None, None
 
+
 def load_snapshot_data(snapshot_path_arg: str | None, output_path: Path) -> dict[str, Any] | None:
     candidates = []
     if snapshot_path_arg:
         candidates.append(Path(snapshot_path_arg))
-    
-    import os
+
     env_core = os.getenv("PEPEPOW_POOL_CORE_SNAPSHOT_OUTPUT")
     if env_core:
         candidates.append(Path(env_core))
-        
+
     env_api = os.getenv("PEPEPOW_POOL_API_RUNTIME_SNAPSHOT_PATH")
     if env_api:
         candidates.append(Path(env_api))
-        
+
     candidates.append(output_path.parent / "pool-snapshot.json")
     candidates.append(output_path.parent.parent / "systemd-smoke" / "pool-snapshot.json")
     candidates.append(Path("/var/lib/pepepow-pool/pool-snapshot.json"))
-    
+
     for p in candidates:
         if p.exists():
             try:
@@ -166,9 +183,7 @@ def main() -> int:
             "accepted_candidates": []
         }
         try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with output_path.open("w", encoding="utf-8") as f:
-                json.dump(output_data, f, indent=2, sort_keys=True)
+            atomic_write_json(output_path, output_data)
         except Exception:
             pass
         return 0
@@ -226,11 +241,11 @@ def main() -> int:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                
+
                 block_hash = row.get("candidateBlockHash")
                 if not block_hash:
                     continue
-                
+
                 # We group by candidateBlockHash and keep the latest record
                 candidates_by_hash[block_hash] = row
     except Exception as exc:
@@ -282,15 +297,14 @@ def main() -> int:
     }
 
     try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as f:
-            json.dump(output_data, f, indent=2, sort_keys=True)
+        atomic_write_json(output_path, output_data)
         print(f"Saved {len(accepted_list)} accepted candidates to {output_path}")
     except Exception as exc:
         print(f"Error writing output JSON: {exc}", file=sys.stderr)
         return 1
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
