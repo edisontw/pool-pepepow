@@ -1,6 +1,7 @@
 (function () {
   const SNAPSHOT_URL = "/pool-wallet-monitor.json";
   const POOL_WALLET = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho";
+  const SOLO_ENDPOINT = "stratum+tcp://pool.pepepow.net:39334";
 
   function setText(id, value) {
     const node = document.getElementById(id);
@@ -10,6 +11,19 @@
   function setHtml(id, value) {
     const node = document.getElementById(id);
     if (node) node.innerHTML = value;
+  }
+
+  function ensureSoloEndpoint() {
+    if (document.getElementById("solo-stratum-endpoint")) return;
+    const poolEndpoint = document.getElementById("stratum-endpoint");
+    const poolCard = poolEndpoint && poolEndpoint.closest(".connection-card");
+    if (!poolCard || !poolCard.parentElement) return;
+
+    const soloCard = document.createElement("div");
+    soloCard.className = "connection-card";
+    soloCard.style.marginTop = ".65rem";
+    soloCard.innerHTML = `<div><span>SOLO Stratum endpoint</span><strong><code id="solo-stratum-endpoint">${SOLO_ENDPOINT}</code></strong></div><button class="button compact-copy" type="button" data-copy-value="${SOLO_ENDPOINT}">Copy SOLO endpoint</button>`;
+    poolCard.insertAdjacentElement("afterend", soloCard);
   }
 
   function ensurePoolWalletWatchStyles() {
@@ -132,6 +146,7 @@
   }
 
   async function loadPoolWalletWatch() {
+    ensureSoloEndpoint();
     const root = ensurePoolWalletWatchCard();
     if (!root) return;
 
