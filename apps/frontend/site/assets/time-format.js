@@ -27,4 +27,14 @@
     }
     return originalToLocaleString.call(this, locales, options);
   };
+
+  function removeObsoleteSoloNotice() {
+    document.querySelector('[aria-label="Pure SOLO testing notice"]')?.remove();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", removeObsoleteSoloNotice, { once: true });
+  } else {
+    removeObsoleteSoloNotice();
+  }
 })();
