@@ -1,4 +1,83 @@
 (function () {
+  function installSoloPaymentEnrichment() {
+    if (window.__pepepowSoloPaymentEnrichmentInstalled || typeof window.fetch !== "function") return;
+    const originalFetch = window.fetch.bind(window);
+
+    function pathnameOf(input) {
+      try {
+        const raw = typeof input === "string"
+          ? input
+          : (input && typeof input.url === "string" ? input.url : "");
+        return new URL(raw, window.location.origin).pathname;
+      } catch (_error) {
+        return "";
+      }
+    }
+
+    function jsonResponse(payload) {
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    function normalizedCandidateHashes(payment) {
+      const values = [];
+      if (payment && payment.blockHash) values.push(payment.blockHash);
+      if (payment && payment.candidateId) values.push(payment.candidateId);
+      if (payment && payment.candidate_id) values.push(payment.candidate_id);
+      const sources = payment && (payment.sourceCandidateIds || payment.source_candidate_ids);
+      if (Array.isArray(sources)) values.push(...sources);
+      return values
+        .filter(Boolean)
+        .map(function (value) { return String(value).replace(/^solo:/, ""); });
+    }
+
+    function enrichSoloMinerPayload(payload) {
+      if (!payload || typeof payload !== "object") return payload;
+      const blocks = Array.isArray(payload.blocks) ? payload.blocks : [];
+      const payments = Array.isArray(payload.payments) ? payload.payments : [];
+      const byHash = new Map();
+      blocks.forEach(function (block) {
+        if (block && block.hash) byHash.set(String(block.hash), block);
+      });
+      payload.payments = payments.map(function (payment) {
+        if (!payment || typeof payment !== "object") return payment;
+        let block = null;
+        for (const hash of normalizedCandidateHashes(payment)) {
+          if (byHash.has(hash)) {
+            block = byHash.get(hash);
+            break;
+          }
+        }
+        if (!block) return payment;
+        return {
+          ...payment,
+          blockHeight: payment.blockHeight ?? block.height,
+          blockHash: payment.blockHash ?? block.hash,
+          confirmations: block.confirmations ?? payment.confirmations
+        };
+      });
+      return payload;
+    }
+
+    window.fetch = function (input, init) {
+      const pathname = pathnameOf(input);
+      if (!pathname.startsWith("/api/solo/miner/")) {
+        return originalFetch(input, init);
+      }
+      return originalFetch(input, init).then(async function (response) {
+        if (!response.ok) return response;
+        const payload = await response.clone().json().catch(function () { return null; });
+        return payload ? jsonResponse(enrichSoloMinerPayload(payload)) : response;
+      });
+    };
+
+    window.__pepepowSoloPaymentEnrichmentInstalled = true;
+  }
+
+  installSoloPaymentEnrichment();
+
   function walletFromUrl() {
     try {
       const params = new URLSearchParams(window.location.search || "");
