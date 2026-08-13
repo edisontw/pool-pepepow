@@ -1,8 +1,29 @@
 (function () {
   const PRICE_WAIT_MS = 350;
+  const originalToLocaleString = Date.prototype.toLocaleString;
 
   if (document.body.dataset.page !== "miner" || typeof window.fetch !== "function") return;
   if (window.__pepepowMinerFastFetchInstalled) return;
+
+  function pad(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function formatDateTime(date) {
+    return [
+      date.getFullYear(), "-", pad(date.getMonth() + 1), "-", pad(date.getDate()), " ",
+      pad(date.getHours()), ":", pad(date.getMinutes()), ":", pad(date.getSeconds())
+    ].join("");
+  }
+
+  Date.prototype.toLocaleString = function (locales, options) {
+    if (arguments.length === 0) return formatDateTime(this);
+    return originalToLocaleString.call(this, locales, options);
+  };
+
+  document.addEventListener("DOMContentLoaded", function () {
+    document.querySelector('[aria-label="Pure SOLO testing notice"]')?.remove();
+  }, { once: true });
 
   const originalFetch = window.fetch.bind(window);
 
@@ -24,21 +45,45 @@
     });
   }
 
+  function enrichSoloMinerPayload(payload) {
+    if (!payload || typeof payload !== "object") return payload;
+    const blocks = Array.isArray(payload.blocks) ? payload.blocks : [];
+    const payments = Array.isArray(payload.payments) ? payload.payments : [];
+    const byHash = new Map();
+    blocks.forEach(function (block) {
+      if (block && block.hash) byHash.set(String(block.hash), block);
+    });
+    payload.payments = payments.map(function (payment) {
+      if (!payment || typeof payment !== "object") return payment;
+      const candidateId = String(payment.candidateId || payment.candidate_id || "");
+      const candidateHash = candidateId.replace(/^solo:/, "");
+      const block = byHash.get(candidateHash);
+      if (!block) return payment;
+      return {
+        ...payment,
+        blockHeight: payment.blockHeight ?? block.height,
+        blockHash: payment.blockHash ?? block.hash,
+        confirmations: block.confirmations ?? payment.confirmations
+      };
+    });
+    return payload;
+  }
+
   window.fetch = function (input, init) {
     const pathname = pathnameOf(input);
 
-    // /api/miner/<wallet> already returns recentPayments for that wallet.
-    // The legacy Miner renderer also requests the complete payment snapshot
-    // only to filter it again in the browser. Avoid that multi-thousand-row
-    // transfer and let the renderer fall back to recentPayments.
     if (pathname === "/api/payments") {
       return Promise.resolve(jsonResponse({ items: [], boundedForMinerLookup: true }));
     }
 
-    // Price is secondary information. Keep the real request running, but do
-    // not let an external price refresh delay wallet activity by several
-    // seconds. If it is not ready quickly, render miner data without fiat
-    // estimates; a later page load can use the refreshed server cache.
+    if (pathname.startsWith("/api/solo/miner/")) {
+      return originalFetch(input, init).then(async function (response) {
+        if (!response.ok) return response;
+        const payload = await response.clone().json().catch(function () { return null; });
+        return payload ? jsonResponse(enrichSoloMinerPayload(payload)) : response;
+      });
+    }
+
     if (pathname === "/api/price/pepew-usdt") {
       const actual = originalFetch(input, init);
       const deadline = new Promise(function (resolve) {
