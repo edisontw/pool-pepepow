@@ -218,6 +218,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    document.querySelector('[aria-label="Pure SOLO testing notice"]')?.remove();
     setWalletFromUrl();
     installStyles();
     const target = document.getElementById("miner-result");
