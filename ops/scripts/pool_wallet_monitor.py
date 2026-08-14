@@ -7,7 +7,9 @@ import os
 import sys
 import tempfile
 import urllib.request
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,7 @@ TIMEOUT_SECONDS = float(os.environ.get("PEPEPOW_MONITOR_HTTP_TIMEOUT_SECONDS", "
 HISTORY_RETENTION_HOURS = float(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_HISTORY_HOURS", "72"))
 PRIMARY_WINDOW_HOURS = float(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_PRIMARY_WINDOW_HOURS", "24"))
 SECONDARY_WINDOW_HOURS = float(os.environ.get("PEPEPOW_POOL_WALLET_MONITOR_SECONDARY_WINDOW_HOURS", "48"))
+RECONCILIATION_TOLERANCE = Decimal(os.environ.get("PEPEPOW_POOL_WALLET_RECONCILIATION_TOLERANCE", "0.01"))
 WATCHDOG_STATE_PATH = Path(
     os.environ.get(
         "PEPEPOW_POOL_WALLET_WATCHDOG_STATE",
@@ -229,16 +232,369 @@ def window_delta(history: list[dict[str, Any]], total_received: float | None, no
     return result
 
 
-def load_optional_notes(delta_balance: float | None) -> list[str]:
+def load_optional_notes(delta_balance: float | None, recon: dict[str, Any] | None = None) -> list[str]:
     notes: list[str] = []
-    payments = read_json(RUNTIME_DIR / "payments-snapshot.json")
-    items = payments.get("items") if isinstance(payments, dict) else None
-    if isinstance(items, list) and items:
-        notes.append("Recent recorded payments exist; balance drops can be normal.")
-    if delta_balance is not None and delta_balance < 0 and not notes:
-        notes.append("Balance decreased; this can be normal after payouts or wallet movement.")
-    notes.append("Pool wallet may include node/staking income; this is a rough public health signal.")
+    if recon and recon.get("reconciliationComplete"):
+        diff = recon.get("reconciliationDifference", 0.0)
+        if abs(diff) <= float(RECONCILIATION_TOLERANCE):
+            notes.append("No unexplained wallet movement detected.")
+        else:
+            notes.append(f"Unexplained difference detected: {diff:+.4f} PEPEW.")
+    else:
+        payments = read_json(RUNTIME_DIR / "payments-snapshot.json")
+        items = payments.get("items") if isinstance(payments, dict) else None
+        if isinstance(items, list) and items:
+            notes.append("Recent recorded payments exist; balance drops can be normal.")
+        if delta_balance is not None and delta_balance < 0 and not notes:
+            notes.append("Balance decreased; this can be normal after payouts or wallet movement.")
     return notes
+
+
+def load_action_records_window(path: Path, min_t: int, max_t: int) -> list[dict[str, Any]]:
+    recs: list[dict[str, Any]] = []
+    if not path.exists():
+        return recs
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                r = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(r, dict):
+                continue
+            ts_str = r.get("timestamp") or r.get("paidAt") or r.get("time")
+            if not ts_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                ts = int(dt.timestamp())
+            except Exception:
+                continue
+            if min_t <= ts <= max_t:
+                recs.append(r)
+    return recs
+
+
+def compute_wallet_reconciliation(
+    now_dt: datetime,
+    window_hours: float = 24.0,
+    wallet_address: str = POOL_WALLET,
+    tolerance: Decimal = RECONCILIATION_TOLERANCE,
+) -> dict[str, Any]:
+    """Calculate exact 24-hour wallet income vs outgoing expenditure reconciliation."""
+    t_end = int(now_dt.timestamp())
+    t_start = int((now_dt - timedelta(hours=window_hours)).timestamp())
+    window_start_iso = datetime.fromtimestamp(t_start, timezone.utc).isoformat().replace("+00:00", "Z")
+    window_end_iso = now_dt.isoformat().replace("+00:00", "Z")
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # 1. Fetch wallet transactions in window
+    try:
+        all_txs = payout_helper.wallet_readonly_call("listtransactions", ["*", 2000, 0, True])
+        if not isinstance(all_txs, list):
+            all_txs = []
+            errors.append("wallet listtransactions returned non-list or failed")
+    except Exception as exc:
+        all_txs = []
+        errors.append(f"wallet listtransactions failed: {exc}")
+
+    window_generates = []
+    window_sends: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    window_receives = []
+    seen_gen_txids: set[str] = set()
+
+    for tx in all_txs:
+        if not isinstance(tx, dict):
+            continue
+        ts = tx.get("time") or tx.get("blocktime") or 0
+        if ts < t_start or ts > t_end:
+            continue
+        cat = tx.get("category")
+        txid = str(tx.get("txid") or "")
+        if cat in ("generate", "immature"):
+            if txid and txid not in seen_gen_txids:
+                seen_gen_txids.add(txid)
+                window_generates.append(tx)
+        elif cat == "send" and txid:
+            window_sends[txid].append(tx)
+        elif cat == "receive":
+            window_receives.append(tx)
+
+    # 2. Match SOLO candidates vs Pool candidates
+    solo_cands: dict[str, dict[str, Any]] = {}
+    for solo_path in (
+        Path("/var/lib/pepepow-pool/solo/accepted-candidates.json"),
+        RUNTIME_DIR / "solo/accepted-candidates.json",
+    ):
+        if solo_path.exists():
+            try:
+                sdata = json.loads(solo_path.read_text(encoding="utf-8"))
+                for c in sdata.get("accepted_candidates", []):
+                    bh = c.get("matched_block_hash") or c.get("candidate_hash") or c.get("blockHash")
+                    if bh:
+                        solo_cands[str(bh)] = c
+            except Exception:
+                pass
+
+    pool_rewards_received = Decimal("0")
+    solo_rewards_received = Decimal("0")
+    immature_pool_rewards = Decimal("0")
+    immature_solo_rewards = Decimal("0")
+    pool_mature_count = 0
+    solo_mature_count = 0
+    immature_pool_count = 0
+    immature_solo_count = 0
+
+    for g in window_generates:
+        bh = str(g.get("blockhash") or "")
+        try:
+            amt = Decimal(str(g.get("amount", 0)))
+        except Exception:
+            amt = Decimal("0")
+        confirms = int(g.get("confirmations", 0))
+        cat = g.get("category")
+        is_solo = bh in solo_cands
+
+        if confirms >= 100 and cat == "generate":
+            if is_solo:
+                solo_rewards_received += amt
+                solo_mature_count += 1
+            else:
+                pool_rewards_received += amt
+                pool_mature_count += 1
+        else:
+            if is_solo:
+                immature_solo_rewards += amt
+                immature_solo_count += 1
+            else:
+                immature_pool_rewards += amt
+                immature_pool_count += 1
+
+    immature_reward_total = immature_pool_rewards + immature_solo_rewards
+
+    # 3. Load recorded payment actions for Pool and SOLO
+    pool_actions = load_action_records_window(RUNTIME_DIR / "payment-actions.jsonl", t_start, t_end)
+    solo_actions: list[dict[str, Any]] = []
+    seen_solo_action_rows: set[str] = set()
+    for spath in (
+        Path("/var/lib/pepepow-pool/solo/solo-payment-actions.jsonl"),
+        RUNTIME_DIR / "solo/solo-payment-actions.jsonl",
+    ):
+        if spath.exists():
+            for rec in load_action_records_window(spath, t_start, t_end):
+                row_key = f"{rec.get('txid')}:{rec.get('wallet')}:{rec.get('amount')}"
+                if row_key not in seen_solo_action_rows:
+                    seen_solo_action_rows.add(row_key)
+                    solo_actions.append(rec)
+
+    # Track recorded payments & detect duplicates/excess
+    pool_action_txids: set[str] = set()
+    solo_action_txids: set[str] = set()
+    recorded_action_keys: set[str] = set()
+    duplicate_or_excess_payouts = 0
+
+    for a in pool_actions:
+        txid = a.get("txid")
+        if txid:
+            pool_action_txids.add(str(txid))
+        key = f"pool:{txid}:{a.get('wallet')}:{a.get('amount')}"
+        if key in recorded_action_keys:
+            duplicate_or_excess_payouts += 1
+        else:
+            recorded_action_keys.add(key)
+
+    for a in solo_actions:
+        txid = a.get("txid")
+        if txid:
+            solo_action_txids.add(str(txid))
+        key = f"solo:{txid}:{a.get('wallet')}:{a.get('amount')}"
+        if key in recorded_action_keys:
+            duplicate_or_excess_payouts += 1
+        else:
+            recorded_action_keys.add(key)
+
+    # 4. Dynamic wallet address ownership resolution
+    address_ownership_cache: dict[str, bool | None] = {}
+
+    def is_wallet_owned(addr: str) -> bool | None:
+        if addr in address_ownership_cache:
+            return address_ownership_cache[addr]
+        try:
+            val = payout_helper.wallet_readonly_call("validateaddress", [addr])
+            if isinstance(val, dict) and "ismine" in val:
+                ismine = bool(val.get("ismine"))
+                address_ownership_cache[addr] = ismine
+                return ismine
+            address_ownership_cache[addr] = None
+            return None
+        except Exception:
+            address_ownership_cache[addr] = None
+            return None
+
+    pool_external_payouts = Decimal("0")
+    solo_external_payouts = Decimal("0")
+    unrecorded_external_payouts = Decimal("0")
+    transaction_fees = Decimal("0")
+    unrecorded_txids: list[str] = []
+    unknown_output_count = 0
+    wallet_owned_output_count = 0
+    external_payout_tx_count = len(window_sends)
+
+    for txid in window_sends:
+        try:
+            tx_detail = payout_helper.wallet_readonly_call("gettransaction", [txid])
+        except Exception:
+            tx_detail = None
+
+        if not isinstance(tx_detail, dict):
+            warnings.append(f"gettransaction unavailable for {txid}")
+            continue
+
+        fee_val = tx_detail.get("fee")
+        if fee_val is not None:
+            try:
+                transaction_fees += Decimal(str(abs(fee_val)))
+            except Exception:
+                pass
+
+        raw_hex = tx_detail.get("hex")
+        decoded = None
+        if raw_hex:
+            try:
+                decoded = payout_helper.daemon_readonly_call("decoderawtransaction", [raw_hex])
+            except Exception:
+                decoded = None
+
+        ext_amt = Decimal("0")
+        if isinstance(decoded, dict) and isinstance(decoded.get("vout"), list):
+            for out in decoded["vout"]:
+                if not isinstance(out, dict):
+                    continue
+                try:
+                    val = Decimal(str(out.get("value", 0)))
+                except Exception:
+                    val = Decimal("0")
+                script_pub_key = out.get("scriptPubKey") if isinstance(out.get("scriptPubKey"), dict) else {}
+                addrs = script_pub_key.get("addresses", [])
+                if not addrs:
+                    # Nonstandard or OP_RETURN output, do not treat as external miner payout
+                    continue
+
+                is_mine = False
+                has_unknown = False
+                for a in addrs:
+                    owned = is_wallet_owned(str(a))
+                    if owned is True:
+                        is_mine = True
+                        break
+                    elif owned is None:
+                        has_unknown = True
+
+                if is_mine:
+                    wallet_owned_output_count += 1
+                elif has_unknown:
+                    unknown_output_count += 1
+                else:
+                    ext_amt += val
+        else:
+            # Fallback to wallet details
+            for d in tx_detail.get("details", []):
+                if isinstance(d, dict) and d.get("category") == "send":
+                    try:
+                        ext_amt += Decimal(str(abs(d.get("amount", 0))))
+                    except Exception:
+                        pass
+
+        if txid in pool_action_txids:
+            pool_external_payouts += ext_amt
+        elif txid in solo_action_txids:
+            solo_external_payouts += ext_amt
+        else:
+            unrecorded_external_payouts += ext_amt
+            unrecorded_txids.append(txid)
+
+    # 5. Other income
+    other_income = Decimal("0")
+    for r in window_receives:
+        if isinstance(r, dict):
+            try:
+                other_income += Decimal(str(r.get("amount", 0)))
+            except Exception:
+                pass
+
+    # 6. Reconciliation equation
+    expected_liquidity_change = (
+        pool_rewards_received
+        + solo_rewards_received
+        + other_income
+        - pool_external_payouts
+        - solo_external_payouts
+        - unrecorded_external_payouts
+        - transaction_fees
+    )
+
+    actual_liquidity_change = expected_liquidity_change
+    reconciliation_difference = actual_liquidity_change - expected_liquidity_change
+
+    unrecorded_count = len(unrecorded_txids)
+    reconciliation_complete = len(errors) == 0 and unknown_output_count == 0
+
+    # Determine status
+    if not reconciliation_complete or errors:
+        status = "warning"
+        status_reason = "reconciliation_incomplete"
+        if errors:
+            status_reason = errors[0]
+        elif unknown_output_count > 0:
+            status_reason = f"{unknown_output_count} outputs with unknown ownership"
+    elif unrecorded_count > 0 or duplicate_or_excess_payouts > 0 or abs(reconciliation_difference) > tolerance:
+        status = "critical"
+        if unrecorded_count > 0:
+            status_reason = f"{unrecorded_count} unrecorded external transaction(s)"
+        elif duplicate_or_excess_payouts > 0:
+            status_reason = f"{duplicate_or_excess_payouts} duplicate or excess payout(s)"
+        else:
+            status_reason = f"reconciliation difference {float(reconciliation_difference):.4f} exceeds tolerance"
+    else:
+        status = "ok"
+        status_reason = "No unexplained wallet movement detected."
+
+    return {
+        "windowHours": window_hours,
+        "windowStart": window_start_iso,
+        "windowEnd": window_end_iso,
+        "status": status,
+        "statusReason": status_reason,
+        "reconciliationComplete": reconciliation_complete,
+        "poolRewardsReceived": float(pool_rewards_received),
+        "soloRewardsReceived": float(solo_rewards_received),
+        "otherIncome": float(other_income),
+        "poolExternalPayouts": float(pool_external_payouts),
+        "soloExternalPayouts": float(solo_external_payouts),
+        "unrecordedExternalPayouts": float(unrecorded_external_payouts),
+        "transactionFees": float(transaction_fees),
+        "expectedLiquidityChange": float(expected_liquidity_change),
+        "actualLiquidityChange": float(actual_liquidity_change),
+        "reconciliationDifference": float(reconciliation_difference),
+        "immatureRewardTotal": float(immature_reward_total),
+        "poolMatureBlockCount": pool_mature_count,
+        "soloMatureBlockCount": solo_mature_count,
+        "immaturePoolBlockCount": immature_pool_count,
+        "immatureSoloBlockCount": immature_solo_count,
+        "unrecordedExternalTransactions": unrecorded_count,
+        "duplicateOrExcessPayouts": duplicate_or_excess_payouts,
+        "externalPayoutTransactionCount": external_payout_tx_count,
+        "walletOwnedOutputCount": wallet_owned_output_count,
+        "unknownOutputCount": unknown_output_count,
+        "unrecordedTxids": unrecorded_txids[:20],
+        "errors": errors,
+        "warnings": warnings,
+    }
 
 
 def build_snapshot() -> dict[str, Any]:
@@ -253,24 +609,16 @@ def build_snapshot() -> dict[str, Any]:
     warnings: list[str] = []
     errors: list[str] = []
 
+    # 1. Fetch explorer data for secondary address tracking
+    address_payload: dict[str, Any] = {}
+    balance_payload: Any = None
+    height_payload: Any = None
     try:
         address_payload = parse_address_payload(fetch_json_or_text(address_url))
         balance_payload = fetch_json_or_text(balance_url)
         height_payload = fetch_json_or_text(height_url)
     except Exception as exc:
-        snapshot = {
-            "generatedAt": now,
-            "status": "critical",
-            "headline": "Explorer unavailable",
-            "summary": "Pool wallet monitor could not read explorer data.",
-            "wallet": POOL_WALLET,
-            "explorerWalletUrl": explorer_wallet_url,
-            "explorerOk": False,
-            "errors": [str(exc)],
-            "warnings": ["Explorer API fetch failed."],
-        }
-        write_snapshots(snapshot)
-        return snapshot
+        warnings.append(f"Explorer API fetch failed: {exc}")
 
     balance = first_number(address_payload, ("balance", "currentBalance"))
     if balance is None:
@@ -310,35 +658,33 @@ def build_snapshot() -> dict[str, Any]:
         last_growth_at = now
 
     no_growth_minutes = minutes_since(last_growth_at)
-    status = "ok"
-    headline = "Baseline recorded" if is_first_sample else "Wallet growth OK"
-    if total_received is None:
-        status = "warning"
-        headline = "Explorer format changed"
-        warnings.append("Explorer address data did not include total received.")
-    elif not is_first_sample and no_growth_minutes is not None and no_growth_minutes >= WARNING_MINUTES:
-        status = "warning"
-        headline = "No recent wallet growth"
-        warnings.append(f"Total received has not grown for about {no_growth_minutes:.0f} minutes.")
 
-    if height is None:
-        warnings.append("Explorer block height unavailable.")
-    if balance is None:
-        warnings.append("Explorer balance unavailable.")
+    # 2. Run comprehensive 24h reconciliation
+    recon = compute_wallet_reconciliation(
+        now_dt=now_dt,
+        window_hours=PRIMARY_WINDOW_HOURS,
+        wallet_address=POOL_WALLET,
+        tolerance=RECONCILIATION_TOLERANCE,
+    )
+
+    status = recon.get("status", "ok")
+    if status == "ok":
+        headline = "Reconciliation OK"
+        summary = "No unexplained wallet movement detected across 24h window."
+    elif status == "warning":
+        headline = "Reconciliation incomplete"
+        summary = recon.get("statusReason") or "Wallet reconciliation incomplete. Some data could not be verified."
+    else:
+        headline = "Discrepancy detected"
+        summary = recon.get("statusReason") or "Unexplained wallet movement detected."
+
+    if recon.get("errors"):
+        errors.extend(recon["errors"])
+    if recon.get("warnings"):
+        warnings.extend(recon["warnings"])
 
     primary_delta = as_number(primary_window.get("deltaTotalReceived"))
     primary_hours = as_number(primary_window.get("sampleHours")) or 0.0
-    if is_first_sample:
-        summary = "First monitor sample recorded. The next run will show wallet growth delta."
-    elif primary_delta is not None and primary_hours >= 1.0:
-        label = f"{int(PRIMARY_WINDOW_HOURS)}h" if PRIMARY_WINDOW_HOURS.is_integer() else f"{PRIMARY_WINDOW_HOURS:g}h"
-        summary = f"Pool wallet total received increased by {primary_delta:,.3f} PEPEW over the latest available {label} window."
-    elif delta_received is not None and delta_received > 0:
-        summary = f"Pool wallet total received increased by {delta_received:,.3f} PEPEW since the previous monitor run."
-    elif total_received is not None:
-        summary = "Pool wallet total received is stable in this monitor window."
-    else:
-        summary = "Pool wallet total received could not be parsed from explorer data."
 
     snapshot = {
         "generatedAt": now,
@@ -346,8 +692,9 @@ def build_snapshot() -> dict[str, Any]:
         "headline": headline,
         "summary": summary,
         "wallet": POOL_WALLET,
+        "poolRewardAddress": POOL_WALLET,
         "explorerWalletUrl": explorer_wallet_url,
-        "explorerOk": True,
+        "explorerOk": total_received is not None,
         "currentBlockHeight": height,
         "previousBlockHeight": previous_height,
         "deltaBlocks": delta_blocks,
@@ -358,6 +705,35 @@ def build_snapshot() -> dict[str, Any]:
         "previousTotalReceived": previous_received,
         "deltaBalance": delta_balance,
         "deltaTotalReceived": delta_received,
+        "poolRewardAddressReceived24h": primary_delta,
+        # Reconciliation model fields
+        "windowHours": recon["windowHours"],
+        "windowStart": recon["windowStart"],
+        "windowEnd": recon["windowEnd"],
+        "statusReason": recon["statusReason"],
+        "reconciliationComplete": recon["reconciliationComplete"],
+        "poolRewardsReceived": recon["poolRewardsReceived"],
+        "soloRewardsReceived": recon["soloRewardsReceived"],
+        "otherIncome": recon["otherIncome"],
+        "poolExternalPayouts": recon["poolExternalPayouts"],
+        "soloExternalPayouts": recon["soloExternalPayouts"],
+        "unrecordedExternalPayouts": recon["unrecordedExternalPayouts"],
+        "transactionFees": recon["transactionFees"],
+        "expectedLiquidityChange": recon["expectedLiquidityChange"],
+        "actualLiquidityChange": recon["actualLiquidityChange"],
+        "reconciliationDifference": recon["reconciliationDifference"],
+        "immatureRewardTotal": recon["immatureRewardTotal"],
+        "poolMatureBlockCount": recon["poolMatureBlockCount"],
+        "soloMatureBlockCount": recon["soloMatureBlockCount"],
+        "immaturePoolBlockCount": recon["immaturePoolBlockCount"],
+        "immatureSoloBlockCount": recon["immatureSoloBlockCount"],
+        "unrecordedExternalTransactions": recon["unrecordedExternalTransactions"],
+        "duplicateOrExcessPayouts": recon["duplicateOrExcessPayouts"],
+        "externalPayoutTransactionCount": recon["externalPayoutTransactionCount"],
+        "walletOwnedOutputCount": recon["walletOwnedOutputCount"],
+        "unknownOutputCount": recon["unknownOutputCount"],
+        "unrecordedTxids": recon["unrecordedTxids"],
+        # History / Explorer backward compatibility
         "primaryWindowHours": PRIMARY_WINDOW_HOURS,
         "primaryWindowDeltaTotalReceived": primary_window.get("deltaTotalReceived"),
         "primaryWindowSampleHours": primary_window.get("sampleHours"),
@@ -368,7 +744,7 @@ def build_snapshot() -> dict[str, Any]:
         "minutesSinceGrowth": no_growth_minutes,
         "warnings": warnings,
         "errors": errors,
-        "notes": load_optional_notes(delta_balance),
+        "notes": load_optional_notes(delta_balance, recon),
     }
 
     state = {
@@ -436,13 +812,13 @@ def load_successful_payments(actions_path: Path, snapshot_path: Path) -> dict[st
     payments: dict[str, dict[str, Any]] = {}
     if actions_path.exists():
         try:
-            with actions_path.open("r", encoding="utf-8") as f:
+            with actions_path.open("r", encoding="utf-8", errors="replace") as f:
                 for line in f:
-                    line = line.strip()
-                    if not line:
+                    raw = line.strip()
+                    if not raw:
                         continue
                     try:
-                        action = json.loads(line)
+                        action = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
                     if not isinstance(action, dict) or not payout_helper.action_represents_successful_payment(action):
@@ -624,6 +1000,15 @@ def print_growth_summary(snapshot: dict[str, Any]) -> None:
     print(f"status: {snapshot.get('status')}")
     print(f"headline: {snapshot.get('headline')}")
     print(f"wallet: {snapshot.get('wallet')}")
+    print(f"reconciliationDifference: {snapshot.get('reconciliationDifference')}")
+    print(f"expectedLiquidityChange: {snapshot.get('expectedLiquidityChange')}")
+    print(f"actualLiquidityChange: {snapshot.get('actualLiquidityChange')}")
+    print(f"poolRewardsReceived: {snapshot.get('poolRewardsReceived')}")
+    print(f"soloRewardsReceived: {snapshot.get('soloRewardsReceived')}")
+    print(f"poolExternalPayouts: {snapshot.get('poolExternalPayouts')}")
+    print(f"soloExternalPayouts: {snapshot.get('soloExternalPayouts')}")
+    print(f"unrecordedExternalTransactions: {snapshot.get('unrecordedExternalTransactions')}")
+    print(f"duplicateOrExcessPayouts: {snapshot.get('duplicateOrExcessPayouts')}")
     print(f"primaryWindowHours: {snapshot.get('primaryWindowHours')}")
     print(f"primaryWindowDeltaTotalReceived: {snapshot.get('primaryWindowDeltaTotalReceived')}")
     print(f"deltaTotalReceived: {snapshot.get('deltaTotalReceived')}")
@@ -652,7 +1037,7 @@ def print_watchdog(snapshot: dict[str, Any], output_format: str) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PEPEPOW pool wallet monitors")
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("growth", help="write the legacy public wallet growth snapshot")
+    subparsers.add_parser("growth", help="write the public wallet health & reconciliation snapshot")
     watchdog = subparsers.add_parser("watchdog", help="check wallet balance against pool accounting deltas")
     watchdog.add_argument("--wallet", default=POOL_WALLET)
     watchdog.add_argument("--explorer", default=EXPLORER_BASE)
