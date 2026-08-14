@@ -21,34 +21,11 @@
     poolCard.insertAdjacentElement("afterend", soloCard);
   }
 
-  function ensureMaintenanceNotice() {
-    if (document.getElementById("pool-maintenance-notice")) return;
-    ensurePoolWalletWatchStyles();
-    const main = document.querySelector("main.page-grid");
-    if (!main) return;
-
-    const notice = document.createElement("section");
-    notice.id = "pool-maintenance-notice";
-    notice.className = "panel pool-maintenance-notice";
-    notice.setAttribute("role", "status");
-    notice.setAttribute("aria-live", "polite");
-    notice.innerHTML = `
-      <p class="eyebrow">Maintenance Notice</p>
-      <h2>Pool wallet temporarily under maintenance</h2>
-      <p>Payment processing may be temporarily unavailable or delayed while wallet maintenance is in progress. Mining services and pool status are being monitored. Updates will be posted here.</p>
-    `;
-    main.insertBefore(notice, main.firstChild);
-  }
-
   function ensurePoolWalletWatchStyles() {
     if (document.getElementById("pool-wallet-watch-style")) return;
     const style = document.createElement("style");
     style.id = "pool-wallet-watch-style";
     style.textContent = `
-      .pool-maintenance-notice{grid-column:1/-1!important;display:grid;gap:.45rem;padding:1rem 1.15rem!important;border:1px solid rgba(255,212,90,.5)!important;background:linear-gradient(135deg,rgba(255,212,90,.16),rgba(255,118,118,.09))!important;box-shadow:0 0 0 1px rgba(255,212,90,.08) inset}
-      .pool-maintenance-notice .eyebrow{margin:0;color:#ffe08a}
-      .pool-maintenance-notice h2{margin:0;font-size:clamp(1.15rem,2.4vw,1.55rem);line-height:1.2}
-      .pool-maintenance-notice p:last-child{margin:0;color:rgba(238,245,248,.88);line-height:1.5}
       .pool-wallet-watch{display:grid;gap:.6rem;overflow:hidden;padding:1.1rem!important}
       .pool-wallet-watch .eyebrow{margin-bottom:-.28rem;font-size:.65rem;letter-spacing:.12em}
       .pool-wallet-watch h3{margin:0;font-size:clamp(.92rem,1.3vw,1.05rem);line-height:1.2}
@@ -211,7 +188,6 @@
   }
 
   async function loadPoolWalletWatch() {
-    ensureMaintenanceNotice();
     ensureSoloEndpoint();
     const root = ensurePoolWalletWatchCard();
     if (!root) return;
