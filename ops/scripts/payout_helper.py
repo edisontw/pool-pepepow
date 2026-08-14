@@ -256,7 +256,7 @@ def query_rpc(method: str, params: list[Any], timeout: float = 5) -> Any:
 
 _REAL_QUERY_RPC = query_rpc
 
-READ_ONLY_WALLET_CLI_METHODS = {"getbalance", "getwalletinfo", "validateaddress"}
+READ_ONLY_WALLET_CLI_METHODS = {"getbalance", "getwalletinfo", "validateaddress", "listunspent"}
 
 def query_wallet_cli(method: str, params: list[Any]) -> Any:
     """Run a configured wallet CLI read-only command and parse its result."""
@@ -322,6 +322,38 @@ def wallet_readonly_call(method: str, params: list[Any]) -> Any:
     if not cli_configured:
         return query_wallet_cli(method, params)
     return None
+
+
+def wallet_spendable_balance() -> Decimal | None:
+    """Return confirmed spendable wallet balance summed from listunspent 1 9999999.
+
+    Fails closed (returns None) if listunspent is unavailable, malformed, or
+    cannot be reliably parsed. Locked masternode collateral is excluded because
+    listunspent excludes locked outputs and only confirmed spendable UTXOs are summed.
+    """
+    unspent = wallet_readonly_call("listunspent", [1, 9999999])
+    if not isinstance(unspent, list):
+        return None
+
+    total = Decimal("0")
+    for utxo in unspent:
+        if not isinstance(utxo, dict):
+            return None
+        # Exclude outputs explicitly marked spendable == False
+        if utxo.get("spendable") is False:
+            continue
+        amount_raw = utxo.get("amount")
+        if amount_raw is None:
+            return None
+        try:
+            amount = Decimal(str(amount_raw))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not amount.is_finite() or amount < Decimal("0"):
+            return None
+        total += amount
+
+    return total
 
 
 def daemon_readonly_call(method: str, params: list[Any]) -> Any:
@@ -2957,24 +2989,15 @@ def payout_wallet_dry_run(candidates_path: Path, output_path: Path) -> int:
     
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     
-    # Check RPC endpoint and wallet balance
     wallet_balance_read_ok = False
     wallet_available_balance = 0.0
     warnings = []
-    
-    # Try calling getbalance or getwalletinfo via query_rpc
-    try:
-        balance_res = wallet_readonly_call("getbalance", [])
-        if balance_res is not None:
-            wallet_available_balance = float(balance_res)
-            wallet_balance_read_ok = True
-        else:
-            wallet_info = wallet_readonly_call("getwalletinfo", [])
-            if isinstance(wallet_info, dict) and "balance" in wallet_info:
-                wallet_available_balance = float(wallet_info["balance"])
-                wallet_balance_read_ok = True
-    except Exception:
-        pass
+
+    # Check wallet spendable balance via listunspent
+    spendable_res = wallet_spendable_balance()
+    if spendable_res is not None:
+        wallet_available_balance = float(spendable_res)
+        wallet_balance_read_ok = True
         
     if not wallet_balance_read_ok:
         warnings.append("Wallet RPC unreachable or balance unreadable")
@@ -3329,14 +3352,10 @@ def payout_wallet_send_preflight(
     if payment_already_recorded(actions_log_path, candidate_id, wallet):
         return finish("blocked_already_paid")
 
-    balance_res = wallet_readonly_call("getbalance", [])
-    try:
-        wallet_balance = float(balance_res) if balance_res is not None else None
-    except (TypeError, ValueError):
-        wallet_balance = None
+    wallet_balance = wallet_spendable_balance()
     if wallet_balance is None:
         return finish("blocked_wallet_balance_unreadable")
-    if expected_amount > wallet_balance:
+    if expected_amount > float(wallet_balance):
         return finish("blocked_insufficient_balance")
 
     address_res = wallet_readonly_call("validateaddress", [wallet])
@@ -3488,14 +3507,10 @@ def payout_wallet_send_once(
     if payment_already_recorded(actions_log_path, candidate_id, wallet):
         return finish("blocked_already_paid")
 
-    balance_res = wallet_readonly_call("getbalance", [])
-    try:
-        wallet_balance = float(balance_res) if balance_res is not None else None
-    except (TypeError, ValueError):
-        wallet_balance = None
+    wallet_balance = wallet_spendable_balance()
     if wallet_balance is None:
         return finish("blocked_wallet_balance_unreadable")
-    if expected_amount > wallet_balance:
+    if expected_amount > float(wallet_balance):
         return finish("blocked_insufficient_balance")
 
     address_res = wallet_readonly_call("validateaddress", [wallet])
@@ -3769,14 +3784,10 @@ def payout_wallet_send_aggregated_once(
     if any((source_id, wallet) in paid_pairs for source_id in source_candidate_ids):
         return finish("blocked_already_paid")
 
-    balance_res = wallet_readonly_call("getbalance", [])
-    try:
-        wallet_balance = float(balance_res) if balance_res is not None else None
-    except (TypeError, ValueError):
-        wallet_balance = None
+    wallet_balance = wallet_spendable_balance()
     if wallet_balance is None:
         return finish("blocked_wallet_balance_unreadable")
-    if expected_amount > wallet_balance:
+    if expected_amount > float(wallet_balance):
         return finish("blocked_insufficient_balance")
 
     address_res = wallet_readonly_call("validateaddress", [wallet])
@@ -3970,12 +3981,11 @@ def manual_recovery_batch(
     existing_paid = load_manual_recovery_protected_candidate_ids(actions_log_path)
     if any(source_id in existing_paid for source_id in source_candidate_ids):
         return finish("blocked_already_paid")
-    balance = wallet_readonly_call("getbalance", [])
-    try:
-        if balance is None or Decimal(str(balance)) < payment_total:
-            return finish("blocked_insufficient_balance")
-    except (InvalidOperation, TypeError, ValueError):
+    balance = wallet_spendable_balance()
+    if balance is None:
         return finish("blocked_wallet_balance_unreadable")
+    if balance < payment_total:
+        return finish("blocked_insufficient_balance")
     for wallet, _amount in normalized:
         validated = wallet_readonly_call("validateaddress", [wallet])
         if not isinstance(validated, dict) or validated.get("isvalid") is not True:
@@ -4158,11 +4168,7 @@ def manual_operator_backfill_fixed_distribution(
         return finish("blocked_partial_manual_backfill_payment_exists")
 
     total_to_send = sum((Decimal(item["amount"]) for item in distribution_items), Decimal("0"))
-    balance_res = wallet_readonly_call("getbalance", [])
-    try:
-        wallet_balance = Decimal(str(balance_res)) if balance_res is not None else None
-    except (InvalidOperation, ValueError):
-        wallet_balance = None
+    wallet_balance = wallet_spendable_balance()
     if wallet_balance is None:
         return finish("blocked_wallet_balance_unreadable")
     if total_to_send > wallet_balance:

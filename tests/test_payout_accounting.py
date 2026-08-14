@@ -4797,7 +4797,7 @@ class CarryFocusedTests(unittest.TestCase):
         os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
         try:
             payout_helper.wallet_readonly_call = lambda method, params: (
-                50000.0 if method == "getbalance" else {"isvalid": True}
+                [{"amount": 50000.0, "spendable": True}] if method == "listunspent" else 50000.0 if method == "getbalance" else {"isvalid": True}
             )
             wallet = "walletCARRY000000000000000001"
             self._write_same_wallet_candidates(
@@ -4892,7 +4892,7 @@ class CarryFocusedTests(unittest.TestCase):
         os.environ["PEPEPOW_MIN_PAYOUT"] = "10000.0"
         try:
             payout_helper.wallet_readonly_call = lambda method, params: (
-                50000.0 if method == "getbalance" else {"isvalid": True}
+                [{"amount": 50000.0, "spendable": True}] if method == "listunspent" else 50000.0 if method == "getbalance" else {"isvalid": True}
             )
             wallet = "walletAGG000000000000000001"
             candidate_ids = [
@@ -5271,6 +5271,8 @@ class WalletRpcDryRunTests(unittest.TestCase):
     def test_dry_run_creates_artifact(self, mock_wallet):
         """Dry-run validates candidates and writes output snapshot atomically with correct fields."""
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 50000.0, "spendable": True}]
             if method == "getbalance":
                 return 50000.0
             if method == "validateaddress":
@@ -5366,6 +5368,8 @@ class WalletRpcDryRunTests(unittest.TestCase):
     def test_insufficient_balance_blocks_output(self, mock_wallet):
         """When total payouts exceed available wallet balance, items are marked blocked_insufficient_balance."""
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 50.0, "spendable": True}]
             if method == "getbalance":
                 return 50.0
             if method == "validateaddress":
@@ -5405,7 +5409,7 @@ class WalletRpcDryRunTests(unittest.TestCase):
     @unittest.mock.patch('payout_helper.wallet_readonly_call')
     def test_missing_payout_candidates_returns_empty_dry_run_safely(self, mock_wallet):
         """Missing candidate file is handled gracefully and returns empty dry-run structure."""
-        mock_wallet.return_value = 1000.0
+        mock_wallet.return_value = [{"amount": 1000.0, "spendable": True}]
 
         if self.candidates_path.exists():
             self.candidates_path.unlink()
@@ -5432,7 +5436,8 @@ class WalletRpcDryRunTests(unittest.TestCase):
         cli_path.write_text(
             "#!/usr/bin/env python3\n"
             "import json, sys\n"
-            "if sys.argv[1] == 'getbalance': print('1234.5')\n"
+            "if sys.argv[1] == 'listunspent': print(json.dumps([{'amount': 1234.5, 'spendable': True}]))\n"
+            "elif sys.argv[1] == 'getbalance': print('1234.5')\n"
             "elif sys.argv[1] == 'validateaddress': print(json.dumps({'isvalid': True}))\n"
             "else: print(json.dumps({'balance': 1234.5}))\n",
             encoding="utf-8",
@@ -5486,6 +5491,8 @@ class WalletRpcDryRunTests(unittest.TestCase):
     def test_malformed_payout_candidate_is_blocked(self, mock_wallet):
         """Malformed payout candidate with missing/invalid fields gets blocked."""
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 1000.0, "spendable": True}]
             if method == "getbalance":
                 return 1000.0
             if method == "validateaddress":
@@ -6541,7 +6548,7 @@ class WalletSendOnceTests(unittest.TestCase):
     def test_insufficient_balance_blocks_send(self, mock_wallet):
         self._enable_real_once()
         self._write_candidate()
-        mock_wallet.return_value = 50.0
+        mock_wallet.return_value = [{"amount": 50.0, "spendable": True}]
 
         rc = self._run_send_once()
         self.assertEqual(rc, 0)
@@ -6552,6 +6559,8 @@ class WalletSendOnceTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 500.0, "spendable": True}]
             if method == "getbalance":
                 return 500.0
             if method == "validateaddress":
@@ -6568,6 +6577,8 @@ class WalletSendOnceTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 500.0, "spendable": True}]
             if method == "getbalance":
                 return 500.0
             if method == "validateaddress":
@@ -6638,7 +6649,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         self._install_noop_cli()
-        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 500.0, "spendable": True}] if method == "listunspent" else 500.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="txidrepeat00000000000000000001\n")
 
         rc_first = self._run_send_once()
@@ -6659,7 +6670,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         self._install_noop_cli()
-        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 500.0, "spendable": True}] if method == "listunspent" else 500.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="wallet rejected")
 
         rc = self._run_send_once()
@@ -6680,7 +6691,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate(amount=4343.6250145431)
         cli_path = self._install_noop_cli()
-        mock_wallet.side_effect = lambda method, params: 50000.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 50000.0, "spendable": True}] if method == "listunspent" else 50000.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=0, stdout="txidnormalizedamount0000000001\n")
 
         rc = self._run_send_once(amount="4343.625")
@@ -6702,7 +6713,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self._write_candidate()
         self._install_noop_cli()
         txid = "txidsuccess0000000000000000001"
-        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 500.0, "spendable": True}] if method == "listunspent" else 500.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
 
         rc = self._run_send_once()
@@ -6739,7 +6750,7 @@ class WalletSendOnceTests(unittest.TestCase):
                 ]
             }, f)
         txid = "txidaggregatesend00000000001"
-        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 500.0, "spendable": True}] if method == "listunspent" else 500.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
 
         rc = payout_helper.payout_wallet_send_aggregated_once(
@@ -6816,7 +6827,7 @@ class WalletSendOnceTests(unittest.TestCase):
                 ]
             }, f)
         txid = "txidcarrymeta000000000000001"
-        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 500.0, "spendable": True}] if method == "listunspent" else 500.0 if method == "getbalance" else {"isvalid": True}
         mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n")
 
         rc = self._run_send_once()
@@ -6843,7 +6854,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         self._install_noop_cli()
-        mock_wallet.side_effect = lambda method, params: 500.0 if method == "getbalance" else {"isvalid": True}
+        mock_wallet.side_effect = lambda method, params: [{"amount": 500.0, "spendable": True}] if method == "listunspent" else 500.0 if method == "getbalance" else {"isvalid": True}
         old_load_env = payout_helper.load_env_vars
         calls = {"count": 0}
 
@@ -6941,6 +6952,8 @@ class WalletSendPreflightTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 500.0, "spendable": True}]
             if method == "getbalance":
                 return 500.0
             if method == "validateaddress":
@@ -6964,6 +6977,8 @@ class WalletSendPreflightTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 500.0, "spendable": True}]
             if method == "getbalance":
                 return 500.0
             if method == "validateaddress":
@@ -7062,7 +7077,7 @@ class WalletSendPreflightTests(unittest.TestCase):
     def test_preflight_insufficient_balance_blocks(self, mock_wallet):
         self._enable_real_once()
         self._write_candidate()
-        mock_wallet.return_value = 50.0
+        mock_wallet.return_value = [{"amount": 50.0, "spendable": True}]
 
         rc = self._run_preflight()
         self.assertEqual(rc, 0)
@@ -7073,6 +7088,8 @@ class WalletSendPreflightTests(unittest.TestCase):
         self._enable_real_once()
         self._write_candidate()
         def side_effect(method, params):
+            if method == "listunspent":
+                return [{"amount": 500.0, "spendable": True}]
             if method == "getbalance":
                 return 500.0
             if method == "validateaddress":
@@ -8296,6 +8313,168 @@ class FallbackPayoutTests(unittest.TestCase):
             for k in ["PEPEPOW_PAYOUT_MIN_CONFIRMATIONS", "PEPEPOW_MIN_PAYOUT", "PEPEPOW_POOL_CORE_REWARD_ADDRESS",
                       "PEPEPOW_OPERATOR_BACKFILL_UNATTRIBUTED_CONFIRMED", "PEPEPOW_OPERATOR_BACKFILL_WALLET"]:
                 os.environ.pop(k, None)
+
+
+class WalletSpendableBalanceTests(unittest.TestCase):
+    """Tests ensuring payout balance checks use spendable UTXOs and exclude locked collateral."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp_dir.name)
+        self.candidates_path = self.tmp_path / "payout-candidates.json"
+        self.actions_log = self.tmp_path / "payment-actions.jsonl"
+        self.output_path = self.tmp_path / "result.json"
+        self.candidate_id = "candeligible000000000000000001"
+        self.wallet = "PEPEPOW1WalletAddressTarget001"
+        self._old_env = {k: os.environ.get(k) for k in [
+            "PEPEPOW_ENABLE_REAL_WALLET_PAYOUT",
+            "PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS",
+            "PEPEPOW_WALLET_CLI",
+            "PEPEPOWD_RPC_URL",
+            "PEPEPOWD_RPC_USER",
+            "PEPEPOWD_RPC_PASSWORD",
+        ]}
+        for key in ["PEPEPOWD_RPC_URL", "PEPEPOWD_RPC_USER", "PEPEPOWD_RPC_PASSWORD"]:
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        for key, value in self._old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp_dir.cleanup()
+
+    def _write_candidate(self, amount=6000000.0):
+        with self.candidates_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "items": [{
+                    "candidateId": self.candidate_id,
+                    "blockHash": self.candidate_id,
+                    "height": 500,
+                    "status": "ready_for_manual_review",
+                    "payouts": [{
+                        "wallet": self.wallet,
+                        "amount": amount,
+                        "status": "pending_manual_payment",
+                    }],
+                }]
+            }, f)
+
+    def _enable_real(self):
+        os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
+        os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_locked_masternode_collateral_insufficient_spendable_blocks_send(self, mock_wallet):
+        """Case A: Mocked getbalance=105M, listunspent spendable=5M, send=6M -> blocked_insufficient_balance."""
+        self._enable_real()
+        self._write_candidate(amount=6000000.0)
+
+        def side_effect(method, params):
+            if method == "getbalance":
+                return 105000000.0
+            if method == "listunspent":
+                # Returns 5M confirmed spendable UTXOs (100M masternode collateral locked and absent from listunspent)
+                return [{"amount": 5000000.0, "spendable": True}]
+            if method == "validateaddress":
+                return {"isvalid": True}
+            return None
+
+        mock_wallet.side_effect = side_effect
+
+        rc = payout_helper.payout_wallet_send_preflight(
+            self.candidates_path, self.actions_log, self.output_path, self.candidate_id, self.wallet, 6000000.0
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["status"], "blocked_insufficient_balance")
+        self.assertFalse(data["sendWouldBeAllowed"])
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_spendable_balance_sufficient_allows_preflight(self, mock_wallet):
+        """Case B: Mocked getbalance=105M, listunspent spendable=5M, send=4M (< 5M) -> preflight_ok."""
+        self._enable_real()
+        self._write_candidate(amount=4000000.0)
+
+        def side_effect(method, params):
+            if method == "getbalance":
+                return 105000000.0
+            if method == "listunspent":
+                return [{"amount": 5000000.0, "spendable": True}]
+            if method == "validateaddress":
+                return {"isvalid": True}
+            return None
+
+        mock_wallet.side_effect = side_effect
+
+        rc = payout_helper.payout_wallet_send_preflight(
+            self.candidates_path, self.actions_log, self.output_path, self.candidate_id, self.wallet, 4000000.0
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["status"], "preflight_ok")
+        self.assertTrue(data["sendWouldBeAllowed"])
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_listunspent_unavailable_or_malformed_fails_closed(self, mock_wallet):
+        """Case C: listunspent error/malformed -> fail closed, blocked_wallet_balance_unreadable, never use getbalance."""
+        self._enable_real()
+        self._write_candidate(amount=1000.0)
+
+        for bad_unspent in [None, "invalid", {}, [{"amount": "not-a-number"}], [{"amount": -10.0}]]:
+            with self.subTest(bad_unspent=bad_unspent):
+                def side_effect(method, params):
+                    if method == "getbalance":
+                        return 105000000.0
+                    if method == "listunspent":
+                        return bad_unspent
+                    if method == "validateaddress":
+                        return {"isvalid": True}
+                    return None
+
+                mock_wallet.side_effect = side_effect
+
+                rc = payout_helper.payout_wallet_send_preflight(
+                    self.candidates_path, self.actions_log, self.output_path, self.candidate_id, self.wallet, 1000.0
+                )
+                self.assertEqual(rc, 0)
+                with self.output_path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.assertEqual(data["status"], "blocked_wallet_balance_unreadable")
+                self.assertFalse(data["sendWouldBeAllowed"])
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_spendable_false_utxos_are_ignored(self, mock_wallet):
+        """Case D: UTXOs with explicit spendable: false are excluded from spendable total."""
+        self._enable_real()
+        self._write_candidate(amount=3000.0)
+
+        def side_effect(method, params):
+            if method == "getbalance":
+                return 105000000.0
+            if method == "listunspent":
+                return [
+                    {"amount": 2000.0, "spendable": True},
+                    {"amount": 100000000.0, "spendable": False},  # Should be ignored
+                ]
+            if method == "validateaddress":
+                return {"isvalid": True}
+            return None
+
+        mock_wallet.side_effect = side_effect
+
+        # 3000.0 > 2000.0 spendable -> insufficient balance
+        rc = payout_helper.payout_wallet_send_preflight(
+            self.candidates_path, self.actions_log, self.output_path, self.candidate_id, self.wallet, 3000.0
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["status"], "blocked_insufficient_balance")
+        self.assertFalse(data["sendWouldBeAllowed"])
 
 
 if __name__ == "__main__":
