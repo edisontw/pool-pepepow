@@ -76,6 +76,7 @@ not claim the finder receives unrelated coinbase allocations.
 ## Quick Links
 
 - Quickstart: [`docs/deploy-pepepow-pool-quickstart.md`](docs/deploy-pepepow-pool-quickstart.md)
+- Third-party pool integration: [`docs/pool-integration-guide.md`](docs/pool-integration-guide.md)
 - Oracle Ubuntu deployment: [`docs/oracle-ubuntu-deployment.md`](docs/oracle-ubuntu-deployment.md)
 - Deployment plan: [`docs/deployment-plan.md`](docs/deployment-plan.md)
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
