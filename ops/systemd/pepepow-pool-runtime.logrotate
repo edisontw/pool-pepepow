@@ -28,7 +28,7 @@
 /var/lib/pepepow-pool/candidate-events.jsonl
 /var/lib/pepepow-pool/candidate-followup-events.jsonl
 /var/lib/pepepow-pool/candidate-outcome-events.jsonl {
-    su pepepow pepepow
+    su ubuntu ubuntu
     size 32M
     rotate 8
     copytruncate

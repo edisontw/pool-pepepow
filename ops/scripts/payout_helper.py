@@ -819,6 +819,8 @@ def append_payment_action(actions_log_path: Path, action: dict[str, Any]) -> Non
     actions_log_path.parent.mkdir(parents=True, exist_ok=True)
     with actions_log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(action, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def payment_actions_lock_path(actions_log_path: Path) -> Path:
