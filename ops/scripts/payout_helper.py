@@ -256,7 +256,14 @@ def query_rpc(method: str, params: list[Any], timeout: float = 5) -> Any:
 
 _REAL_QUERY_RPC = query_rpc
 
-READ_ONLY_WALLET_CLI_METHODS = {"getbalance", "getwalletinfo", "validateaddress", "listunspent"}
+READ_ONLY_WALLET_CLI_METHODS = {
+    "getbalance",
+    "getwalletinfo",
+    "validateaddress",
+    "listunspent",
+    "listtransactions",
+    "gettransaction",
+}
 
 def query_wallet_cli(method: str, params: list[Any]) -> Any:
     """Run a configured wallet CLI read-only command and parse its result."""
@@ -428,8 +435,22 @@ def atomic_write_json(output_path: Path, data: dict[str, Any]) -> None:
         raise
 
 
-FAILED_PAYMENT_ACTION_STATUSES = {"failed", "send_failed", "reserved"}
-SUCCESS_PAYMENT_ACTION_STATUSES = {"sent", "paid", "paid_manual", "manual_payment_recorded"}
+FAILED_PAYMENT_ACTION_STATUSES = {
+    "failed",
+    "send_failed",
+    "reserved",
+    "intent",
+    "pending",
+    "ambiguous",
+    "ambiguous_timeout",
+}
+SUCCESS_PAYMENT_ACTION_STATUSES = {
+    "sent",
+    "paid",
+    "paid_manual",
+    "manual_payment_recorded",
+    "reconciled_payment_recorded",
+}
 SUCCESS_PAYMENT_ACTIONS = {"manual_payment_recorded"}
 MANUAL_OPERATOR_BACKFILL_ACTION = "manual_operator_backfill_payment_recorded"
 MANUAL_OPERATOR_BACKFILL_REASON = "operator_approved_fixed_distribution_backfill_2026_06"
@@ -587,6 +608,17 @@ def load_paid_payment_pairs(
     paid_pairs: set[tuple[str, str]] = set()
     if actions_log_path.exists():
         try:
+            for intent in get_unresolved_payment_intents(actions_log_path):
+                c_id = intent.get("candidate_id") or intent.get("candidateId")
+                wallet = intent.get("wallet")
+                if c_id and wallet:
+                    paid_pairs.add((str(c_id), str(wallet)))
+                for key in ("sourceCandidateIds", "carrySourceCandidateIds"):
+                    source_ids = intent.get(key)
+                    if isinstance(source_ids, list) and wallet:
+                        for source_id in source_ids:
+                            if source_id:
+                                paid_pairs.add((str(source_id), str(wallet)))
             for act in iter_jsonl_objects(actions_log_path, warn=True):
                 if not action_represents_successful_payment(act):
                     continue
@@ -797,11 +829,237 @@ def has_partial_manual_operator_backfill_payment(actions_log_path: Path) -> bool
     return any(wallets and wallets != expected_wallets for wallets in groups.values())
 
 
+def get_unresolved_payment_intents(actions_log_path: Path) -> list[dict[str, Any]]:
+    """Scan actions log for durable payment intents that lack a resolving record."""
+    if not actions_log_path.exists():
+        return []
+
+    intents: dict[str, dict[str, Any]] = {}
+    resolved_intent_ids: set[str] = set()
+    resolved_pairs: set[tuple[str, str]] = set()
+
+    for idx, act in enumerate(iter_jsonl_objects(actions_log_path, warn=False)):
+        if not isinstance(act, dict):
+            continue
+        status = str(act.get("status") or "").strip().lower()
+        action_name = str(act.get("action") or "").strip().lower()
+        intent_id = str(act.get("intent_id") or "")
+        wallet = str(act.get("wallet") or "")
+        cand_id = str(
+            act.get("candidate_id")
+            or act.get("candidateId")
+            or act.get("candidateHash")
+            or ""
+        )
+
+        is_intent = (
+            action_name == "payment_intent"
+            or status in {"intent", "pending", "ambiguous", "ambiguous_timeout"}
+        )
+
+        if is_intent:
+            key = intent_id if intent_id else f"raw_intent_{idx}_{wallet}_{cand_id}"
+            intents[key] = act
+            continue
+
+        is_success = action_represents_successful_payment(act)
+        is_failure = status in {"failed", "send_failed"} or action_name in {
+            "reconciled_intent_cleared",
+            "payment_failed",
+        }
+
+        if is_success or is_failure:
+            if intent_id:
+                resolved_intent_ids.add(intent_id)
+            if wallet and cand_id:
+                resolved_pairs.add((cand_id, wallet))
+            for source_key in ("sourceCandidateIds", "carrySourceCandidateIds"):
+                sources = act.get(source_key)
+                if isinstance(sources, list) and wallet:
+                    for src in sources:
+                        if src:
+                            resolved_pairs.add((str(src), wallet))
+
+    unresolved: list[dict[str, Any]] = []
+    for key, intent in intents.items():
+        intent_id = str(intent.get("intent_id") or "")
+        wallet = str(intent.get("wallet") or "")
+        cand_id = str(
+            intent.get("candidate_id")
+            or intent.get("candidateId")
+            or intent.get("candidateHash")
+            or ""
+        )
+        if intent_id and intent_id in resolved_intent_ids:
+            continue
+        if wallet and cand_id and (cand_id, wallet) in resolved_pairs:
+            continue
+        unresolved.append(intent)
+
+    return unresolved
+
+
+def find_wallet_tx_for_intent(intent: dict[str, Any]) -> tuple[bool | None, dict[str, Any] | None]:
+    """Search wallet transaction history for a transaction matching a payment intent.
+
+    Returns:
+        (True, tx_dict) if a matching transaction is found.
+        (False, None) if wallet history is readable and definitely no matching tx exists.
+        (None, None) if wallet history is unreachable/unreadable.
+    """
+    txs = wallet_readonly_call("listtransactions", ["*", 1000, 0, True])
+    if not isinstance(txs, list):
+        return None, None
+
+    target_wallet = str(intent.get("wallet") or "")
+    target_intent_id = str(intent.get("intent_id") or "")
+    try:
+        target_amount = Decimal(str(intent.get("amount") or "0"))
+    except Exception:
+        target_amount = None
+
+    intent_epoch = None
+    intent_ts_str = str(intent.get("timestamp") or "")
+    if intent_ts_str:
+        try:
+            intent_dt = datetime.fromisoformat(intent_ts_str.replace("Z", "+00:00"))
+            intent_epoch = intent_dt.timestamp()
+        except Exception:
+            pass
+
+    # Pass 1: exact comment match
+    if target_intent_id:
+        for tx in reversed(txs):
+            if not isinstance(tx, dict):
+                continue
+            if tx.get("category") != "send":
+                continue
+            comment = str(tx.get("comment") or "")
+            if target_intent_id == comment or target_intent_id in comment:
+                txid = str(tx.get("txid") or "")
+                if txid and re.match(r"^[A-Za-z0-9]{26,128}$", txid):
+                    return True, tx
+
+    # Pass 2: address and amount match with timestamp window (if within 2h)
+    if target_wallet and target_amount is not None:
+        for tx in reversed(txs):
+            if not isinstance(tx, dict):
+                continue
+            if tx.get("category") != "send":
+                continue
+            if str(tx.get("address") or "") != target_wallet:
+                continue
+            try:
+                tx_amt = abs(Decimal(str(tx.get("amount") or "0")))
+            except Exception:
+                continue
+            if abs(tx_amt - target_amount) > Decimal("0.00000001"):
+                continue
+            tx_time = tx.get("time")
+            if intent_epoch is not None and tx_time is not None:
+                try:
+                    if abs(float(tx_time) - intent_epoch) > 7200:
+                        continue
+                except Exception:
+                    pass
+            txid = str(tx.get("txid") or "")
+            if txid and re.match(r"^[A-Za-z0-9]{26,128}$", txid):
+                return True, tx
+
+    return False, None
+
+
+def reconcile_unresolved_payment_intents(
+    actions_log_path: Path,
+    payments_snapshot_path: Path | None = None,
+) -> dict[str, Any]:
+    """Reconcile any unresolved payment intents against wallet transaction history."""
+    if not actions_log_path.exists():
+        return {"unresolvedCount": 0, "reconciledSent": 0, "reconciledFailed": 0, "pendingCount": 0}
+
+    unresolved = get_unresolved_payment_intents(actions_log_path)
+    if not unresolved:
+        return {"unresolvedCount": 0, "reconciledSent": 0, "reconciledFailed": 0, "pendingCount": 0}
+
+    reconciled_sent = 0
+    reconciled_failed = 0
+    still_pending = 0
+
+    for intent in unresolved:
+        found, tx_data = find_wallet_tx_for_intent(intent)
+        intent_id = intent.get("intent_id") or f"intent:{intent.get('candidate_id')}:{intent.get('wallet')}"
+        now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        if found is True and tx_data and tx_data.get("txid"):
+            txid = str(tx_data["txid"])
+            sent_action = {
+                "action": "reconciled_payment_recorded",
+                "intent_id": intent_id,
+                "candidate_id": intent.get("candidate_id"),
+                "wallet": intent.get("wallet"),
+                "amount": intent.get("amount"),
+                "txid": txid,
+                "status": "sent",
+                "reconciled": True,
+                "timestamp": now_ts,
+            }
+            for k in (
+                "sourceCandidateIds",
+                "carrySourceCandidateIds",
+                "sourceCount",
+                "carrySourceCount",
+                "carryInAmount",
+                "baseAmount",
+            ):
+                if k in intent:
+                    sent_action[k] = intent[k]
+            append_payment_action(actions_log_path, sent_action)
+            reconciled_sent += 1
+        elif found is False:
+            failed_action = {
+                "action": "reconciled_intent_cleared",
+                "intent_id": intent_id,
+                "candidate_id": intent.get("candidate_id"),
+                "wallet": intent.get("wallet"),
+                "amount": intent.get("amount"),
+                "status": "failed",
+                "reason": "no_wallet_transaction_found",
+                "reconciled": True,
+                "timestamp": now_ts,
+            }
+            for k in ("sourceCandidateIds", "carrySourceCandidateIds"):
+                if k in intent:
+                    failed_action[k] = intent[k]
+            append_payment_action(actions_log_path, failed_action)
+            reconciled_failed += 1
+        else:
+            still_pending += 1
+
+    if reconciled_sent > 0 and payments_snapshot_path is not None:
+        generate_payments_snapshot(actions_log_path, payments_snapshot_path)
+
+    return {
+        "unresolvedCount": len(unresolved),
+        "reconciledSent": reconciled_sent,
+        "reconciledFailed": reconciled_failed,
+        "pendingCount": still_pending,
+    }
+
+
 def payment_already_recorded(actions_log_path: Path, candidate_id: str, wallet: str) -> bool:
-    """Check whether candidate_id + wallet already has a successful payment."""
+    """Check whether candidate_id + wallet already has a successful payment or pending intent."""
     if not actions_log_path.exists():
         return False
     try:
+        unresolved = get_unresolved_payment_intents(actions_log_path)
+        for intent in unresolved:
+            if intent.get("wallet") == wallet:
+                if intent.get("candidate_id") == candidate_id:
+                    return True
+                for key in ("sourceCandidateIds", "carrySourceCandidateIds"):
+                    source_ids = intent.get(key)
+                    if isinstance(source_ids, list) and candidate_id in {str(source_id) for source_id in source_ids}:
+                        return True
         for act in iter_jsonl_objects(actions_log_path, warn=True):
             if act.get("wallet") == wallet and action_represents_successful_payment(act):
                 if act.get("candidate_id") == candidate_id:
@@ -3524,8 +3782,17 @@ def payout_wallet_send_once(
     with lock_path.open("w", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
+            reconcile_unresolved_payment_intents(actions_log_path, payments_snapshot_path)
             if payment_already_recorded(actions_log_path, candidate_id, wallet):
                 return finish("blocked_already_paid")
+
+            unresolved = get_unresolved_payment_intents(actions_log_path)
+            for u in unresolved:
+                if u.get("wallet") == wallet:
+                    u_cand = str(u.get("candidate_id") or "")
+                    u_sources = set(str(x) for x in u.get("sourceCandidateIds") or [])
+                    if u_cand == candidate_id or candidate_id in u_sources:
+                        return finish("blocked_unresolved_payment_intent")
 
             locked_env = load_env_vars()
             locked_max_sends_raw = locked_env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
@@ -3540,6 +3807,7 @@ def payout_wallet_send_once(
             if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
                 warnings.append("Wallet CLI unavailable or not executable")
                 failed_action = {
+                    "action": "payment_failed",
                     "candidate_id": candidate_id,
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3550,18 +3818,46 @@ def payout_wallet_send_once(
                 append_payment_action(actions_log_path, failed_action)
                 return finish("blocked_send_failed")
 
+            intent_id = f"intent:{candidate_id}:{wallet}:{generated_at}"
+            intent_action = {
+                "action": "payment_intent",
+                "intent_id": intent_id,
+                "candidate_id": candidate_id,
+                "wallet": wallet,
+                "amount": expected_amount,
+                "status": "intent",
+                "timestamp": generated_at,
+            }
+            append_payment_action(actions_log_path, intent_action)
+
             send_attempted = True
             try:
                 proc = subprocess.run(
-                    [cli_path, "sendtoaddress", wallet, str(expected_amount)],
+                    [cli_path, "sendtoaddress", wallet, str(expected_amount), intent_id],
                     check=False,
                     capture_output=True,
                     text=True,
                     timeout=15,
                 )
+            except (subprocess.TimeoutExpired, TimeoutError) as exc:
+                warnings.append("sendtoaddress timed out")
+                ambiguous_action = {
+                    "action": "payment_intent_ambiguous",
+                    "intent_id": intent_id,
+                    "candidate_id": candidate_id,
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "ambiguous",
+                    "error": "timeout_expired",
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, ambiguous_action)
+                return finish("blocked_send_ambiguous_timeout")
             except Exception as exc:
                 warnings.append("sendtoaddress failed")
                 failed_action = {
+                    "action": "payment_failed",
+                    "intent_id": intent_id,
                     "candidate_id": candidate_id,
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3575,6 +3871,8 @@ def payout_wallet_send_once(
             if proc.returncode != 0:
                 warnings.append("sendtoaddress failed")
                 failed_action = {
+                    "action": "payment_failed",
+                    "intent_id": intent_id,
                     "candidate_id": candidate_id,
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3589,6 +3887,8 @@ def payout_wallet_send_once(
             if not re.match(r"^[A-Za-z0-9]{26,128}$", txid):
                 warnings.append("sendtoaddress returned invalid txid")
                 failed_action = {
+                    "action": "payment_failed",
+                    "intent_id": intent_id,
                     "candidate_id": candidate_id,
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3601,6 +3901,8 @@ def payout_wallet_send_once(
 
             send_sent = True
             sent_action = {
+                "action": "sent",
+                "intent_id": intent_id,
                 "candidate_id": candidate_id,
                 "wallet": wallet,
                 "amount": expected_amount,
@@ -3801,9 +4103,17 @@ def payout_wallet_send_aggregated_once(
     with lock_path.open("w", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
+            reconcile_unresolved_payment_intents(actions_log_path, payments_snapshot_path)
             locked_pairs = load_paid_payment_pairs(actions_log_path)
             if any((source_id, wallet) in locked_pairs for source_id in source_candidate_ids):
                 return finish("blocked_already_paid")
+
+            unresolved = get_unresolved_payment_intents(actions_log_path)
+            for u in unresolved:
+                if u.get("wallet") == wallet:
+                    u_sources = set(str(x) for x in u.get("sourceCandidateIds") or [])
+                    if set(source_candidate_ids).intersection(u_sources):
+                        return finish("blocked_unresolved_payment_intent")
 
             locked_env = load_env_vars()
             locked_max_sends_raw = locked_env.get("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS")
@@ -3818,6 +4128,7 @@ def payout_wallet_send_aggregated_once(
             if not cli_path or not os.path.exists(cli_path) or not os.access(cli_path, os.X_OK):
                 warnings.append("Wallet CLI unavailable or not executable")
                 failed_action = {
+                    "action": "payment_failed",
                     "candidate_id": f"aggregate:{wallet}:{generated_at}",
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3830,18 +4141,53 @@ def payout_wallet_send_aggregated_once(
                 append_payment_action(actions_log_path, failed_action)
                 return finish("blocked_send_failed")
 
+            intent_id = f"intent:agg:{wallet}:{generated_at}"
+            intent_action = {
+                "action": "payment_intent",
+                "intent_id": intent_id,
+                "candidate_id": f"aggregate:{wallet}:{generated_at}",
+                "wallet": wallet,
+                "amount": expected_amount,
+                "status": "intent",
+                "sourceCandidateIds": source_candidate_ids,
+                "sourceCount": len(source_candidate_ids),
+                "timestamp": generated_at,
+            }
+            if carry_source_candidate_ids:
+                intent_action["carrySourceCandidateIds"] = carry_source_candidate_ids
+                intent_action["carrySourceCount"] = len(carry_source_candidate_ids)
+            append_payment_action(actions_log_path, intent_action)
+
             send_attempted = True
             try:
                 proc = subprocess.run(
-                    [cli_path, "sendtoaddress", wallet, send_amount],
+                    [cli_path, "sendtoaddress", wallet, send_amount, intent_id],
                     check=False,
                     capture_output=True,
                     text=True,
                     timeout=15,
                 )
+            except (subprocess.TimeoutExpired, TimeoutError) as exc:
+                warnings.append("sendtoaddress timed out")
+                ambiguous_action = {
+                    "action": "payment_intent_ambiguous",
+                    "intent_id": intent_id,
+                    "candidate_id": f"aggregate:{wallet}:{generated_at}",
+                    "wallet": wallet,
+                    "amount": expected_amount,
+                    "status": "ambiguous",
+                    "error": "timeout_expired",
+                    "sourceCandidateIds": source_candidate_ids,
+                    "sourceCount": len(source_candidate_ids),
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                append_payment_action(actions_log_path, ambiguous_action)
+                return finish("blocked_send_ambiguous_timeout")
             except Exception as exc:
                 warnings.append("sendtoaddress failed")
                 failed_action = {
+                    "action": "payment_failed",
+                    "intent_id": intent_id,
                     "candidate_id": f"aggregate:{wallet}:{generated_at}",
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3857,6 +4203,8 @@ def payout_wallet_send_aggregated_once(
             if proc.returncode != 0:
                 warnings.append("sendtoaddress failed")
                 failed_action = {
+                    "action": "payment_failed",
+                    "intent_id": intent_id,
                     "candidate_id": f"aggregate:{wallet}:{generated_at}",
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3873,6 +4221,8 @@ def payout_wallet_send_aggregated_once(
             if not re.match(r"^[A-Za-z0-9]{26,128}$", txid):
                 warnings.append("sendtoaddress returned invalid txid")
                 failed_action = {
+                    "action": "payment_failed",
+                    "intent_id": intent_id,
                     "candidate_id": f"aggregate:{wallet}:{generated_at}",
                     "wallet": wallet,
                     "amount": expected_amount,
@@ -3887,6 +4237,8 @@ def payout_wallet_send_aggregated_once(
 
             send_sent = True
             sent_action = {
+                "action": "sent",
+                "intent_id": intent_id,
                 "candidate_id": f"aggregate:{wallet}:{generated_at}",
                 "wallet": wallet,
                 "amount": expected_amount,
@@ -4445,6 +4797,7 @@ def auto_payout_once(
         "PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS",
     ]}
     try:
+        reconcile_unresolved_payment_intents(actions_log_path, payments_snapshot_path)
         paid_pairs = load_paid_payment_pairs(actions_log_path, candidates_path, payments_snapshot_path)
         for candidate in candidates:
             if not isinstance(candidate, dict):
@@ -4843,6 +5196,9 @@ def main() -> int:
     parser_auto.add_argument("--max-sends", type=int, default=auto_max_sends_default, help="Maximum send-once invocations for this run")
     parser_auto.add_argument("--min-payout", type=float, default=1000.0, help="Minimum payout amount")
     parser_auto.add_argument("--allowed-wallet", action="append", default=[], help="Allowed wallet address; repeatable")
+    parser_reconcile = subparsers.add_parser("reconcile-payment-intents", help="Reconcile unresolved payment intents against wallet transaction history")
+    parser_reconcile.add_argument("--actions-log", type=str, required=True, help="Path to payment-actions.jsonl")
+    parser_reconcile.add_argument("--snapshot", type=str, required=False, help="Path to payments-snapshot.json")
 
     args = parser.parse_args()
 
@@ -4960,6 +5316,17 @@ def main() -> int:
             min_payout=args.min_payout,
             max_sends=args.max_sends,
         )
+    elif args.command == "reconcile-payment-intents":
+        snapshot_p = Path(args.snapshot) if args.snapshot else None
+        res = reconcile_unresolved_payment_intents(Path(args.actions_log), snapshot_p)
+        print("Reconcile Payment Intents Summary")
+        print("=" * 80)
+        print(f"unresolved_intents_count: {res.get('unresolvedCount', 0)}")
+        print(f"reconciled_sent: {res.get('reconciledSent', 0)}")
+        print(f"reconciled_failed: {res.get('reconciledFailed', 0)}")
+        print(f"pending_unresolved: {res.get('pendingCount', 0)}")
+        print("=" * 80)
+        return 0
 
     return 0
 

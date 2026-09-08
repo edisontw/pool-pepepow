@@ -6611,7 +6611,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertEqual(data["txid"], txid)
 
         calls = cli_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(calls, [f"sendtoaddress {self.wallet} {self.amount}"])
+        self.assertTrue(calls[0].startswith(f"sendtoaddress {self.wallet} {self.amount}"))
         forbidden = ["sendmany", "walletpassphrase", "walletunlock", "signrawtransaction", "createrawtransaction"]
         for call in calls:
             for method in forbidden:
@@ -6619,11 +6619,12 @@ class WalletSendOnceTests(unittest.TestCase):
 
         with self.actions_log.open("r", encoding="utf-8") as f:
             actions = [json.loads(line) for line in f if line.strip()]
-        self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["candidate_id"], self.candidate_id)
-        self.assertEqual(actions[0]["wallet"], self.wallet)
-        self.assertAlmostEqual(actions[0]["amount"], self.amount)
-        self.assertEqual(actions[0]["txid"], txid)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0]["status"], "intent")
+        self.assertEqual(actions[1]["candidate_id"], self.candidate_id)
+        self.assertEqual(actions[1]["wallet"], self.wallet)
+        self.assertAlmostEqual(actions[1]["amount"], self.amount)
+        self.assertEqual(actions[1]["txid"], txid)
 
 
     @unittest.mock.patch('payout_helper.subprocess.run')
@@ -6681,8 +6682,9 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertFalse(data["sendSent"])
         with self.actions_log.open("r", encoding="utf-8") as f:
             actions = [json.loads(line) for line in f if line.strip()]
-        self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["status"], "failed")
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0]["status"], "intent")
+        self.assertEqual(actions[1]["status"], "failed")
         self.assertFalse(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
 
     @unittest.mock.patch('payout_helper.wallet_readonly_call')
@@ -6699,7 +6701,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self._read_result()["status"], "sent_recorded")
         mock_run.assert_called_once_with(
-            [str(cli_path), "sendtoaddress", self.wallet, "4343.625"],
+            [str(cli_path), "sendtoaddress", self.wallet, "4343.625", unittest.mock.ANY],
             check=False,
             capture_output=True,
             text=True,
@@ -6766,7 +6768,7 @@ class WalletSendOnceTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self._read_result()["status"], "sent_recorded")
         mock_run.assert_called_once_with(
-            [str(cli_path), "sendtoaddress", self.wallet, "100"],
+            [str(cli_path), "sendtoaddress", self.wallet, "100", unittest.mock.ANY],
             check=False,
             capture_output=True,
             text=True,
@@ -6774,8 +6776,9 @@ class WalletSendOnceTests(unittest.TestCase):
         )
         with self.actions_log.open("r", encoding="utf-8") as f:
             actions = [json.loads(line) for line in f if line.strip()]
-        self.assertEqual(actions[0]["sourceCandidateIds"], source_ids)
-        self.assertEqual(actions[0]["sourceCount"], 2)
+        sent_action = [a for a in actions if a.get("status") == "sent"][0]
+        self.assertEqual(sent_action["sourceCandidateIds"], source_ids)
+        self.assertEqual(sent_action["sourceCount"], 2)
         self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, source_ids[0], self.wallet))
         self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, source_ids[1], self.wallet))
 
@@ -6835,8 +6838,9 @@ class WalletSendOnceTests(unittest.TestCase):
 
         with self.actions_log.open("r", encoding="utf-8") as f:
             actions = [json.loads(line) for line in f if line.strip()]
-        self.assertEqual(len(actions), 1)
-        action = actions[0]
+        sent_actions = [a for a in actions if a.get("status") == "sent"]
+        self.assertEqual(len(sent_actions), 1)
+        action = sent_actions[0]
         self.assertEqual(action["status"], "sent")
         self.assertEqual(action["txid"], txid)
         self.assertEqual(action["carrySourceCandidateIds"], source_ids)
@@ -8475,6 +8479,312 @@ class WalletSpendableBalanceTests(unittest.TestCase):
             data = json.load(f)
         self.assertEqual(data["status"], "blocked_insufficient_balance")
         self.assertFalse(data["sendWouldBeAllowed"])
+
+
+class TestPayoutCrashSafetyAndReconciliation(unittest.TestCase):
+    """Exhaustive tests for payout crash-safety and wallet reconciliation."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp_dir.name)
+        self.candidates_path = self.tmp_path / "payout-candidates.json"
+        self.actions_log = self.tmp_path / "payment-actions.jsonl"
+        self.payments_snapshot = self.tmp_path / "payments-snapshot.json"
+        self.output_path = self.tmp_path / "payout-result.json"
+
+        self.candidate_id = "candcrashsafe00000000000000001"
+        self.wallet = "PEPEPOW1WalletCrashSafetyTest001"
+        self.amount = 1000.0
+
+        with self.candidates_path.open("w", encoding="utf-8") as f:
+            json.dump({
+                "items": [
+                    {
+                        "candidateId": self.candidate_id,
+                        "status": "ready_for_manual_review",
+                        "height": 5000,
+                        "payouts": [
+                            {"wallet": self.wallet, "amount": self.amount, "status": "pending_manual_payment"}
+                        ],
+                    }
+                ]
+            }, f)
+
+        self._old_env = {
+            "PEPEPOW_ENABLE_REAL_WALLET_PAYOUT": os.getenv("PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"),
+            "PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS": os.getenv("PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"),
+            "PEPEPOW_WALLET_CLI": os.getenv("PEPEPOW_WALLET_CLI"),
+        }
+        os.environ["PEPEPOW_ENABLE_REAL_WALLET_PAYOUT"] = "true"
+        os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
+
+    def tearDown(self):
+        for k, v in self._old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp_dir.cleanup()
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_1_crash_before_wallet_rpc(self, mock_wallet):
+        """Case 1: Intent persisted to disk, crashed before wallet RPC was called."""
+        intent_id = f"intent:{self.candidate_id}:{self.wallet}:2026-09-08T12:00:00Z"
+        payout_helper.append_payment_action(self.actions_log, {
+            "action": "payment_intent",
+            "intent_id": intent_id,
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "status": "intent",
+            "timestamp": "2026-09-08T12:00:00Z",
+        })
+
+        # Wallet has no record of this transaction
+        mock_wallet.side_effect = lambda method, params: [] if method == "listtransactions" else None
+
+        res = payout_helper.reconcile_unresolved_payment_intents(self.actions_log, self.payments_snapshot)
+        self.assertEqual(res["reconciledFailed"], 1)
+        self.assertEqual(res["reconciledSent"], 0)
+
+        # Candidate is not marked as paid, intent cleared
+        self.assertFalse(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    @unittest.mock.patch("payout_helper.subprocess.run")
+    def test_2_rpc_definite_failure(self, mock_run, mock_wallet):
+        """Case 2: RPC definitely fails (returncode != 0). Intent is recorded as failed."""
+        mock_wallet.side_effect = lambda method, params: (
+            [{"amount": 5000.0, "spendable": True}] if method == "listunspent"
+            else {"isvalid": True} if method == "validateaddress"
+            else None
+        )
+        mock_run.return_value = unittest.mock.Mock(returncode=1, stdout="", stderr="error: insufficient funds")
+
+        cli_path = self.tmp_path / "PEPEPOW-cli"
+        cli_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        cli_path.chmod(0o755)
+        os.environ["PEPEPOW_WALLET_CLI"] = str(cli_path)
+
+        rc = payout_helper.payout_wallet_send_once(
+            self.candidates_path, self.actions_log, self.payments_snapshot, self.output_path,
+            self.candidate_id, self.wallet, self.amount,
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            result = json.load(f)
+        self.assertEqual(result["status"], "blocked_send_failed")
+
+        unresolved = payout_helper.get_unresolved_payment_intents(self.actions_log)
+        self.assertEqual(len(unresolved), 0)
+        self.assertFalse(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    @unittest.mock.patch("payout_helper.subprocess.run")
+    def test_3_rpc_success_and_success_record_written(self, mock_run, mock_wallet):
+        """Case 3: RPC succeeds and success record is written and fsynced."""
+        txid = "txidcase3success00000000000000001"
+        mock_wallet.side_effect = lambda method, params: (
+            [{"amount": 5000.0, "spendable": True}] if method == "listunspent"
+            else {"isvalid": True} if method == "validateaddress"
+            else None
+        )
+        mock_run.return_value = unittest.mock.Mock(returncode=0, stdout=f"{txid}\n", stderr="")
+
+        cli_path = self.tmp_path / "PEPEPOW-cli"
+        cli_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        cli_path.chmod(0o755)
+        os.environ["PEPEPOW_WALLET_CLI"] = str(cli_path)
+
+        rc = payout_helper.payout_wallet_send_once(
+            self.candidates_path, self.actions_log, self.payments_snapshot, self.output_path,
+            self.candidate_id, self.wallet, self.amount,
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            result = json.load(f)
+        self.assertEqual(result["status"], "sent_recorded")
+        self.assertEqual(result["txid"], txid)
+
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+        unresolved = payout_helper.get_unresolved_payment_intents(self.actions_log)
+        self.assertEqual(len(unresolved), 0)
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_4_rpc_success_followed_by_crash_before_local_completion_record(self, mock_wallet):
+        """Case 4: RPC succeeds, host crashes before local sent record is written."""
+        intent_id = f"intent:{self.candidate_id}:{self.wallet}:2026-09-08T12:00:00Z"
+        payout_helper.append_payment_action(self.actions_log, {
+            "action": "payment_intent",
+            "intent_id": intent_id,
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "status": "intent",
+            "timestamp": "2026-09-08T12:00:00Z",
+        })
+
+        txid_reconciled = "txidcase4reconciled0000000000001"
+        # Wallet history has the transaction with matching comment
+        mock_wallet.side_effect = lambda method, params: [
+            {
+                "category": "send",
+                "address": self.wallet,
+                "amount": -self.amount,
+                "comment": intent_id,
+                "txid": txid_reconciled,
+                "confirmations": 1,
+                "time": 1788868800,
+            }
+        ] if method == "listtransactions" else None
+
+        res = payout_helper.reconcile_unresolved_payment_intents(self.actions_log, self.payments_snapshot)
+        self.assertEqual(res["reconciledSent"], 1)
+        self.assertEqual(res["reconciledFailed"], 0)
+
+        # Candidate is now safely marked as paid with recovered txid
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+        with self.payments_snapshot.open("r", encoding="utf-8") as f:
+            snap = json.load(f)
+        self.assertEqual(snap["items"][0]["txid"], txid_reconciled)
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    @unittest.mock.patch("payout_helper.subprocess.run")
+    def test_5_rpc_timeout_ambiguous_response(self, mock_run, mock_wallet):
+        """Case 5: RPC timeout / ambiguous response leaves intent requiring reconciliation."""
+        import subprocess
+        mock_wallet.side_effect = lambda method, params: (
+            [{"amount": 5000.0, "spendable": True}] if method == "listunspent"
+            else {"isvalid": True} if method == "validateaddress"
+            else None
+        )
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["sendtoaddress"], timeout=15)
+
+        cli_path = self.tmp_path / "PEPEPOW-cli"
+        cli_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        cli_path.chmod(0o755)
+        os.environ["PEPEPOW_WALLET_CLI"] = str(cli_path)
+
+        rc = payout_helper.payout_wallet_send_once(
+            self.candidates_path, self.actions_log, self.payments_snapshot, self.output_path,
+            self.candidate_id, self.wallet, self.amount,
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            result = json.load(f)
+        self.assertEqual(result["status"], "blocked_send_ambiguous_timeout")
+
+        # Intent is ambiguous and unresolved, blocking immediate duplicate
+        unresolved = payout_helper.get_unresolved_payment_intents(self.actions_log)
+        self.assertEqual(len(unresolved), 1)
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_6_restart_with_unresolved_payment_intent(self, mock_wallet):
+        """Case 6: Restart with unresolved payment intent blocks duplicate send until resolved."""
+        intent_id = f"intent:{self.candidate_id}:{self.wallet}:2026-09-08T12:00:00Z"
+        payout_helper.append_payment_action(self.actions_log, {
+            "action": "payment_intent",
+            "intent_id": intent_id,
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "status": "intent",
+            "timestamp": "2026-09-08T12:00:00Z",
+        })
+
+        # Wallet unreachable -> reconciliation cannot resolve
+        mock_wallet.side_effect = lambda method, params: None
+
+        paid_pairs = payout_helper.load_paid_payment_pairs(self.actions_log, self.candidates_path)
+        self.assertIn((self.candidate_id, self.wallet), paid_pairs)
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_7_wallet_reconciliation_finds_existing_transaction(self, mock_wallet):
+        """Case 7: Wallet reconciliation finds matching transaction and recovers txid."""
+        intent_id = f"intent:{self.candidate_id}:{self.wallet}:2026-09-08T12:00:00Z"
+        payout_helper.append_payment_action(self.actions_log, {
+            "action": "payment_intent",
+            "intent_id": intent_id,
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "status": "intent",
+            "timestamp": "2026-09-08T12:00:00Z",
+        })
+
+        txid = "txidcase7recovered0000000000001"
+        mock_wallet.side_effect = lambda method, params: [
+            {"category": "send", "address": self.wallet, "amount": -self.amount, "comment": intent_id, "txid": txid, "time": 1788868800}
+        ] if method == "listtransactions" else None
+
+        res = payout_helper.reconcile_unresolved_payment_intents(self.actions_log, self.payments_snapshot)
+        self.assertEqual(res["reconciledSent"], 1)
+        self.assertTrue(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_8_wallet_reconciliation_finds_no_transaction(self, mock_wallet):
+        """Case 8: Wallet reconciliation finds no transaction and safely clears the intent."""
+        intent_id = f"intent:{self.candidate_id}:{self.wallet}:2026-09-08T12:00:00Z"
+        payout_helper.append_payment_action(self.actions_log, {
+            "action": "payment_intent",
+            "intent_id": intent_id,
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "status": "intent",
+            "timestamp": "2026-09-08T12:00:00Z",
+        })
+
+        # Wallet has other txs but not this one
+        mock_wallet.side_effect = lambda method, params: [
+            {"category": "send", "address": "UnrelatedWallet", "amount": -50.0, "txid": "unrelatedtxid", "time": 1788868800}
+        ] if method == "listtransactions" else None
+
+        res = payout_helper.reconcile_unresolved_payment_intents(self.actions_log, self.payments_snapshot)
+        self.assertEqual(res["reconciledFailed"], 1)
+        self.assertFalse(payout_helper.payment_already_recorded(self.actions_log, self.candidate_id, self.wallet))
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    @unittest.mock.patch("payout_helper.subprocess.run")
+    def test_9_historical_successful_payment_is_never_resent(self, mock_run, mock_wallet):
+        """Case 9: Historical successful payment is never resent."""
+        payout_helper.append_payment_action(self.actions_log, {
+            "candidate_id": self.candidate_id,
+            "wallet": self.wallet,
+            "amount": self.amount,
+            "txid": "txidhistorical0000000000000001",
+            "status": "sent",
+            "timestamp": "2026-06-01T00:00:00Z",
+        })
+
+        cli_path = self.tmp_path / "PEPEPOW-cli"
+        cli_path.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        cli_path.chmod(0o755)
+        os.environ["PEPEPOW_WALLET_CLI"] = str(cli_path)
+
+        rc = payout_helper.payout_wallet_send_once(
+            self.candidates_path, self.actions_log, self.payments_snapshot, self.output_path,
+            self.candidate_id, self.wallet, self.amount,
+        )
+        self.assertEqual(rc, 0)
+        with self.output_path.open("r", encoding="utf-8") as f:
+            result = json.load(f)
+        self.assertEqual(result["status"], "blocked_already_paid")
+        mock_run.assert_not_called()
+
+    @unittest.mock.patch("payout_helper.wallet_readonly_call")
+    def test_10_concurrent_payout_workers_locked_out(self, mock_wallet):
+        """Case 10: Concurrent payout workers remain locked out via file lock."""
+        lock_path = payout_helper.payment_actions_lock_path(self.actions_log)
+        lock = payout_helper.NonBlockingFileLock(lock_path)
+        self.assertTrue(lock.acquire())
+        try:
+            # Second worker cannot acquire non-blocking lock
+            lock2 = payout_helper.NonBlockingFileLock(lock_path)
+            self.assertFalse(lock2.acquire())
+        finally:
+            lock.release()
 
 
 if __name__ == "__main__":
