@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +23,8 @@ RUNTIME_DIR = Path(
     os.environ.get("PEPEPOW_LIVE_STRATUM_RUNTIME_DIR", str(REPO_ROOT / ".runtime/live-stratum"))
 )
 DEFAULT_TOLERANCE = Decimal("0.00000001")
+DEFAULT_ISSUE_LIMIT = 50
+DEFAULT_SNAPSHOT_PATH = RUNTIME_DIR / "payment-audit.json"
 
 OK = "OK"
 MISSING_FROM_PAYMENTS_API = "MISSING_FROM_PAYMENTS_API"
@@ -54,7 +58,9 @@ class PaymentRecord:
     height: int | None
     confirmations: int | None
     actor: str
-    raw: dict[str, Any]
+    current_wallet_hint: str
+    has_carry_metadata: bool
+    duplicate_signature: str
 
 
 def utc_now() -> str:
@@ -71,10 +77,25 @@ def load_json(path: Path) -> Any:
         return None
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"), sort_keys=True)
+            f.write("\n")
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
+def iter_jsonl(path: Path):
+    """Yield JSON object rows without retaining the append-only source log."""
     if not path.exists():
-        return rows
+        return
     try:
         with path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -86,10 +107,9 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(row, dict):
-                    rows.append(row)
-    except Exception:
-        return []
-    return rows
+                    yield row
+    except OSError:
+        return
 
 
 def decimal_value(value: Any) -> Decimal | None:
@@ -149,6 +169,11 @@ def payment_actor(item: dict[str, Any]) -> str:
 
 
 def normalize_record(source: str, index: int, item: dict[str, Any]) -> PaymentRecord:
+    ignored = CARRY_METADATA_KEYS | TIMESTAMP_KEYS
+    normalized = {key: value for key, value in item.items() if key not in ignored}
+    signature = hashlib.sha256(
+        json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
     return PaymentRecord(
         source=source,
         source_index=index,
@@ -162,13 +187,15 @@ def normalize_record(source: str, index: int, item: dict[str, Any]) -> PaymentRe
             first_present(item, "confirmations", "confirms", "txConfirmations", "candidateConfirmations")
         ),
         actor=payment_actor(item),
-        raw=item,
+        current_wallet_hint=str(first_present(item, "currentWallet", "authorizedWallet", "latestWallet") or ""),
+        has_carry_metadata=any(key in item for key in CARRY_METADATA_KEYS),
+        duplicate_signature=signature,
     )
 
 
 def successful_action_records(actions_path: Path) -> list[PaymentRecord]:
     records: list[PaymentRecord] = []
-    for index, action in enumerate(load_jsonl(actions_path)):
+    for index, action in enumerate(iter_jsonl(actions_path)):
         if not payout_helper.action_represents_successful_payment(action):
             continue
         records.append(normalize_record("payment_actions", index, action))
@@ -244,15 +271,6 @@ def tx_wallet_amount_key(record: PaymentRecord) -> tuple[str, str, str]:
     return (record.wallet, record.txid, amount)
 
 
-def normalized_duplicate_raw(record: PaymentRecord) -> dict[str, Any]:
-    ignored = CARRY_METADATA_KEYS | TIMESTAMP_KEYS
-    return {key: value for key, value in record.raw.items() if key not in ignored}
-
-
-def has_carry_metadata(record: PaymentRecord) -> bool:
-    return any(key in record.raw for key in CARRY_METADATA_KEYS)
-
-
 def duplicate_action_rewrite_issue(rows: list[PaymentRecord]) -> dict[str, Any] | None:
     if len(rows) <= 1 or any(row.source != "payment_actions" for row in rows):
         return None
@@ -264,11 +282,11 @@ def duplicate_action_rewrite_issue(rows: list[PaymentRecord]) -> dict[str, Any] 
     same_candidate = len(candidates) == 1
     if not (same_wallet and same_amount and same_candidate):
         return None
-    if len({json.dumps(normalized_duplicate_raw(row), sort_keys=True) for row in rows}) != 1:
+    if len({row.duplicate_signature for row in rows}) != 1:
         return None
 
     timestamps = sorted(row.timestamp for row in rows if row.timestamp)
-    carry_metadata_present = any(has_carry_metadata(row) for row in rows)
+    carry_metadata_present = any(row.has_carry_metadata for row in rows)
     category = DUPLICATE_ACTION_TXID_REWRITE_HINT if carry_metadata_present else DUPLICATE_ACTION_RECORD
     return issue(
         category,
@@ -295,6 +313,116 @@ def matching_records(record: PaymentRecord, candidates: list[PaymentRecord]) -> 
         elif record_key != ("", "") and key(candidate) == record_key:
             out.append(candidate)
     return out
+
+
+class RecordIndex:
+    """Compact lookup indexes for the bounded JSON snapshots."""
+
+    def __init__(self, records: list[PaymentRecord]):
+        self.by_tx_wallet: dict[tuple[str, str], list[PaymentRecord]] = defaultdict(list)
+        self.by_candidate_wallet: dict[tuple[str, str], list[PaymentRecord]] = defaultdict(list)
+        self.by_txid: dict[str, list[PaymentRecord]] = defaultdict(list)
+        for record in records:
+            if record.txid:
+                self.by_tx_wallet[(record.txid, record.wallet)].append(record)
+                self.by_txid[record.txid].append(record)
+            if record.candidate_id or record.wallet:
+                self.by_candidate_wallet[key(record)].append(record)
+
+    def matches(self, record: PaymentRecord) -> list[PaymentRecord]:
+        matches = list(self.by_tx_wallet.get((record.txid, record.wallet), [])) if record.txid else []
+        seen = {id(item) for item in matches}
+        for item in self.by_candidate_wallet.get(key(record), []):
+            if id(item) not in seen:
+                matches.append(item)
+                seen.add(id(item))
+        return matches
+
+
+class IssueCollector:
+    def __init__(self, limit: int = DEFAULT_ISSUE_LIMIT):
+        self.limit = limit
+        self.items: list[dict[str, Any]] = []
+        self.categories: set[str] = set()
+        self.total = 0
+
+    def add(self, item: dict[str, Any]) -> None:
+        self.total += 1
+        self.categories.add(item["category"])
+        if len(self.items) < self.limit:
+            self.items.append(item)
+
+    def extend(self, items: list[dict[str, Any]]) -> None:
+        for item in items:
+            self.add(item)
+
+
+class ActionDuplicateIndex:
+    """Aggregate duplicate state without retaining historical action rows."""
+
+    def __init__(self):
+        self.by_txid: dict[str, dict[str, Any]] = {}
+        self.by_exact: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    @staticmethod
+    def _state(record: PaymentRecord) -> dict[str, Any]:
+        return {
+            "count": 0,
+            "wallets": set(), "amounts": set(), "candidates": set(), "signatures": set(),
+            "carry": False, "first": "", "last": "", "indexes": [], "record": record,
+        }
+
+    @staticmethod
+    def _add(state: dict[str, Any], record: PaymentRecord) -> None:
+        state["count"] += 1
+        state["wallets"].add(record.wallet)
+        state["amounts"].add(format(record.amount, "f") if record.amount is not None else "")
+        state["candidates"].add(record.candidate_id)
+        state["signatures"].add(record.duplicate_signature)
+        state["carry"] = state["carry"] or record.has_carry_metadata
+        if record.timestamp:
+            state["first"] = min(state["first"], record.timestamp) if state["first"] else record.timestamp
+            state["last"] = max(state["last"], record.timestamp)
+        if len(state["indexes"]) < DEFAULT_ISSUE_LIMIT:
+            state["indexes"].append(record.source_index)
+
+    def add(self, record: PaymentRecord) -> None:
+        if not record.txid:
+            return
+        tx_state = self.by_txid.setdefault(record.txid, self._state(record))
+        self._add(tx_state, record)
+        exact = (record.wallet, record.txid, format(record.amount, "f") if record.amount is not None else "")
+        exact_state = self.by_exact.setdefault(exact, self._state(record))
+        self._add(exact_state, record)
+
+    @staticmethod
+    def _rewrite(state: dict[str, Any]) -> bool:
+        return (
+            state["count"] > 1 and len(state["wallets"]) == len(state["amounts"]) == len(state["candidates"]) == 1
+            and len(state["signatures"]) == 1
+        )
+
+    def issues(self) -> list[dict[str, Any]]:
+        result = []
+        for txid, state in sorted(self.by_txid.items()):
+            if state["count"] <= 1:
+                continue
+            record = state["record"]
+            if self._rewrite(state):
+                category = DUPLICATE_ACTION_TXID_REWRITE_HINT if state["carry"] else DUPLICATE_ACTION_RECORD
+                result.append(issue(category, "successful payment action txid appears on duplicate action records", record,
+                                    txid=txid, count=state["count"], firstTimestamp=state["first"], lastTimestamp=state["last"],
+                                    recordIndexes=state["indexes"], sameWallet=True, sameAmount=True, sameCandidate=True,
+                                    hasCarryMetadata=state["carry"]))
+            else:
+                result.append(issue(DUPLICATE_TXID, "txid appears on multiple payment records", record,
+                                    txid=txid, count=state["count"], wallets=sorted(wallet for wallet in state["wallets"] if wallet),
+                                    sources=["payment_actions"]))
+        for (wallet, txid, amount), state in sorted(self.by_exact.items()):
+            if state["count"] > 1 and not self._rewrite(state):
+                result.append(issue(DUPLICATE_TXID, "wallet+txid+amount appears on multiple payment records", state["record"],
+                                    wallet=wallet, txid=txid, amount=amount, count=state["count"], sources=["payment_actions"]))
+        return result
 
 
 def issue(category: str, message: str, record: PaymentRecord | None = None, **details: Any) -> dict[str, Any]:
@@ -446,13 +574,12 @@ def suspicious_height_issues(records: list[PaymentRecord], current_height: int |
 def stale_attribution_issues(actions: list[PaymentRecord]) -> list[dict[str, Any]]:
     by_actor: dict[str, list[PaymentRecord]] = defaultdict(list)
     for record in actions:
-        hinted = first_present(record.raw, "currentWallet", "authorizedWallet", "latestWallet")
-        if hinted and str(hinted) != record.wallet:
+        if record.current_wallet_hint and record.current_wallet_hint != record.wallet:
             yield issue(
                 STALE_ADDRESS_ATTRIBUTION_HINT,
                 "payment action carries a current wallet hint different from paid wallet",
                 record,
-                expected=str(hinted),
+                expected=record.current_wallet_hint,
                 actual=record.wallet,
             )
         if record.actor:
@@ -494,51 +621,82 @@ def audit(
     explorer_path: Path,
     tolerance: Decimal,
 ) -> dict[str, Any]:
-    actions = successful_action_records(actions_path)
     payments = payment_snapshot_records(payments_path)
     activity_miners = activity_miner_records(activity_path)
     explorer = explorer_records(explorer_path) if explorer_path.exists() else []
     miner_api_source = payments + activity_miners
-    all_local_records = actions + payments + activity_miners
-    if explorer:
-        all_local_records += explorer
+    payment_index = RecordIndex(payments)
+    miner_index = RecordIndex(miner_api_source)
+    explorer_index = RecordIndex(explorer)
+    current_height = current_chain_height(pool_snapshot_path)
+    collector = IssueCollector()
+    action_duplicates = ActionDuplicateIndex()
+    action_count = 0
+    actor_wallets: dict[str, dict[str, PaymentRecord]] = defaultdict(dict)
 
-    issues: list[dict[str, Any]] = []
-    for action in actions:
-        payment_matches = matching_records(action, payments)
+    # payment-actions.jsonl is append-only: process successful records once and
+    # retain only duplicate/attribution aggregate state, never the full rows.
+    for index, row in enumerate(iter_jsonl(actions_path)):
+        if not payout_helper.action_represents_successful_payment(row):
+            continue
+        action = normalize_record("payment_actions", index, row)
+        action_count += 1
+        action_duplicates.add(action)
+        if action.current_wallet_hint and action.current_wallet_hint != action.wallet:
+            collector.add(issue(STALE_ADDRESS_ATTRIBUTION_HINT,
+                                "payment action carries a current wallet hint different from paid wallet", action,
+                                expected=action.current_wallet_hint, actual=action.wallet))
+        if action.actor and action.wallet:
+            prior = actor_wallets[action.actor].get(action.wallet)
+            if prior is None or action.timestamp >= prior.timestamp:
+                actor_wallets[action.actor][action.wallet] = action
+
+        payment_matches = payment_index.matches(action)
         if not payment_matches:
-            issues.append(issue(MISSING_FROM_PAYMENTS_API, "successful payment action is absent from payments API source", action))
+            collector.add(issue(MISSING_FROM_PAYMENTS_API, "successful payment action is absent from payments API source", action))
         else:
-            issues.extend(compare_amounts(action, payment_matches, tolerance, "payments API source"))
-            issues.extend(compare_wallets_by_txid(action, payments, "payments API source"))
+            collector.extend(compare_amounts(action, payment_matches, tolerance, "payments API source"))
+            collector.extend(compare_wallets_by_txid(action, payment_index.by_txid.get(action.txid, []), "payments API source"))
 
-        miner_matches = matching_records(action, miner_api_source)
+        miner_matches = miner_index.matches(action)
         if not miner_matches:
-            issues.append(issue(MISSING_FROM_MINER_API, "successful payment action is absent from miner API source", action))
+            collector.add(issue(MISSING_FROM_MINER_API, "successful payment action is absent from miner API source", action))
         else:
-            issues.extend(compare_amounts(action, miner_matches, tolerance, "miner API source"))
-            issues.extend(compare_wallets_by_txid(action, miner_api_source, "miner API source"))
+            collector.extend(compare_amounts(action, miner_matches, tolerance, "miner API source"))
+            collector.extend(compare_wallets_by_txid(action, miner_index.by_txid.get(action.txid, []), "miner API source"))
 
         if explorer:
-            explorer_matches = matching_records(action, explorer)
-            issues.extend(compare_amounts(action, explorer_matches, tolerance, "explorer source"))
-            issues.extend(compare_wallets_by_txid(action, explorer, "explorer source"))
+            explorer_matches = explorer_index.matches(action)
+            collector.extend(compare_amounts(action, explorer_matches, tolerance, "explorer source"))
+            collector.extend(compare_wallets_by_txid(action, explorer_index.by_txid.get(action.txid, []), "explorer source"))
+        collector.extend(suspicious_height_issues([action], current_height))
 
-    issues.extend(duplicate_issues(all_local_records))
-    issues.extend(suspicious_height_issues(all_local_records, current_chain_height(pool_snapshot_path)))
-    issues.extend(stale_attribution_issues(actions))
+    collector.extend(action_duplicates.issues())
+    for actor, wallets in actor_wallets.items():
+        if len(wallets) <= 1:
+            continue
+        latest = max(wallets.values(), key=lambda record: record.timestamp)
+        for record in wallets.values():
+            if record.wallet != latest.wallet:
+                collector.add(issue(STALE_ADDRESS_ATTRIBUTION_HINT,
+                                    "same worker/miner appears across multiple payout wallets", record,
+                                    actor=actor, latestWallet=latest.wallet))
 
-    categories = sorted({item["category"] for item in issues}) or [OK]
+    bounded_records = payments + activity_miners + explorer
+    collector.extend(duplicate_issues(bounded_records))
+    collector.extend(suspicious_height_issues(bounded_records, current_height))
+
+    categories = sorted(collector.categories) or [OK]
     return {
         "generatedAt": utc_now(),
-        "status": OK if not issues else "warning",
+        "status": OK if collector.total == 0 else "warning",
         "categories": categories,
         "counts": {
-            "successfulPaymentActions": len(actions),
+            "successfulPaymentActions": action_count,
             "paymentsApiSourceRecords": len(payments),
             "activityMinerSourceRecords": len(activity_miners),
             "explorerSourceRecords": len(explorer),
-            "issues": len(issues),
+            "issues": collector.total,
         },
         "sources": {
             "paymentActions": str(actions_path),
@@ -547,7 +705,7 @@ def audit(
             "poolSnapshot": str(pool_snapshot_path),
             "explorerSource": str(explorer_path) if explorer_path.exists() else None,
         },
-        "issues": issues,
+        "issues": collector.items,
     }
 
 
@@ -579,6 +737,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--pool-snapshot", type=Path, default=RUNTIME_DIR / "pool-snapshot.json")
     parser.add_argument("--explorer-transactions", type=Path, default=RUNTIME_DIR / "explorer-transactions.json")
     parser.add_argument("--tolerance", default=str(DEFAULT_TOLERANCE))
+    parser.add_argument("--output", type=Path, default=DEFAULT_SNAPSHOT_PATH)
+    parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--format", choices=("human", "json", "both"), default="human")
     return parser.parse_args(argv)
 
@@ -597,6 +757,8 @@ def main(argv: list[str] | None = None) -> int:
         args.explorer_transactions,
         tolerance,
     )
+    if not args.no_write:
+        atomic_write_json(args.output, result)
     if args.format in {"human", "both"}:
         print_human(result)
     if args.format == "both":

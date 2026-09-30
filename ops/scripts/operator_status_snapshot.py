@@ -12,7 +12,6 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import payment_consistency_audit
 import pool_health_summary
 
 
@@ -26,7 +25,7 @@ OUTPUT_PATH = Path(
 
 STATUSES = {"ok", "warning", "error", "unknown"}
 SEVERITY = {"ok": 0, "unknown": 1, "warning": 2, "error": 3}
-REWRITE_HINT_ONLY = {payment_consistency_audit.DUPLICATE_ACTION_TXID_REWRITE_HINT}
+REWRITE_HINT_ONLY = {"DUPLICATE_ACTION_TXID_REWRITE_HINT"}
 
 
 def utc_now() -> str:
@@ -150,7 +149,7 @@ def payment_audit_item(result: dict[str, Any]) -> dict[str, str]:
     category_set = {str(item) for item in categories} if isinstance(categories, list) else set()
     raw_status = str(result.get("status") or "").strip().upper() if isinstance(result, dict) else ""
 
-    if raw_status == payment_consistency_audit.OK or category_set == {payment_consistency_audit.OK}:
+    if raw_status == "OK" or category_set == {"OK"}:
         status = "ok"
         message = "Payments consistent"
     elif category_set and category_set <= REWRITE_HINT_ONLY:
@@ -194,18 +193,11 @@ def build_operator_status(args: argparse.Namespace) -> dict[str, Any]:
     )
     health = pool_health_summary.build_summary(health_args)
     watchdog = read_json(Path(args.watchdog_snapshot or runtime_dir / "pool-wallet-watchdog.json"))
-    audit_result = payment_consistency_audit.audit(
-        Path(args.actions_log),
-        Path(args.payments_snapshot or runtime_dir / "payments-snapshot.json"),
-        Path(args.activity_snapshot or runtime_dir / "activity-snapshot.json"),
-        Path(args.pool_snapshot or runtime_dir / "pool-snapshot.json"),
-        Path(args.explorer_transactions),
-        Decimal(str(args.tolerance)),
-    )
+    audit_result = read_json(Path(getattr(args, "audit_snapshot", None) or runtime_dir / "payment-audit.json"))
     items = [
         pool_health_item(health, args.snapshot_stale_seconds),
         wallet_watchdog_item(watchdog),
-        payment_audit_item(audit_result),
+        payment_audit_item(audit_result or {}),
     ]
     return {
         "generatedAt": utc_now(),
@@ -226,9 +218,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--watchdog-snapshot", default=None)
     parser.add_argument("--launch-env", default=None)
     parser.add_argument("--pool-snapshot", default=None)
-    parser.add_argument("--actions-log", default=str(RUNTIME_DIR / "payment-actions.jsonl"))
-    parser.add_argument("--explorer-transactions", default=str(RUNTIME_DIR / "explorer-transactions.json"))
-    parser.add_argument("--tolerance", default=str(payment_consistency_audit.DEFAULT_TOLERANCE))
+    parser.add_argument("--audit-snapshot", default=str(RUNTIME_DIR / "payment-audit.json"))
     parser.add_argument("--snapshot-stale-seconds", type=float, default=300.0)
     parser.add_argument("--format", choices=("human", "json", "both"), default="human")
     parser.add_argument("--no-write", action="store_true")

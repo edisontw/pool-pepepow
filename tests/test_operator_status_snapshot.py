@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ops" / "scripts"))
@@ -129,6 +130,10 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
                 json.dumps({"generatedAt": now, "status": "ok", "summary": "internal"}),
                 encoding="utf-8",
             )
+            (root / "payment-audit.json").write_text(
+                json.dumps({"generatedAt": now, "status": "OK", "categories": ["OK"], "counts": {"issues": 0}}),
+                encoding="utf-8",
+            )
 
             args = argparse.Namespace(
                 runtime_dir=str(root),
@@ -141,9 +146,7 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
                 watchdog_snapshot=str(root / "pool-wallet-watchdog.json"),
                 launch_env=str(root / "launch.env"),
                 pool_snapshot=str(root / "pool-snapshot.json"),
-                actions_log=str(root / "payment-actions.jsonl"),
-                explorer_transactions=str(root / "explorer-transactions.json"),
-                tolerance=str(payment_consistency_audit.DEFAULT_TOLERANCE),
+                audit_snapshot=str(root / "payment-audit.json"),
                 snapshot_stale_seconds=999999999.0,
             )
 
@@ -153,6 +156,25 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in payload["items"]], ["pool_health", "wallet_watchdog", "payment_audit"])
         for item in payload["items"]:
             self.assertEqual(set(item), {"key", "label", "status", "message"})
+
+    def test_operator_status_uses_audit_snapshot_without_rescanning_actions(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            now = "2999-01-01T00:00:00Z"
+            for filename in ("pool-snapshot.json", "activity-snapshot.json", "rounds-snapshot.json", "payments-snapshot.json", "accepted-candidates.json"):
+                payload = {"generatedAt": now}
+                if filename == "pool-snapshot.json": payload["network"] = {"height": 10}
+                if filename == "activity-snapshot.json": payload["meta"] = {"lastShareAt": now}; payload["miners"] = {}
+                if filename == "rounds-snapshot.json": payload["rounds"] = []
+                if filename == "payments-snapshot.json": payload["items"] = []
+                if filename == "accepted-candidates.json": payload["accepted_candidates"] = []
+                (root / filename).write_text(json.dumps(payload), encoding="utf-8")
+            (root / "payment-audit.json").write_text(json.dumps({"status": "OK", "categories": ["OK"]}), encoding="utf-8")
+            (root / "pool-wallet-watchdog.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+            args = status_snapshot.parse_args(["--runtime-dir", str(root), "--audit-snapshot", str(root / "payment-audit.json"), "--no-write"])
+            with mock.patch("payment_consistency_audit.audit", side_effect=AssertionError("must not rescan")):
+                payload = status_snapshot.build_operator_status(args)
+        self.assertEqual(payload["status"], "ok")
 
 
 if __name__ == "__main__":

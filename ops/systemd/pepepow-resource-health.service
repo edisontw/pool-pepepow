@@ -1,0 +1,11 @@
+[Unit]
+Description=PEPEPOW lightweight resource health snapshot
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/bin/python3 /home/ubuntu/pool-pepepow/ops/scripts/resource_health.py --output /var/lib/pepepow-pool/resource-health.json
+StandardOutput=journal
+StandardError=journal
+Nice=10

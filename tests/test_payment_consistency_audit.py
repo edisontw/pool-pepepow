@@ -230,6 +230,20 @@ class PaymentConsistencyAuditTests(unittest.TestCase):
 
         self.assertIn(audit.STALE_ADDRESS_ATTRIBUTION_HINT, self.categories(result))
 
+    def test_streaming_actions_log_handles_malformed_and_many_rows(self):
+        visible = [
+            {"status": "sent", "candidate_id": f"cand-{index}", "wallet": f"wallet-{index}", "amount": 1, "txid": f"tx-{index}"}
+            for index in range(600)
+        ]
+        self.write_payments(visible)
+        with self.actions.open("w", encoding="utf-8") as f:
+            f.write("not-json\n")
+            for row in visible:
+                f.write(json.dumps(row) + "\n")
+        result = self.run_audit()
+        self.assertEqual(result["counts"]["successfulPaymentActions"], len(visible))
+        self.assertEqual(result["status"], "OK")
+
 
 if __name__ == "__main__":
     unittest.main()
