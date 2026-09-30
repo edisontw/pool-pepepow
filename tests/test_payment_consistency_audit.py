@@ -2,6 +2,7 @@
 import json
 import sys
 import tempfile
+import time
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -233,16 +234,29 @@ class PaymentConsistencyAuditTests(unittest.TestCase):
     def test_streaming_actions_log_handles_malformed_and_many_rows(self):
         visible = [
             {"status": "sent", "candidate_id": f"cand-{index}", "wallet": f"wallet-{index}", "amount": 1, "txid": f"tx-{index}"}
-            for index in range(600)
+            for index in range(5000)
         ]
         self.write_payments(visible)
         with self.actions.open("w", encoding="utf-8") as f:
             f.write("not-json\n")
             for row in visible:
                 f.write(json.dumps(row) + "\n")
+        started = time.monotonic()
         result = self.run_audit()
+        self.assertLess(time.monotonic() - started, 5.0)
         self.assertEqual(result["counts"]["successfulPaymentActions"], len(visible))
         self.assertEqual(result["status"], "OK")
+
+    def test_issue_counts_are_retained_when_issue_details_are_bounded(self):
+        rows = [
+            {"status": "sent", "candidate_id": f"cand-{index}", "wallet": f"wallet-{index}", "amount": 1, "txid": f"tx-{index}"}
+            for index in range(audit.DEFAULT_ISSUE_LIMIT + 3)
+        ]
+        self.write_actions(rows)
+        result = self.run_audit()
+        self.assertEqual(len(result["issues"]), audit.DEFAULT_ISSUE_LIMIT)
+        self.assertEqual(result["counts"]["issues"], len(rows) * 2)
+        self.assertEqual(result["counts"]["issuesByCategory"][audit.MISSING_FROM_PAYMENTS_API], len(rows))
 
 
 if __name__ == "__main__":

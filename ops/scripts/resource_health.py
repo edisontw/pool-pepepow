@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -162,7 +163,10 @@ def main() -> int:
         critical = True
     if warnings:
         level = "critical" if critical else "warning"
-        print(f"resource-health-{level} " + " ".join(warnings))
+        message = f"resource-health-{level} " + " ".join(warnings)
+        # stderr is captured by the service journal; keeping the message short
+        # makes it useful as a low-noise early warning.
+        print(message, file=sys.stderr)
     return 0
 
 

@@ -144,7 +144,25 @@ def wallet_watchdog_item(snapshot: dict[str, Any] | None) -> dict[str, str]:
     }
 
 
-def payment_audit_item(result: dict[str, Any]) -> dict[str, str]:
+def audit_snapshot_is_fresh(result: dict[str, Any], stale_seconds: float) -> bool:
+    generated_at = result.get("generatedAt") if isinstance(result, dict) else None
+    if not isinstance(generated_at, str):
+        return False
+    try:
+        timestamp = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return 0 <= (datetime.now(timezone.utc) - timestamp).total_seconds() <= stale_seconds
+
+
+def payment_audit_item(result: dict[str, Any], stale_seconds: float = 300.0) -> dict[str, str]:
+    if not audit_snapshot_is_fresh(result, stale_seconds):
+        return {
+            "key": "payment_audit",
+            "label": "Payment Audit",
+            "status": "unknown",
+            "message": "Payment audit unavailable",
+        }
     categories = result.get("categories") if isinstance(result, dict) else None
     category_set = {str(item) for item in categories} if isinstance(categories, list) else set()
     raw_status = str(result.get("status") or "").strip().upper() if isinstance(result, dict) else ""
@@ -197,7 +215,7 @@ def build_operator_status(args: argparse.Namespace) -> dict[str, Any]:
     items = [
         pool_health_item(health, args.snapshot_stale_seconds),
         wallet_watchdog_item(watchdog),
-        payment_audit_item(audit_result or {}),
+        payment_audit_item(audit_result or {}, args.snapshot_stale_seconds),
     ]
     return {
         "generatedAt": utc_now(),

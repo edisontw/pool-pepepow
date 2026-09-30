@@ -79,12 +79,14 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
         self.assertEqual(computed_growth["message"], "Review wallet growth")
 
     def test_payment_audit_rewrite_hint_only_is_warning(self):
+        now = status_snapshot.utc_now()
         item = status_snapshot.payment_audit_item(
             {
+                "generatedAt": now,
                 "status": "warning",
                 "categories": [payment_consistency_audit.DUPLICATE_ACTION_TXID_REWRITE_HINT],
                 "issues": [{"category": payment_consistency_audit.DUPLICATE_ACTION_TXID_REWRITE_HINT}],
-            }
+            }, stale_seconds=999999999.0
         )
 
         self.assertEqual(item["status"], "warning")
@@ -92,15 +94,25 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
         self.assertNotIn("issues", item)
 
     def test_payment_audit_other_issue_is_error(self):
+        now = status_snapshot.utc_now()
         item = status_snapshot.payment_audit_item(
             {
+                "generatedAt": now,
                 "status": "warning",
                 "categories": [payment_consistency_audit.MISSING_FROM_PAYMENTS_API],
-            }
+            }, stale_seconds=999999999.0
         )
 
         self.assertEqual(item["status"], "error")
         self.assertEqual(item["message"], "Payment records need review")
+
+    def test_payment_audit_stale_snapshot_is_unknown(self):
+        item = status_snapshot.payment_audit_item(
+            {"generatedAt": "2000-01-01T00:00:00Z", "status": "OK", "categories": ["OK"]},
+            stale_seconds=300.0,
+        )
+        self.assertEqual(item["status"], "unknown")
+        self.assertEqual(item["message"], "Payment audit unavailable")
 
     def test_build_operator_status_exposes_only_public_fields(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -131,7 +143,7 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "payment-audit.json").write_text(
-                json.dumps({"generatedAt": now, "status": "OK", "categories": ["OK"], "counts": {"issues": 0}}),
+                json.dumps({"generatedAt": status_snapshot.utc_now(), "status": "OK", "categories": ["OK"], "counts": {"issues": 0}}),
                 encoding="utf-8",
             )
 
@@ -169,7 +181,7 @@ class OperatorStatusSnapshotTests(unittest.TestCase):
                 if filename == "payments-snapshot.json": payload["items"] = []
                 if filename == "accepted-candidates.json": payload["accepted_candidates"] = []
                 (root / filename).write_text(json.dumps(payload), encoding="utf-8")
-            (root / "payment-audit.json").write_text(json.dumps({"status": "OK", "categories": ["OK"]}), encoding="utf-8")
+            (root / "payment-audit.json").write_text(json.dumps({"generatedAt": status_snapshot.utc_now(), "status": "OK", "categories": ["OK"]}), encoding="utf-8")
             (root / "pool-wallet-watchdog.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")
             args = status_snapshot.parse_args(["--runtime-dir", str(root), "--audit-snapshot", str(root / "payment-audit.json"), "--no-write"])
             with mock.patch("payment_consistency_audit.audit", side_effect=AssertionError("must not rescan")):

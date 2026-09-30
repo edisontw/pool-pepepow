@@ -344,11 +344,13 @@ class IssueCollector:
         self.limit = limit
         self.items: list[dict[str, Any]] = []
         self.categories: set[str] = set()
+        self.category_counts: dict[str, int] = defaultdict(int)
         self.total = 0
 
     def add(self, item: dict[str, Any]) -> None:
         self.total += 1
         self.categories.add(item["category"])
+        self.category_counts[item["category"]] += 1
         if len(self.items) < self.limit:
             self.items.append(item)
 
@@ -697,6 +699,7 @@ def audit(
             "activityMinerSourceRecords": len(activity_miners),
             "explorerSourceRecords": len(explorer),
             "issues": collector.total,
+            "issuesByCategory": dict(sorted(collector.category_counts.items())),
         },
         "sources": {
             "paymentActions": str(actions_path),
