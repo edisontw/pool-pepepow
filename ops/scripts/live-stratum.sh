@@ -1463,6 +1463,7 @@ auto_payout_once_service() {
   load_launch_env_if_present
 
   local followup_count max_sends min_payout one_shot_wallet_max_sends allowed_wallets_env allowed_wallets_args allow_any_wallet
+  local workflow_lock workflow_lock_fd stage_started
   followup_count="${PEPEPOW_AUTO_PAYOUT_FOLLOWUP_COUNT:-300}"
   min_payout="${PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT-${MIN_PAYOUT:-1000}}"
   one_shot_wallet_max_sends="1"
@@ -1495,6 +1496,23 @@ auto_payout_once_service() {
     fi
   fi
 
+  workflow_lock="${PEPEPOW_AUTO_PAYOUT_WORKFLOW_LOCK:-/run/lock/pepepow-pool-auto-payout.lock}"
+  exec {workflow_lock_fd}>"${workflow_lock}" || {
+    echo "auto-payout-workflow-lock-error path=${workflow_lock}" >&2
+    return 1
+  }
+  if ! flock -n "${workflow_lock_fd}"; then
+    echo "auto-payout-workflow-lock-busy path=${workflow_lock}; skipping without payout"
+    eval "exec ${workflow_lock_fd}>&-"
+    return 0
+  fi
+
+  auto_payout_stage() {
+    local stage_name="$1"
+    local stage_seconds=$((SECONDS - stage_started))
+    echo "auto-payout-stage ${stage_name} seconds=${stage_seconds}"
+  }
+
   allowed_wallets_args=()
   if [[ -n "${allowed_wallets_env}" ]]; then
     IFS=',' read -ra ADDR <<< "${allowed_wallets_env}"
@@ -1507,13 +1525,24 @@ auto_payout_once_service() {
   fi
 
   echo "auto_payout_followup_count: ${followup_count}"
+  stage_started=${SECONDS}
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" candidate_followup_service candidate-followup "${followup_count}" --record
+  auto_payout_stage candidate-followup
+  stage_started=${SECONDS}
   accepted_candidates_service
+  auto_payout_stage accepted-candidates
+  stage_started=${SECONDS}
   track_rounds_service
+  auto_payout_stage track-rounds
+  stage_started=${SECONDS}
   payout_carry_service
+  auto_payout_stage payout-carry-pre
+  stage_started=${SECONDS}
   PEPEPOW_MIN_PAYOUT="${min_payout}" PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" payout_candidates_service
+  auto_payout_stage payout-candidates
 
   local auto_payout_rc
+  stage_started=${SECONDS}
   PEPEPOW_MIN_PAYOUT="${min_payout}" \
   PEPEPOW_POOL_FEE_PERCENT="${POOL_FEE_PERCENT}" \
   PEPEPOW_ENABLE_REAL_WALLET_PAYOUT="${REAL_WALLET_PAYOUT_ENABLED}" \
@@ -1529,9 +1558,12 @@ auto_payout_once_service() {
       --min-payout "${min_payout}" \
       "${allowed_wallets_args[@]}"
   auto_payout_rc=$?
+  auto_payout_stage payout-helper-auto-payout
+  stage_started=${SECONDS}
   payout_carry_service
+  auto_payout_stage payout-carry-post
   payout_review_check_service || true
-  solo_auto_payout_once_service || true
+  unset -f auto_payout_stage
   return "${auto_payout_rc}"
 }
 

@@ -1534,6 +1534,47 @@ class PayoutAccountingTests(unittest.TestCase):
             self.assertNotEqual(next_pos, -1, expected)
             cursor = next_pos
 
+    def test_live_stratum_sh_auto_payout_workflow_lock_skips_without_python_call(self):
+        import os
+        import subprocess
+        import time
+
+        sh_path = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+        lock_path = self.tmp_path / "auto-payout.lock"
+        marker_path = self.tmp_path / "python-invoked"
+        bin_path = self.tmp_path / "bin"
+        bin_path.mkdir()
+        python_stub = bin_path / "python3"
+        python_stub.write_text(
+            "#!/usr/bin/env bash\nprintf invoked > \"${PEPEPOW_TEST_PYTHON_MARKER}\"\nexit 99\n",
+            encoding="utf-8",
+        )
+        python_stub.chmod(0o755)
+
+        holder = subprocess.Popen(["flock", "-n", str(lock_path), "sleep", "5"])
+        try:
+            time.sleep(0.1)
+            env = dict(os.environ)
+            env.update({
+                "PEPEPOW_LIVE_STRATUM_RUNTIME_DIR": str(self.tmp_path / "runtime"),
+                "PEPEPOW_AUTO_PAYOUT_WORKFLOW_LOCK": str(lock_path),
+                "PEPEPOW_AUTO_PAYOUT_MIN_PAYOUT": "10",
+                "PEPEPOW_AUTO_PAYOUT_MAX_SENDS": "1",
+                "PEPEPOW_AUTO_PAYOUT_ALLOW_ANY_WALLET": "true",
+                "PEPEPOW_TEST_PYTHON_MARKER": str(marker_path),
+                "PATH": f"{bin_path}:{env['PATH']}",
+            })
+            result = subprocess.run(
+                [str(sh_path), "auto-payout-once"], env=env, capture_output=True, text=True
+            )
+        finally:
+            holder.terminate()
+            holder.wait()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("auto-payout-workflow-lock-busy", result.stdout)
+        self.assertFalse(marker_path.exists(), "second workflow must not invoke payout helper")
+
     def test_payout_candidates_harden_rules(self):
         # 1. Missing reward
         accepted_data = {
