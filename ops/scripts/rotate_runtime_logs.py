@@ -52,7 +52,6 @@ def is_target(path: Path) -> bool:
     return (
         name.endswith(".log")
         or name.endswith("-evidence.jsonl")
-        or name == "candidate-outcome-events.jsonl"
     )
 
 
