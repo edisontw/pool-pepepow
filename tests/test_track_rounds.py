@@ -15,6 +15,95 @@ import track_rounds  # noqa: E402
 
 
 class TrackRoundsTests(unittest.TestCase):
+    def test_frozen_pool_attribution_survives_missing_raw_history_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cand_path = root / "accepted.json"
+            share_path = root / "share-events.jsonl"
+            out_path = root / "rounds.json"
+            ledger = root / "round-attribution.jsonl"
+            candidate_hash = "a" * 64
+            candidates = {"accepted_candidates": [
+                {"candidate_hash": candidate_hash, "lifecycle_status": "confirmed",
+                 "matched_height": 1, "submit_timestamp": "2026-06-05T12:10:00Z",
+                 "confirmations": 120, "mining_mode": "pool"},
+                # Explicit SOLO candidate must not become a Pool boundary.
+                {"candidate_hash": "b" * 64, "lifecycle_status": "confirmed",
+                 "matched_height": 2, "submit_timestamp": "2026-06-05T12:12:00Z",
+                 "confirmations": 120, "mining_mode": "solo"},
+                {"candidate_hash": "d" * 64, "lifecycle_status": "confirmed",
+                 "matched_height": 3, "submit_timestamp": "2026-06-05T12:20:00Z",
+                 "confirmations": 120, "mining_mode": "pool"},
+            ]}
+            cand_path.write_text(json.dumps(candidates), encoding="utf-8")
+
+            def run():
+                old_argv = sys.argv
+                sys.argv = ["track_rounds.py", "--accepted-candidates", str(cand_path),
+                            "--share-log", str(share_path), "--output", str(out_path),
+                            "--attribution-ledger", str(ledger)]
+                try:
+                    self.assertEqual(track_rounds.main(), 0)
+                finally:
+                    sys.argv = old_argv
+                return json.loads(out_path.read_text(encoding="utf-8"))
+
+            share_path.write_text("\n".join([
+                json.dumps({"wallet": "pool-wallet", "worker": "rig1",
+                            "timestamp": "2026-06-05T12:09:00Z", "accepted": True,
+                            "miningMode": "pool", "submit": {"difficulty": 2.5}}),
+                json.dumps({"wallet": "solo-wallet", "timestamp": "2026-06-05T12:09:30Z",
+                            "accepted": True, "miningMode": "solo",
+                            "submit": {"difficulty": 100.0}}),
+                json.dumps({"wallet": "after-solo", "timestamp": "2026-06-05T12:15:00Z",
+                            "accepted": True, "miningMode": "pool",
+                            "submit": {"difficulty": 1.0}}),
+            ]) + "\n", encoding="utf-8")
+            initial_rounds = run()["rounds"]
+            first = initial_rounds[0]
+            self.assertEqual(first["shares"]["pool-wallet"]["share_score"], 2.5)
+            self.assertNotIn("solo-wallet", first["shares"])
+            self.assertEqual(initial_rounds[1]["shares"]["after-solo"]["share_count"], 1)
+            self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
+
+            # Raw source disappears; the frozen ledger continues to supply exact weights.
+            share_path.unlink()
+            second = run()["rounds"][0]
+            self.assertTrue(second["attribution_persisted"])
+            self.assertEqual(second["shares"], first["shares"])
+            self.assertEqual(second["total_share_score"], 2.5)
+            self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
+
+            # Malformed later input and a newly available conflicting weight cannot replace it.
+            share_path.write_text("{malformed\n" + json.dumps({
+                "wallet": "other", "timestamp": "2026-06-05T12:09:00Z", "accepted": True,
+                "submit": {"difficulty": 99.0}}) + "\n", encoding="utf-8")
+            third = run()["rounds"][0]
+            self.assertEqual(third["shares"], first["shares"])
+            self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_no_genuine_attribution_remains_blocked_and_solo_shares_are_excluded(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cand_path, share_path, out_path = root / "accepted.json", root / "shares.jsonl", root / "rounds.json"
+            cand_path.write_text(json.dumps({"accepted_candidates": [{
+                "candidate_hash": "c" * 64, "lifecycle_status": "confirmed",
+                "matched_height": 3, "submit_timestamp": "2026-06-05T12:10:00Z",
+                "confirmations": 100, "mining_mode": "pool"}]}), encoding="utf-8")
+            share_path.write_text(json.dumps({"wallet": "solo-only", "timestamp": "2026-06-05T12:09:00Z",
+                "accepted": True, "miningMode": "solo", "submit": {"difficulty": 1.0}}) + "\n", encoding="utf-8")
+            old_argv = sys.argv
+            sys.argv = ["track_rounds.py", "--accepted-candidates", str(cand_path),
+                        "--share-log", str(share_path), "--output", str(out_path)]
+            try:
+                self.assertEqual(track_rounds.main(), 0)
+            finally:
+                sys.argv = old_argv
+            round_item = json.loads(out_path.read_text(encoding="utf-8"))["rounds"][0]
+            self.assertEqual(round_item["attribution_status"], "empty")
+            self.assertEqual(round_item["total_share_count"], 0)
+            self.assertEqual(round_item["shares"], {})
+
     def test_round_safety_and_attribution(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cand_path = Path(tmpdir) / "accepted-candidates.json"
@@ -1073,4 +1162,3 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertEqual(round_item["total_share_score"], 3.0)
         self.assertNotIn("walletSolo", round_item["shares"])
         self.assertIn("walletPool", round_item["shares"])
-

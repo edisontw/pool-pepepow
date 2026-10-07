@@ -1190,6 +1190,7 @@ track_rounds_service() {
     --share-log "${SHARE_LOG}" \
     --activity-snapshot "${ACTIVITY_SNAPSHOT}" \
     --output "${output_rounds}" \
+    --attribution-ledger "${RUNTIME_DIR}/round-attribution.jsonl" \
     --max-share-lines "${max_share_lines}"
 }
 

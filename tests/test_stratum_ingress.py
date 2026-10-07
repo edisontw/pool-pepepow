@@ -103,6 +103,11 @@ class FollowupFoundRpcClient:
         return {"hash": block_hash, "height": 123456}
 
 
+class FollowupInactiveRpcClient:
+    def get_block_header(self, block_hash: str) -> dict[str, object]:
+        return {"hash": block_hash, "height": 123456, "confirmations": -1}
+
+
 class FollowupNotFoundRpcClient:
     def get_block_header(self, block_hash: str) -> dict[str, object]:
         raise DaemonRpcResponseError(
@@ -688,6 +693,15 @@ class StratumIngressTests(unittest.IsolatedAsyncioTestCase):
             result["followupNote"], "candidate-block-hash-found-on-local-chain"
         )
         self.assertIsInstance(result["followupCheckedAt"], str)
+
+    def test_candidate_followup_inactive_block_is_not_a_chain_match(self):
+        result = pool_core_daemon_rpc.check_candidate_followup(
+            "ab" * 32,
+            rpc_client=FollowupInactiveRpcClient(),
+        )
+        self.assertEqual(result["followupStatus"], "no-match-found")
+        self.assertEqual(result["followupNote"], "candidate-block-hash-not-active-chain")
+        self.assertIsNone(result["followupObservedHeight"])
 
     def test_candidate_followup_check_not_found(self):
         result = pool_core_daemon_rpc.check_candidate_followup(

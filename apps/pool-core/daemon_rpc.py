@@ -400,6 +400,14 @@ def check_candidate_followup(
         return result
 
     result["followupStatus"] = "match-found"
+    try:
+        confirmations = int(header.get("confirmations"))
+    except (TypeError, ValueError):
+        confirmations = None
+    if confirmations == -1:
+        result["followupStatus"] = "no-match-found"
+        result["followupNote"] = "candidate-block-hash-not-active-chain"
+        return result
     result["followupObservedHeight"] = header.get("height")
     result["followupObservedBlockHash"] = (
         header.get("hash") if isinstance(header.get("hash"), str) else normalized_hash
@@ -497,4 +505,3 @@ def extract_block_reward(block_data: dict[str, Any]) -> float | None:
         return total_reward
     except (ValueError, TypeError, IndexError, AttributeError):
         return None
-

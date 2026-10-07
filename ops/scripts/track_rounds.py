@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import math
+import os
 import re
 import sys
 from bisect import bisect_right
@@ -102,6 +105,131 @@ def tail_share_log_segments(active_log_path: Path, max_lines: int) -> tuple[list
     return selected, len(segments)
 
 
+def valid_attribution(record: Any) -> bool:
+    if not isinstance(record, dict) or not isinstance(record.get("shares"), dict):
+        return False
+    try:
+        count = int(record.get("total_share_count") or 0)
+        score = float(record.get("total_share_score") or 0)
+    except (TypeError, ValueError):
+        return False
+    if count <= 0 or not math.isfinite(score) or score <= 0 or not record["shares"]:
+        return False
+    wallet_scores = 0.0
+    wallet_count = 0
+    wallet_percent = 0.0
+    for wallet, item in record["shares"].items():
+        if not isinstance(wallet, str) or not wallet or not isinstance(item, dict):
+            return False
+        try:
+            item_count = int(item.get("share_count") or 0)
+            wallet_count += item_count
+            weight = float(item.get("share_score") or 0)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(weight) or weight <= 0 or item_count <= 0:
+            return False
+        wallet_scores += weight
+        try:
+            percent = float(item.get("share_percent"))
+        except (TypeError, ValueError):
+            return False
+        expected_percent = round(weight / score * 100, 6)
+        if not math.isfinite(percent) or not math.isclose(percent, expected_percent, abs_tol=0.000001):
+            return False
+        wallet_percent += percent
+        workers = item.get("workers")
+        if not isinstance(workers, dict) or not workers:
+            return False
+        worker_count = 0
+        worker_score = 0.0
+        for worker in workers.values():
+            if not isinstance(worker, dict):
+                return False
+            try:
+                item_worker_count = int(worker.get("share_count") or 0)
+                worker_count += item_worker_count
+                worker_weight = float(worker.get("share_score") or 0)
+                worker_percent = float(worker.get("share_percent"))
+                wallet_worker_percent = float(worker.get("wallet_share_percent"))
+            except (TypeError, ValueError):
+                return False
+            if (worker_weight <= 0 or not math.isfinite(worker_weight) or item_worker_count <= 0
+                    or not math.isclose(worker_percent, round(worker_weight / score * 100, 6), abs_tol=0.000001)
+                    or not math.isclose(wallet_worker_percent, round(worker_weight / weight * 100, 6), abs_tol=0.000001)):
+                return False
+            worker_score += worker_weight
+        if worker_count != item_count or not math.isclose(worker_score, weight, rel_tol=1e-8, abs_tol=1e-8):
+            return False
+    return (wallet_count == count and math.isclose(wallet_scores, score, rel_tol=1e-8, abs_tol=1e-8)
+            and math.isclose(wallet_percent, 100.0, abs_tol=0.001))
+
+
+def attribution_record(round_item: dict[str, Any], previous_boundary: Any) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "miningMode": "pool",
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "candidate_hash": round_item["candidate_hash"],
+        "round_id": round_item["round_id"],
+        "submit_timestamp": round_item.get("submit_timestamp"),
+        "previous_pool_boundary": previous_boundary,
+        "total_share_count": round_item["total_share_count"],
+        "total_share_score": round_item["total_share_score"],
+        "wallet_count": round_item["wallet_count"],
+        "worker_count": round_item["worker_count"],
+        "shares": round_item["shares"],
+    }
+
+
+def load_attribution_ledger(path: Path) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    if not path.exists():
+        return records
+    with path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"Warning: malformed attribution ledger row {line_number} ignored", file=sys.stderr)
+                continue
+            key = str(item.get("candidate_hash") or "") if isinstance(item, dict) else ""
+            if (not re.fullmatch(r"[0-9a-fA-F]{64}", key) or item.get("miningMode") != "pool"
+                    or not valid_attribution(item)):
+                print(f"Warning: invalid attribution ledger row {line_number} ignored", file=sys.stderr)
+                continue
+            if key in records and records[key] != item:
+                print(f"Warning: conflicting attribution ledger row for {key}; first record retained", file=sys.stderr)
+                continue
+            records[key] = item
+    return records
+
+
+def append_attribution(path: Path, record: dict[str, Any]) -> bool:
+    """Append one immutable record under an advisory lock; return whether added."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_APPEND, 0o640)
+    with os.fdopen(fd, "r+", encoding="utf-8") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        stream.seek(0)
+        for line in stream:
+            try:
+                previous = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(previous, dict) and previous.get("candidate_hash") == record["candidate_hash"]:
+                prior_identity = {key: value for key, value in previous.items() if key != "created_at"}
+                new_identity = {key: value for key, value in record.items() if key != "created_at"}
+                if prior_identity == new_identity:
+                    return False
+                raise ValueError(f"conflicting immutable attribution exists for {record['candidate_hash']}")
+        stream.seek(0, os.SEEK_END)
+        stream.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+        return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -134,6 +262,8 @@ def main() -> int:
         default=100000,
         help="Max lines of share events to process from tail",
     )
+    parser.add_argument("--attribution-ledger", type=str, default=None,
+                        help="Append-only canonical Pool round attribution ledger")
     parser.add_argument(
         "--min-share-difficulty",
         type=float,
@@ -142,6 +272,12 @@ def main() -> int:
     )
     args = parser.parse_args()
     output_path = Path(args.output)
+    ledger_path = Path(args.attribution_ledger) if args.attribution_ledger else output_path.with_name("round-attribution.jsonl")
+    try:
+        ledger_by_hash = load_attribution_ledger(ledger_path)
+    except OSError as exc:
+        print(f"Error loading attribution ledger: {exc}", file=sys.stderr)
+        return 1
 
     # Load accepted candidates
     cand_path = Path(args.accepted_candidates)
@@ -346,6 +482,7 @@ def main() -> int:
     # Compute rounds and attribute shares
     rounds_list = []
     previous_boundary_ts = datetime.min.replace(tzinfo=timezone.utc)
+    attribution_added = 0
     for i, c in enumerate(round_cands):
         c_ts = parse_timestamp(c.get("submit_timestamp"))
         if c.get("lifecycle_status") == "orphan":
@@ -442,9 +579,52 @@ def main() -> int:
             "attribution_reason": attribution_reason,
         }
 
+        candidate_hash = str(c.get("candidate_hash") or "")
+        persisted = ledger_by_hash.get(candidate_hash)
+        if persisted is None:
+            # A previously generated rounds snapshot is canonical historical evidence;
+            # migrate valid weights once so subsequent refreshes no longer depend on it.
+            old = existing_rounds_by_hash.get(candidate_hash)
+            if (re.fullmatch(r"[0-9a-fA-F]{64}", candidate_hash)
+                    and (str(c.get("mining_mode") or c.get("miningMode") or "pool").strip().lower() == "pool")
+                    and isinstance(old, dict) and valid_attribution(old)):
+                persisted_record = attribution_record(old, None)
+                try:
+                    if append_attribution(ledger_path, persisted_record):
+                        attribution_added += 1
+                    ledger_by_hash[candidate_hash] = persisted_record
+                except (OSError, ValueError) as exc:
+                    print(f"Error persisting attribution for {candidate_hash}: {exc}", file=sys.stderr)
+                    return 1
+                persisted = persisted_record
+        if persisted is None and candidate_hash and re.fullmatch(r"[0-9a-fA-F]{64}", candidate_hash):
+            if valid_attribution(round_item):
+                previous_hash = None
+                for earlier in reversed(round_cands[:i]):
+                    if earlier.get("lifecycle_status") != "orphan":
+                        previous_hash = earlier.get("candidate_hash")
+                        break
+                record = attribution_record(round_item, previous_hash)
+                try:
+                    if append_attribution(ledger_path, record):
+                        attribution_added += 1
+                    ledger_by_hash[candidate_hash] = record
+                except (OSError, ValueError) as exc:
+                    print(f"Error persisting attribution for {candidate_hash}: {exc}", file=sys.stderr)
+                    return 1
+                persisted = record
+        if persisted is not None:
+            round_item["shares"] = persisted["shares"]
+            for field in ("total_share_count", "total_share_score", "wallet_count", "worker_count"):
+                round_item[field] = persisted[field]
+            round_item["attribution_status"] = "ok"
+            round_item["attribution_reason"] = None
+            round_item["attribution_persisted"] = True
+
         existing_round = existing_rounds_by_hash.get(str(c.get("candidate_hash")))
         if (
-            total_round_shares == 0
+            persisted is None
+            and total_round_shares == 0
             and attribution_reason == "share_log_tail_too_short"
             and isinstance(existing_round, dict)
         ):
@@ -515,6 +695,8 @@ def main() -> int:
         ),
         "roundBoundaryCount": len(boundary_cands),
         "preservedRoundAttributionCount": preserved_round_attribution_count,
+        "persistedAttributionCount": len(ledger_by_hash),
+        "newAttributionRecords": attribution_added,
         "incompleteConfirmedRoundCount": incomplete_confirmed_round_count,
         "emptyConfirmedRoundCount": empty_confirmed_round_count,
         "maxShareLines": max_share_lines,
