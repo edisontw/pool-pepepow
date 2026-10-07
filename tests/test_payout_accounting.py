@@ -748,6 +748,25 @@ class PayoutAccountingTests(unittest.TestCase):
         self.assertTrue(item["coinbaseMatchesExpectedPoolWallet"])
         self.assertEqual(len(item["payouts"]), 1)
 
+    def test_repeated_exact_pool_address_outputs_are_summed(self):
+        pool_address = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
+        item = self._generate_single_candidate(
+            "hash_repeated_pool_wallet_outputs",
+            [
+                {"value": 2500.0, "scriptPubKey": {"type": "pubkeyhash", "addresses": [pool_address]}},
+                {"value": 2500.0, "scriptPubKey": {"type": "pubkeyhash", "addresses": [pool_address]}},
+                {"value": 250.0, "scriptPubKey": {"type": "pubkeyhash", "addresses": ["PHjJrmyDGCAjQFsbiucsC1Ex1nPbu8hgiC"]}},
+            ],
+        )
+
+        self.assertTrue(item["coinbaseMatchesExpectedPoolWallet"])
+        self.assertEqual(item["minerRewardAmount"], 5000.0)
+        self.assertEqual(item["minerRewardOutputIndex"], None)
+        self.assertEqual(item["minerRewardOutputIndices"], [0, 1])
+        self.assertEqual(item["minerRewardAddresses"], [pool_address])
+        self.assertEqual([out["value"] for out in item["excludedCoinbaseOutputs"]], [250.0])
+        self.assertEqual(item["status"], "ready_for_manual_review")
+
     def test_confirmed_candidate_cached_coinbase_outputs_ready_when_rpc_unavailable(self):
         original_query_rpc = payout_helper.query_rpc
         rpc_calls = []

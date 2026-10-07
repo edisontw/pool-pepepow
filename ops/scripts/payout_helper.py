@@ -1236,22 +1236,42 @@ def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
         for index, out, value in spendable_outputs
         if expected_address in coinbase_output_addresses(out)
     ]
-    # A multiple match is ambiguous: do not guess based on a reward schedule or
-    # output value.  This deliberately blocks payout processing until reviewed.
-    miner_index = matching_outputs[0][0] if len(matching_outputs) == 1 else None
-    miner_reward_amount = matching_outputs[0][2] if len(matching_outputs) == 1 else None
-    miner_reward_addresses = coinbase_output_addresses(matching_outputs[0][1]) if len(matching_outputs) == 1 else []
-    miner_reward_script_pub_key = (
-        _coinbase_output_summary(miner_index, matching_outputs[0][1]).get("scriptPubKey")
-        if miner_index is not None and isinstance(matching_outputs[0][1].get("scriptPubKey"), dict)
-        else None
+    # Multiple outputs are safe to combine only when each output resolves
+    # solely to the configured pool address. Do not infer ownership from
+    # reward values or combine outputs with ambiguous scripts.
+    repeated_pool_outputs_are_unambiguous = len(matching_outputs) > 1 and all(
+        coinbase_output_addresses(out) == [expected_address]
+        for _index, out, _value in matching_outputs
     )
+    coinbase_matches_expected_pool_wallet = (
+        len(matching_outputs) == 1 or repeated_pool_outputs_are_unambiguous
+    )
+    miner_output_indices = (
+        {index for index, _out, _value in matching_outputs}
+        if coinbase_matches_expected_pool_wallet
+        else set()
+    )
+    miner_index = matching_outputs[0][0] if len(matching_outputs) == 1 else None
+    miner_reward_amount = None
+    miner_reward_addresses: list[str] = []
+    miner_reward_script_pub_key = None
+    if coinbase_matches_expected_pool_wallet:
+        miner_reward_amount = sum(value for _index, _out, value in matching_outputs)
+        if len(matching_outputs) == 1:
+            miner_reward_addresses = coinbase_output_addresses(matching_outputs[0][1])
+            miner_reward_script_pub_key = (
+                _coinbase_output_summary(miner_index, matching_outputs[0][1]).get("scriptPubKey")
+                if isinstance(matching_outputs[0][1].get("scriptPubKey"), dict)
+                else None
+            )
+        else:
+            miner_reward_addresses = [expected_address]
 
     # Preserve useful metadata when it is unambiguous, without using it to
     # select the miner output.  Foundation amount is intentionally unknown:
     # it changes on superblocks.
     masternode_reward_amount = None
-    if miner_reward_amount is not None:
+    if miner_reward_amount is not None and len(matching_outputs) == 1:
         expected_masternode = miner_reward_amount * PEPEPOW_MASTERNODE_SPLIT_RATIO / PEPEPOW_MINER_SPLIT_RATIO
         masternode_matches = [value for index, _out, value in spendable_outputs if index != miner_index and _amount_matches(value, expected_masternode)]
         if len(masternode_matches) == 1:
@@ -1262,13 +1282,12 @@ def detect_coinbase_miner_reward(vout_list: list[Any]) -> dict[str, Any]:
     for index, out, _value in spendable_outputs:
         output_addresses = coinbase_output_addresses(out)
         all_reward_addresses.extend(output_addresses)
-        if index != miner_index:
+        if index not in miner_output_indices:
             excluded.append(_coinbase_output_summary(index, out))
-
-    coinbase_matches_expected_pool_wallet = len(matching_outputs) == 1
     return {
         "coinbaseTotalReward": total_reward,
         "minerRewardOutputIndex": miner_index,
+        "minerRewardOutputIndices": sorted(miner_output_indices),
         "minerRewardAmount": miner_reward_amount,
         "masternodeRewardAmount": masternode_reward_amount,
         "specialRewardAmount": None,
@@ -1296,6 +1315,7 @@ def fetch_coinbase_reward_from_daemon(
         "resolvedCoinbaseTxid": None,
         "coinbaseTotalReward": None,
         "minerRewardOutputIndex": None,
+        "minerRewardOutputIndices": [],
         "minerRewardAmount": None,
         "masternodeRewardAmount": None,
         "specialRewardAmount": None,
@@ -1654,6 +1674,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
         coinbase_lookup_exception_message = None
         coinbase_total_reward = None
         miner_reward_output_index = None
+        miner_reward_output_indices = []
         miner_reward_amount = None
         masternode_reward_amount = None
         special_reward_amount = None
@@ -1689,6 +1710,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             coinbase_lookup_exception_message = coinbase_reward.get("coinbaseLookupExceptionMessage")
             coinbase_total_reward = coinbase_reward.get("coinbaseTotalReward")
             miner_reward_output_index = coinbase_reward.get("minerRewardOutputIndex")
+            miner_reward_output_indices = coinbase_reward.get("minerRewardOutputIndices") or []
             miner_reward_amount = coinbase_reward.get("minerRewardAmount")
             masternode_reward_amount = coinbase_reward.get("masternodeRewardAmount")
             special_reward_amount = coinbase_reward.get("specialRewardAmount")
@@ -2112,6 +2134,7 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
             "coinbaseLookupExceptionMessage": coinbase_lookup_exception_message,
             "coinbaseTotalReward": coinbase_total_reward,
             "minerRewardOutputIndex": miner_reward_output_index,
+            "minerRewardOutputIndices": miner_reward_output_indices,
             "minerRewardAmount": miner_reward_amount,
             "masternodeRewardAmount": masternode_reward_amount,
             "specialRewardAmount": special_reward_amount,
