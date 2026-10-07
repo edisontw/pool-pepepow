@@ -190,9 +190,10 @@ class SnapshotProducer:
             degraded = True
             errors.append("Local share activity is stale")
         if load_result.warnings:
-            degraded = True
-            errors.append(
-                f"Share event log had {len(load_result.warnings)} invalid line(s)"
+            LOGGER.warning(
+                "Skipped %d malformed share event line(s) while loading %s",
+                len(load_result.warnings),
+                self._config.activity_log_path,
             )
 
         return payload, degraded, "; ".join(errors) if errors else None

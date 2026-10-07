@@ -5,12 +5,14 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 POOL_CORE_DIR = Path(__file__).resolve().parents[1] / "apps" / "pool-core"
 sys.path.insert(0, str(POOL_CORE_DIR))
 
 from accounting import build_activity_snapshot  # noqa: E402
 from activity_ingest import load_share_events, parse_share_event  # noqa: E402
+from producer import SnapshotProducer  # noqa: E402
 
 
 FIXTURE_PATH = (
@@ -135,6 +137,32 @@ class PoolCoreAccountingTests(unittest.TestCase):
 
             self.assertEqual(len(load_result.events), 1)
             self.assertEqual(len(load_result.warnings), 2)
+
+    def test_isolated_malformed_lines_warn_without_degrading_live_activity(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            share_log_path = root / "activity-events.jsonl"
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            share_log_path.write_text(
+                f'{{"timestamp":"{now}","wallet":"wallet01","accepted":true}}\n'
+                'not-json\n',
+                encoding="utf-8",
+            )
+            producer = SnapshotProducer.__new__(SnapshotProducer)
+            producer._config = SimpleNamespace(
+                activity_log_path=share_log_path,
+                activity_window_seconds=900,
+                estimated_hashrate_assumed_share_difficulty=0.00025,
+                activity_mode="stratum-share-ingest",
+                snapshot_output_path=root / "activity-snapshot.json",
+            )
+
+            activity, degraded, error = producer._load_activity()
+
+        self.assertFalse(degraded)
+        self.assertIsNone(error)
+        self.assertEqual(activity["warningCount"], 1)
+        self.assertEqual(activity["dataStatus"], "live")
 
 
 if __name__ == "__main__":
