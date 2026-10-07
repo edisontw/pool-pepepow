@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +17,30 @@ import track_rounds  # noqa: E402
 
 
 class TrackRoundsTests(unittest.TestCase):
+    def test_live_stratum_uses_explicit_production_attribution_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bindir = root / "bin"
+            bindir.mkdir()
+            capture = root / "argv.txt"
+            stub = bindir / "python3"
+            stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n", encoding="utf-8")
+            stub.chmod(0o755)
+            runtime = root / "runtime"
+            ledger = root / "canonical" / "round-attribution.jsonl"
+            script = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+            env = dict(os.environ)
+            env.update({
+                "PATH": f"{bindir}:{env.get('PATH', '')}",
+                "CAPTURE_ARGS": str(capture),
+                "PEPEPOW_LIVE_STRATUM_RUNTIME_DIR": str(runtime),
+                "PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER": str(ledger),
+            })
+            subprocess.run([str(script), "track-rounds"], env=env, check=True, capture_output=True, text=True)
+            argv = capture.read_text(encoding="utf-8").splitlines()
+            ledger_index = argv.index("--attribution-ledger")
+            self.assertEqual(argv[ledger_index + 1], str(ledger))
+
     def test_frozen_pool_attribution_survives_missing_raw_history_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

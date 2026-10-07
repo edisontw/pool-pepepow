@@ -10,6 +10,7 @@ Group=pepepow
 WorkingDirectory=/opt/pepepow-pool
 EnvironmentFile=-/opt/pepepow-pool/ops/env/pool-core.env
 Environment=PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/var/lib/pepepow-pool
+Environment=PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER=/var/lib/pepepow-pool/round-attribution.jsonl
 Environment=PEPEPOW_MIN_PAYOUT=1000
 Environment=PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS=10
 ExecStart=/opt/pepepow-pool/ops/scripts/live-stratum.sh auto-payout-once

@@ -98,6 +98,7 @@ Auto payout pass limit used by `auto-payout-once`. Keep this low and aligned wit
 Run these checks before any real wallet payout send:
 
 ```bash
+export PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER=/var/lib/pepepow-pool/round-attribution.jsonl
 ./ops/scripts/live-stratum.sh candidate-followup 1000 --record
 ./ops/scripts/live-stratum.sh accepted-candidates
 ./ops/scripts/live-stratum.sh track-rounds
