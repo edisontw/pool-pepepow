@@ -20,3 +20,5 @@ The hourly Pool payout keeps its existing runtime. The SOLO payout drop-in runs 
 The Pool workflow holds a non-blocking `/run/lock/pepepow-pool-auto-payout.lock` before candidate refresh, round accounting, and wallet payout stages. A concurrent invocation exits safely without attempting a payout.
 
 The SOLO lifecycle refresher reads a bounded tail of candidate/outcome JSONL, skips candidates already confirmed by `match-found`, and uses the persistent SOLO environment file for daemon RPC credentials. It does not send payouts or call `submitblock`.
+
+The Pool rounds refresher appends validated Pool wallet weights to `round-attribution.jsonl` beside the Pool runtime snapshots. Raw share logs are the short-term reconstruction and recovery source; the attribution ledger is the durable accounting source used to rebuild `rounds-snapshot.json` after those logs rotate or are pruned. Payment action records remain the separate authority for payout replay and payment history.
