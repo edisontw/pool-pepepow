@@ -17,6 +17,30 @@ import track_rounds  # noqa: E402
 
 
 class TrackRoundsTests(unittest.TestCase):
+    def test_live_stratum_defaults_attribution_ledger_to_runtime(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bindir = root / "bin"
+            bindir.mkdir()
+            capture = root / "argv.txt"
+            stub = bindir / "python3"
+            stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n", encoding="utf-8")
+            stub.chmod(0o755)
+            runtime = root / "runtime"
+            script = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+            env = dict(os.environ)
+            env.pop("PEPEPOW_ROUND_ATTRIBUTION_LEDGER", None)
+            env.pop("PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER", None)
+            env.update({
+                "PATH": f"{bindir}:{env.get('PATH', '')}",
+                "CAPTURE_ARGS": str(capture),
+                "PEPEPOW_LIVE_STRATUM_RUNTIME_DIR": str(runtime),
+            })
+            subprocess.run([str(script), "track-rounds"], env=env, check=True, capture_output=True, text=True)
+            argv = capture.read_text(encoding="utf-8").splitlines()
+            ledger_index = argv.index("--attribution-ledger")
+            self.assertEqual(argv[ledger_index + 1], str(runtime / "round-attribution.jsonl"))
+
     def test_live_stratum_uses_explicit_production_attribution_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -34,12 +58,49 @@ class TrackRoundsTests(unittest.TestCase):
                 "PATH": f"{bindir}:{env.get('PATH', '')}",
                 "CAPTURE_ARGS": str(capture),
                 "PEPEPOW_LIVE_STRATUM_RUNTIME_DIR": str(runtime),
-                "PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER": str(ledger),
+                "PEPEPOW_ROUND_ATTRIBUTION_LEDGER": str(ledger),
             })
             subprocess.run([str(script), "track-rounds"], env=env, check=True, capture_output=True, text=True)
             argv = capture.read_text(encoding="utf-8").splitlines()
             ledger_index = argv.index("--attribution-ledger")
             self.assertEqual(argv[ledger_index + 1], str(ledger))
+
+    def test_round_snapshot_loads_frozen_attribution_from_ledger_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            ledger = root / "canonical" / "round-attribution.jsonl"
+            (runtime / "accepted-candidates.json").write_text(json.dumps({
+                "accepted_candidates": [{
+                    "candidate_hash": "a" * 64,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 1,
+                    "submit_timestamp": "2026-06-05T12:10:00Z",
+                    "confirmations": 120,
+                    "mining_mode": "pool",
+                }],
+            }), encoding="utf-8")
+            (runtime / "share-events.jsonl").write_text(json.dumps({
+                "wallet": "pool-wallet",
+                "worker": "rig1",
+                "timestamp": "2026-06-05T12:09:00Z",
+                "accepted": True,
+                "miningMode": "pool",
+                "submit": {"difficulty": 2.5},
+            }) + "\n", encoding="utf-8")
+            script = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
+            env = dict(os.environ)
+            env["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(runtime)
+            env["PEPEPOW_ROUND_ATTRIBUTION_LEDGER"] = str(ledger)
+            subprocess.run([str(script), "track-rounds"], env=env, check=True, capture_output=True, text=True)
+            (runtime / "share-events.jsonl").unlink()
+            subprocess.run([str(script), "track-rounds"], env=env, check=True, capture_output=True, text=True)
+            snapshot = json.loads((runtime / "rounds-snapshot.json").read_text(encoding="utf-8"))
+            round_item = snapshot["rounds"][0]
+            self.assertTrue(round_item["attribution_persisted"])
+            self.assertEqual(round_item["shares"]["pool-wallet"]["share_score"], 2.5)
+            self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1)
 
     def test_frozen_pool_attribution_survives_missing_raw_history_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -91,6 +152,12 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertNotIn("solo-wallet", first["shares"])
             self.assertEqual(initial_rounds[1]["shares"]["after-solo"]["share_count"], 1)
             self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
+            frozen_record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+            self.assertFalse(track_rounds.append_attribution(ledger, frozen_record))
+            conflicting_record = dict(frozen_record)
+            conflicting_record["round_id"] = "conflicting-round"
+            with self.assertRaisesRegex(ValueError, "conflicting immutable attribution"):
+                track_rounds.append_attribution(ledger, conflicting_record)
 
             # Raw source disappears; the frozen ledger continues to supply exact weights.
             share_path.unlink()

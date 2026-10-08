@@ -85,6 +85,14 @@ def active_maintenance() -> list[str]:
     return [unit for unit in units if subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode == 0]
 
 
+def filesystem_warning(used_percent: float, warning_percent: float = 80.0, critical_percent: float = 90.0) -> str | None:
+    if used_percent >= critical_percent:
+        return "root-filesystem-usage-critical"
+    if used_percent >= warning_percent:
+        return "root-filesystem-usage-high"
+    return None
+
+
 def atomic_write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -118,6 +126,8 @@ def main() -> int:
     daemon_high = daemon_cgroup["high"]
     daemon_max = daemon_cgroup["max"]
     filesystem = os.statvfs("/")
+    root_used_percent = round((1 - filesystem.f_bavail / filesystem.f_blocks) * 100, 2)
+    filesystem_status = filesystem_warning(root_used_percent)
     payload = {
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "memAvailableBytes": available,
@@ -144,10 +154,13 @@ def main() -> int:
         "daemonMemoryEventsOom": daemon_cgroup["events_oom"],
         "daemonMemoryEventsOomKill": daemon_cgroup["events_oom_kill"],
         "loadAverage": list(os.getloadavg()),
-        "rootFilesystemUsedPercent": round((1 - filesystem.f_bavail / filesystem.f_blocks) * 100, 2),
+        "rootFilesystemUsedPercent": root_used_percent,
+        "resourceWarnings": [filesystem_status] if filesystem_status else [],
+        "resourceHealthLevel": "critical" if filesystem_status == "root-filesystem-usage-critical" else (
+            "warning" if filesystem_status else "ok"
+        ),
         "activeMaintenance": active_maintenance(),
     }
-    atomic_write(args.output, payload)
     warnings = []
     if available < args.memavailable_warning_bytes:
         warnings.append("memavailable-low")
@@ -158,15 +171,21 @@ def main() -> int:
     if daemon_current is not None and daemon_high and daemon_current >= daemon_high * 0.9:
         warnings.append("daemon-cgroup-high-approaching")
     critical = False
+    if filesystem_status:
+        warnings.append(filesystem_status)
+        critical = filesystem_status == "root-filesystem-usage-critical"
     if daemon_current is not None and daemon_max and daemon_current >= daemon_max * 0.9:
         warnings.append("daemon-cgroup-max-critical")
         critical = True
     if warnings:
         level = "critical" if critical else "warning"
+        payload["resourceWarnings"] = warnings
+        payload["resourceHealthLevel"] = level
         message = f"resource-health-{level} " + " ".join(warnings)
         # stderr is captured by the service journal; keeping the message short
         # makes it useful as a low-noise early warning.
         print(message, file=sys.stderr)
+    atomic_write(args.output, payload)
     return 0
 
 

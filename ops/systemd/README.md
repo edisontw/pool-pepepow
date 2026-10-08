@@ -1,6 +1,6 @@
 # systemd
 
-These unit files target the current production Ubuntu deployment layout under `/home/ubuntu/pool-pepepow`, with runtime snapshots under `/var/lib/pepepow-pool`.
+These unit files target the production Ubuntu deployment under `/home/ubuntu/pool-pepepow`. Pool Stratum observations and rounds snapshots use `/home/ubuntu/pool-pepepow/.runtime/live-stratum`; the frozen Pool attribution ledger is stored at `/var/lib/pepepow-pool/round-attribution.jsonl`.
 
 - `pepepow-pool-core.service` runs the runtime snapshot producer
 - `pepepow-pool-stratum.service` runs the Pool Stratum ingress and activity snapshot writer
@@ -21,4 +21,12 @@ The Pool workflow holds a non-blocking `/run/lock/pepepow-pool-auto-payout.lock`
 
 The SOLO lifecycle refresher reads a bounded tail of candidate/outcome JSONL, skips candidates already confirmed by `match-found`, and uses the persistent SOLO environment file for daemon RPC credentials. It does not send payouts or call `submitblock`.
 
-The Pool rounds refresher appends validated Pool wallet weights to `/var/lib/pepepow-pool/round-attribution.jsonl`. Raw share logs are the short-term reconstruction and recovery source; the attribution ledger is the durable accounting source used to rebuild `rounds-snapshot.json` after those logs rotate or are pruned. Payment action records remain the separate authority for payout replay and payment history. For manual production refreshes, export `PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER=/var/lib/pepepow-pool/round-attribution.jsonl` before invoking `live-stratum.sh track-rounds`.
+The Pool rounds refresher appends validated Pool wallet weights to the path in `PEPEPOW_ROUND_ATTRIBUTION_LEDGER`, defaulting to `${RUNTIME_DIR}/round-attribution.jsonl`. Its production drop-in sets the canonical file to `/var/lib/pepepow-pool/round-attribution.jsonl`, while accepted candidates, share events, activity data, and rounds snapshots remain in the production Stratum runtime. Raw share logs are the short-term reconstruction source; the attribution ledger is the durable accounting source used to rebuild `rounds-snapshot.json` after those logs rotate or are pruned. Payment action records remain the separate authority for payout replay and payment history. The repo-local `.runtime/live-stratum/round-attribution.jsonl` is legacy, non-authoritative data; keep it intact.
+
+```sh
+PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/home/ubuntu/pool-pepepow/.runtime/live-stratum \
+PEPEPOW_ROUND_ATTRIBUTION_LEDGER=/var/lib/pepepow-pool/round-attribution.jsonl \
+  /home/ubuntu/pool-pepepow/ops/scripts/live-stratum.sh track-rounds
+```
+
+Confirmed Pool candidates blocked with `missing_share_data` have historical attribution unavailable; keep them blocked and outside normal unpaid-ready reporting unless a valid frozen attribution record exists. Do not infer wallet weights or treat their aggregate reward as payable.

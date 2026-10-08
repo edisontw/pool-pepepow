@@ -1184,7 +1184,7 @@ track_rounds_service() {
   local input_candidates output_rounds attribution_ledger max_share_lines
   input_candidates="${RUNTIME_DIR}/accepted-candidates.json"
   output_rounds="${RUNTIME_DIR}/rounds-snapshot.json"
-  attribution_ledger="${PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER:-${RUNTIME_DIR}/round-attribution.jsonl}"
+  attribution_ledger="${PEPEPOW_ROUND_ATTRIBUTION_LEDGER:-${PEPEPOW_POOL_ROUND_ATTRIBUTION_LEDGER:-${RUNTIME_DIR}/round-attribution.jsonl}}"
   max_share_lines="${PEPEPOW_TRACK_ROUNDS_MAX_SHARE_LINES:-100000}"
   python3 "${SCRIPT_DIR}/track_rounds.py" \
     --accepted-candidates "${input_candidates}" \
