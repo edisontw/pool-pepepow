@@ -1,62 +1,193 @@
 #!/usr/bin/env bash
-set -e
 
-echo "=== GIT STATUS & COMMIT ==="
-git status --short
-echo "HEAD: $(git rev-parse HEAD)"
-git log -3 --oneline
-echo "ORIGIN: $(git rev-parse origin/main)"
+set -u
+set -o pipefail
 
-echo "=== SWAP & FSTAB ==="
-swapon --show
-free -h
-grep -n '/swapfile' /etc/fstab || true
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+RUNTIME_DIR="${PEPEPOW_LIVE_STRATUM_RUNTIME_DIR:-${ROOT_DIR}/.runtime/live-stratum}"
+FAILURES=0
 
-echo "=== LOGROTATE CHECK ==="
-sudo logrotate -d /etc/logrotate.d/pepepow-pool-runtime 2>&1 | tail -n 15
-sudo systemctl reset-failed logrotate.service || true
-sudo systemctl is-failed logrotate.service || true
+section() {
+  local title="$1"
+  shift
+  echo "=== ${title} ==="
+  if "$@"; then
+    echo "PASS: ${title}"
+  else
+    local status=$?
+    echo "FAIL: ${title} (exit ${status})"
+    FAILURES=$((FAILURES + 1))
+  fi
+  echo
+}
 
-echo "=== PAYOUT PREFLIGHT & RECONCILIATION ==="
-python3 -c '
+check_git() {
+  local head origin
+  head="$(git -C "${ROOT_DIR}" rev-parse HEAD)" || return 1
+  origin="$(git -C "${ROOT_DIR}" rev-parse origin/main)" || return 1
+  echo "production_sha: ${head}"
+  echo "origin_main_sha: ${origin}"
+  [[ "${head}" == "${origin}" ]]
+}
+
+check_rotation() {
+  local common_state=/var/lib/logrotate/status
+  local debug_file debug_state pool_exec system_exec
+  debug_file="$(mktemp)" || return 1
+  debug_state="$(mktemp)" || { rm -f "${debug_file}"; return 1; }
+  pool_exec="$(systemctl show pepepow-pool-logrotate.service -p ExecStart --value)"
+  system_exec="$(systemctl show logrotate.service -p ExecStart --value)"
+  if ! grep -q -- "--state ${common_state}" <<<"${pool_exec}" || ! grep -q 'logrotate /etc/logrotate.conf' <<<"${system_exec}"; then
+    echo "Rotation units do not share the standard logrotate state file"
+    rm -f "${debug_file}" "${debug_state}"
+    return 1
+  fi
+  if ! logrotate --debug --state "${debug_state}" /etc/logrotate.d/pepepow-pool-runtime >"${debug_file}" 2>&1; then
+    tail -n 20 "${debug_file}"
+    rm -f "${debug_file}" "${debug_state}"
+    return 1
+  fi
+  if ! systemctl is-active --quiet pepepow-pool-logrotate.timer; then
+    echo "Pool logrotate timer is not active"
+    rm -f "${debug_file}" "${debug_state}"
+    return 1
+  fi
+  if ! systemctl is-active --quiet logrotate.timer; then
+    echo "Standard logrotate timer is not active"
+    rm -f "${debug_file}" "${debug_state}"
+    return 1
+  fi
+  echo "Pool and standard logrotate use ${common_state}; debug configuration valid"
+  rm -f "${debug_file}" "${debug_state}"
+}
+
+check_services() {
+  local failed=0 unit
+  for unit in pepepowd.service pepepow-pool-stratum.service pepepow-pool-stratum-solo.service pepepow-pool-api.service pepepow-pool-auto-payout.timer pepepow-pool-rounds-refresh.timer pepepow-pool-logrotate.timer; do
+    if systemctl is-active --quiet "${unit}"; then
+      echo "${unit}: active"
+    else
+      echo "${unit}: inactive"
+      failed=1
+    fi
+  done
+  return "${failed}"
+}
+
+check_listeners() {
+  local listeners
+  listeners="$(ss -lntH 2>/dev/null | awk '$4 ~ /:39333$/ || $4 ~ /:39334$/ || $4 ~ /:8080$/ {print $4}')" || return 1
+  printf '%s\n' "${listeners}"
+  grep -q ':39333$' <<<"${listeners}" && grep -q ':39334$' <<<"${listeners}" && grep -q ':8080$' <<<"${listeners}"
+}
+
+check_daemon() {
+  local blockchain network
+  blockchain="$(timeout 15 PEPEPOW-cli getblockchaininfo 2>/dev/null)" || return 1
+  network="$(timeout 15 PEPEPOW-cli getnetworkinfo 2>/dev/null)" || return 1
+  python3 -c 'import json,sys; a=json.load(sys.stdin); assert int(a.get("blocks",0)) > 0; print("chain_height:", a.get("blocks")); print("initial_download:", a.get("initialblockdownload"))' <<<"${blockchain}" || return 1
+  python3 -c 'import json,sys; a=json.load(sys.stdin); print("daemon_version:", a.get("subversion", "available"))' <<<"${network}"
+}
+
+check_api() {
+  local url code
+  for url in http://127.0.0.1:8080/api/health http://127.0.0.1:8080/api/pool/summary http://127.0.0.1:8080/api/solo/summary; do
+    code="$(curl --max-time 10 -sS -o /dev/null -w '%{http_code}' "${url}")" || return 1
+    echo "${code} ${url}"
+    [[ "${code}" == 200 ]] || return 1
+  done
+}
+
+check_payout() {
+  python3 - "${ROOT_DIR}" "${RUNTIME_DIR}" <<'PY'
+import contextlib
+import io
+import json
+import os
 import sys
-sys.path.insert(0, "ops/scripts")
+import tempfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+runtime = Path(sys.argv[2])
+sys.path.insert(0, str(root / "ops/scripts"))
 import payout_helper
-actions_path = "/var/lib/pepepow-pool/payment-actions.jsonl"
-unresolved = payout_helper.get_unresolved_payment_intents(actions_path)
-print(f"unresolved_payment_intents: {len(unresolved)}")
-for u in unresolved:
-    print("  unresolved:", u)
-reconciled, ambiguous = payout_helper.reconcile_unresolved_payment_intents(actions_path, dry_run=True)
-print(f"reconciled_count: {len(reconciled)}")
-print(f"ambiguous_count: {len(ambiguous)}")
-'
 
-echo "=== PRODUCTION SERVICES ==="
-for unit in pepepowd.service pepepow-pool-stratum.service pepepow-pool-stratum-solo.service pepepow-pool-api.service pepepow-pool-auto-payout.timer; do
-    echo "$unit: $(systemctl is-active $unit)"
-done
+candidates = runtime / "payout-candidates.json"
+carry = runtime / "payout-carry-snapshot.json"
+payments = runtime / "payments-snapshot.json"
+actions = runtime / "payment-actions.jsonl"
+review_rc = payout_helper.payout_review_check(candidates, carry, payments)
+if review_rc != 0:
+    raise SystemExit(f"read-only payout review failed: {review_rc}")
+unresolved = payout_helper.get_unresolved_payment_intents(actions)
+print("unresolved_payment_intents:", len(unresolved))
 
-echo "=== LISTENERS ==="
-ss -lntp | grep -E '39333|39334|8080' || true
+data = json.loads(candidates.read_text(encoding="utf-8"))
+items = data.get("items", [])
+ready = next((candidate for candidate in items
+              if candidate.get("status") == "ready_for_manual_review"
+              and isinstance(candidate.get("payouts"), list)
+              and candidate["payouts"]
+              and candidate["payouts"][0].get("wallet")
+              and candidate["payouts"][0].get("amount") is not None), None)
+if ready is None:
+    raise SystemExit("no ready candidate available for read-only payout preflight")
+payout = ready["payouts"][0]
+os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
+with tempfile.TemporaryDirectory(prefix="pepepow-smoke-") as temp_dir:
+    result_path = Path(temp_dir) / "preflight.json"
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        rc = payout_helper.payout_wallet_send_preflight(
+            candidates, actions, result_path, str(ready.get("candidateId") or ready.get("candidate_hash")),
+            str(payout["wallet"]), float(payout["amount"]))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    print("wallet_preflight_status:", result.get("status"))
+    print("send_attempted:", result.get("sendAttempted"))
+    print("send_sent:", result.get("sendSent"))
+    if rc != 0 or result.get("sendAttempted") is not False or result.get("sendSent") is not False:
+        raise SystemExit("read-only payout preflight failed or reported a send")
+PY
+}
 
-echo "=== DAEMON STATUS ==="
-PEPEPOW-cli getblockchaininfo | grep -E 'blocks|headers|initialblockdownload'
-PEPEPOW-cli getnetworkinfo | grep -E 'connections'
+check_snapshots() {
+  python3 - "${RUNTIME_DIR}" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for name in ("rounds-snapshot.json", "payout-candidates.json", "payments-snapshot.json", "payout-carry-snapshot.json"):
+    with (root / name).open(encoding="utf-8") as stream:
+        json.load(stream)
+    print(name + ": valid JSON")
+PY
+}
 
-echo "=== API HEALTH & SNAPSHOTS ==="
-curl -s http://127.0.0.1:8080/api/health
-echo ""
-curl -sk https://pool.pepepow.net/api/health
-echo ""
-curl -sk https://pool.pepepow.net/api/pool/summary | head -c 200
-echo ""
-curl -sk https://pool.pepepow.net/api/solo/summary | head -c 200
-echo ""
-curl -s -o /dev/null -w "payments.html status: %{http_code}\n" https://pool.pepepow.net/payments.html
+check_disk() {
+  df -h /
+  python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/var/lib/pepepow-pool/resource-health.json')
+data=json.loads(p.read_text())
+used=float(data.get('rootFilesystemUsedPercent',100))
+print('filesystem_used_percent:', used)
+assert used < 80, 'root filesystem warning threshold reached'
+PY
+}
 
-echo "=== OOM & SYSTEM PRESSURE CHECK ==="
-dmesg -T | grep -i -E 'oom|out of memory|killed process' | tail -n 10 || echo "No OOM events in dmesg since boot"
-uptime
-ps aux | grep -E 'PEPEPOWd|python' | grep -v grep | awk '{print $1, $2, $4, $5, $6, $11}'
-df -h /
+section "GitHub and production revision" check_git
+section "Pool and standard logrotate configuration" check_rotation
+section "Production services" check_services
+section "Pool, SOLO and API listeners" check_listeners
+section "Daemon RPC" check_daemon
+section "API health and summaries" check_api
+section "Read-only payout preflight" check_payout
+section "Accounting and payout snapshots" check_snapshots
+section "Disk health" check_disk
+
+if (( FAILURES > 0 )); then
+  echo "smoke_status: FAIL (${FAILURES} sections)"
+  exit 1
+fi
+echo "smoke_status: PASS"

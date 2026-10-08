@@ -3,6 +3,7 @@ Description=Bounded PEPEPOW operational log rotation check
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/logrotate --state /var/lib/pepepow-pool/logrotate-runtime.status /etc/logrotate.d/pepepow-pool-runtime
+# Share the default daily logrotate status/lock so Pool and system rotations serialize.
+ExecStart=/usr/sbin/logrotate --state /var/lib/logrotate/status /etc/logrotate.d/pepepow-pool-runtime
 StandardOutput=journal
 StandardError=journal

@@ -299,8 +299,10 @@ def saved_window_coverage_is_valid(
         and isinstance(proof.get("source_first_sequence"), int)
         and isinstance(proof.get("source_last_sequence"), int)
         and proof["source_last_sequence"] >= proof["source_first_sequence"]
-        and isinstance(proof.get("source_coverage_sha256"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", proof["source_coverage_sha256"]) is not None
+        and (proof.get("source_coverage_sha256") is None or (
+            isinstance(proof.get("source_coverage_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", proof["source_coverage_sha256"]) is not None
+        ))
         and proof.get("segments_contiguous") is True
         and proof.get("sequence_contiguous") is True
         and proof.get("tail_truncated") is False
