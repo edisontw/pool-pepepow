@@ -83,8 +83,8 @@ check_listeners() {
 
 check_daemon() {
   local blockchain network
-  blockchain="$(timeout 15 PEPEPOW-cli getblockchaininfo 2>/dev/null)" || return 1
-  network="$(timeout 15 PEPEPOW-cli getnetworkinfo 2>/dev/null)" || return 1
+  blockchain="$(timeout 15 /home/ubuntu/PEPEPOW-cli getblockchaininfo 2>/dev/null)" || return 1
+  network="$(timeout 15 /home/ubuntu/PEPEPOW-cli getnetworkinfo 2>/dev/null)" || return 1
   python3 -c 'import json,sys; a=json.load(sys.stdin); assert int(a.get("blocks",0)) > 0; print("chain_height:", a.get("blocks")); print("initial_download:", a.get("initialblockdownload"))' <<<"${blockchain}" || return 1
   python3 -c 'import json,sys; a=json.load(sys.stdin); print("daemon_version:", a.get("subversion", "available"))' <<<"${network}"
 }
@@ -125,15 +125,15 @@ print("unresolved_payment_intents:", len(unresolved))
 
 data = json.loads(candidates.read_text(encoding="utf-8"))
 items = data.get("items", [])
-ready = next((candidate for candidate in items
-              if candidate.get("status") == "ready_for_manual_review"
-              and isinstance(candidate.get("payouts"), list)
-              and candidate["payouts"]
-              and candidate["payouts"][0].get("wallet")
-              and candidate["payouts"][0].get("amount") is not None), None)
-if ready is None:
+selection = next(((candidate, payout) for candidate in items
+                  if candidate.get("status") == "ready_for_manual_review"
+                  and isinstance(candidate.get("payouts"), list)
+                  for payout in candidate["payouts"]
+                  if payout.get("status") in {"pending_manual_payment", "ready_for_wallet_send_preview", "ready"}
+                  and payout.get("wallet") and payout.get("amount") is not None), None)
+if selection is None:
     raise SystemExit("no ready candidate available for read-only payout preflight")
-payout = ready["payouts"][0]
+ready, payout = selection
 os.environ["PEPEPOW_REAL_WALLET_PAYOUT_MAX_SENDS"] = "1"
 with tempfile.TemporaryDirectory(prefix="pepepow-smoke-") as temp_dir:
     result_path = Path(temp_dir) / "preflight.json"
@@ -146,20 +146,43 @@ with tempfile.TemporaryDirectory(prefix="pepepow-smoke-") as temp_dir:
     print("wallet_preflight_status:", result.get("status"))
     print("send_attempted:", result.get("sendAttempted"))
     print("send_sent:", result.get("sendSent"))
-    if rc != 0 or result.get("sendAttempted") is not False or result.get("sendSent") is not False:
+    if (rc != 0 or result.get("status") not in {"preflight_ok", "blocked_already_paid"}
+            or result.get("sendAttempted") is not False or result.get("sendSent") is not False):
         raise SystemExit("read-only payout preflight failed or reported a send")
 PY
 }
 
 check_snapshots() {
-  python3 - "${RUNTIME_DIR}" <<'PY'
+  python3 - "${RUNTIME_DIR}" "${ROOT_DIR}" <<'PY'
 import json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-for name in ("rounds-snapshot.json", "payout-candidates.json", "payments-snapshot.json", "payout-carry-snapshot.json"):
+repo = Path(sys.argv[2])
+for name in ("rounds-snapshot.json", "payout-candidates.json", "payments-snapshot.json", "payout-carry-snapshot.json", "solo/solo-payout-candidates.json", "solo/solo-payments-snapshot.json"):
     with (root / name).open(encoding="utf-8") as stream:
         json.load(stream)
     print(name + ": valid JSON")
+
+sys.path.insert(0, str(repo / "ops/scripts"))
+import payout_helper
+for label, candidates_path, actions_path, payments_path, ready_predicate in (
+    ("Pool", root / "payout-candidates.json", root / "payment-actions.jsonl", root / "payments-snapshot.json",
+     lambda item: item.get("status") == "ready_for_manual_review"),
+    ("SOLO", root / "solo/solo-payout-candidates.json", root / "solo/solo-payment-actions.jsonl", root / "solo/solo-payments-snapshot.json",
+     lambda item: item.get("lifecycleStatus") == "confirmed" and item.get("eligibleForPayout") is True),
+):
+    data = json.loads(candidates_path.read_text(encoding="utf-8"))
+    paid = payout_helper.load_paid_payment_pairs(actions_path, candidates_path, payments_path)
+    unpaid_ready = 0
+    for candidate in data.get("items", []):
+        if not ready_predicate(candidate):
+            continue
+        candidate_id = str(candidate.get("candidateId") or candidate.get("candidate_hash") or candidate.get("candidateHash") or "")
+        for payout in candidate.get("payouts", []):
+            if (payout.get("status") in {"pending_manual_payment", "ready_for_wallet_send_preview", "ready"}
+                    and (candidate_id, str(payout.get("wallet") or "")) not in paid):
+                unpaid_ready += 1
+    print(label + " unpaid_ready:", unpaid_ready)
 PY
 }
 
