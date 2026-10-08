@@ -12,7 +12,7 @@ import math
 import os
 import re
 import sys
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,6 +50,8 @@ def tail_file(file_path: Path, max_lines: int) -> list[str]:
         f.seek(position)
         rest = f.read()
         lines = rest.split(b"\n")
+        if lines and not lines[-1]:
+            lines.pop()
         if len(lines) > max_lines:
             lines = lines[-max_lines:]
     return [line.decode("utf-8", errors="replace") for line in lines if line]
@@ -119,16 +121,17 @@ def analyze_share_source(lines: list[str], paths: list[Path], max_lines: int) ->
         current[0] == previous[1] + 1
         for previous, current in zip(rotated_ranges, rotated_ranges[1:])
     )
-
     timestamps: list[datetime] = []
     sequences: list[int] = []
+    events: list[dict[str, Any]] = []
     missing_sequence_count = 0
     malformed_rows = 0
-    for line in lines:
+    for row_index, line in enumerate(lines):
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
             malformed_rows += 1
+            events.append({"malformed": True, "timestamp": None, "sequence": None, "_index": row_index})
             continue
         timestamp = parse_timestamp(
             item.get("timestamp") or item.get("submittedAt") or item.get("observedAt")
@@ -142,6 +145,20 @@ def analyze_share_source(lines: list[str], paths: list[Path], max_lines: int) ->
             sequences.append(sequence)
         else:
             missing_sequence_count += 1
+        events.append({"timestamp": None if timestamp == datetime.min.replace(tzinfo=timezone.utc) else timestamp.isoformat().replace("+00:00", "Z"),
+                       "sequence": sequence, "malformed": timestamp == datetime.min.replace(tzinfo=timezone.utc),
+                       "_index": row_index})
+
+    # Prepare timestamp and sequence indexes once; coverage is checked for every
+    # candidate, so scanning the complete tail per round would be quadratic.
+    time_events = sorted(
+        (row for row in events if row.get("timestamp")),
+        key=lambda row: parse_timestamp(row["timestamp"]),
+    )
+    sequence_events = sorted(
+        (row for row in events if isinstance(row.get("sequence"), int) and not isinstance(row.get("sequence"), bool)),
+        key=lambda row: row["sequence"],
+    )
 
     truncated = max_lines <= 0 or len(lines) >= max_lines
     if sequences and not missing_sequence_count:
@@ -169,6 +186,13 @@ def analyze_share_source(lines: list[str], paths: list[Path], max_lines: int) ->
         "malformed_rows": malformed_rows,
         "complete": bool(lines) and not truncated and segments_contiguous
         and sequence_contiguous and malformed_rows == 0,
+        "events": events,
+        "interval_segments_contiguous": True,
+        "segment_ranges": rotated_ranges,
+        "_time_events": time_events,
+        "_event_times": [parse_timestamp(row["timestamp"]) for row in time_events],
+        "_sequence_events": sequence_events,
+        "_event_sequences": [row["sequence"] for row in sequence_events],
     }
 
 
@@ -183,22 +207,36 @@ def make_window_coverage(
     minimum = datetime.min.replace(tzinfo=timezone.utc)
     if start_ts == minimum:
         return None, "share_window_start_unbounded"
-    if source.get("tail_truncated"):
-        return None, "share_log_tail_truncated"
-    if not source.get("segments_contiguous"):
-        return None, "share_log_segment_gap"
-    if not source.get("sequence_contiguous"):
-        return None, "share_log_sequence_gap_or_missing_sequence"
-    if source.get("malformed_rows"):
-        return None, "share_log_malformed_rows"
-    if not source.get("complete"):
-        return None, "share_log_coverage_unavailable"
-    first_event = parse_timestamp(source.get("first_event_at"))
-    last_event = parse_timestamp(source.get("last_event_at"))
-    if first_event == minimum or start_ts < first_event:
-        return None, "share_window_starts_before_retained_events"
-    if last_event == minimum or end_ts > last_event:
-        return None, "share_window_ends_after_retained_events"
+    time_rows = source.get("_time_events", [])
+    event_times = source.get("_event_times", [])
+    start_idx = bisect_right(event_times, start_ts) - 1
+    end_idx = bisect_left(event_times, end_ts)
+    if start_idx < 0:
+        return None, "share_window_start_boundary_missing"
+    if end_idx >= len(time_rows):
+        return None, "share_window_end_boundary_missing"
+    first, last = time_rows[start_idx], time_rows[end_idx]
+    if not isinstance(first.get("sequence"), int) or not isinstance(last.get("sequence"), int):
+        return None, "share_window_boundary_sequence_missing"
+    sequence_rows = source.get("_sequence_events", [])
+    event_sequences = source.get("_event_sequences", [])
+    seq_start = bisect_left(event_sequences, first["sequence"])
+    seq_end = bisect_right(event_sequences, last["sequence"])
+    relevant = sequence_rows[seq_start:seq_end]
+    sequences = [row.get("sequence") for row in relevant]
+    if len(sequences) != last["sequence"] - first["sequence"] + 1 or any(
+        b != a + 1 for a, b in zip(sequences, sequences[1:])
+    ):
+        return None, "share_window_sequence_gap"
+    if any(row.get("malformed") for row in relevant) or any(
+        row.get("malformed") and first.get("_index", -1) <= row.get("_index", -2) <= last.get("_index", -1)
+        for row in source.get("events", []) if isinstance(row, dict)
+    ):
+        return None, "share_window_malformed_row"
+    ranges = source.get("segment_ranges") or []
+    for left, right in zip(ranges, ranges[1:]):
+        if left[1] + 1 != right[0] and left[1] < last["sequence"] and right[0] > first["sequence"]:
+            return None, "share_log_segment_gap"
     proof = {
         "status": "complete",
         "candidate_hash": candidate_hash,
@@ -206,14 +244,20 @@ def make_window_coverage(
         "window_start_candidate_hash": window_start_candidate_hash,
         "start_after": start_ts.isoformat().replace("+00:00", "Z"),
         "end_at": end_ts.isoformat().replace("+00:00", "Z"),
-        "source_first_event_at": source["first_event_at"],
-        "source_last_event_at": source["last_event_at"],
-        "source_first_sequence": source.get("first_sequence"),
-        "source_last_sequence": source.get("last_sequence"),
+        "source_first_event_at": first["timestamp"],
+        "source_last_event_at": last["timestamp"],
+        "source_first_sequence": first["sequence"],
+        "source_last_sequence": last["sequence"],
         "segments_contiguous": True,
         "sequence_contiguous": True,
         "tail_truncated": False,
         "malformed_rows": 0,
+        "source_coverage_sha256": hashlib.sha256(json.dumps(
+            [{"sequence": row.get("sequence"),
+              "timestamp": row.get("timestamp"),
+              "malformed": bool(row.get("malformed"))}
+             for row in relevant], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest(),
     }
     return proof, None
 
@@ -252,6 +296,11 @@ def saved_window_coverage_is_valid(
         and first_event != minimum
         and last_event != minimum
         and first_event <= start_ts <= end_ts <= last_event
+        and isinstance(proof.get("source_first_sequence"), int)
+        and isinstance(proof.get("source_last_sequence"), int)
+        and proof["source_last_sequence"] >= proof["source_first_sequence"]
+        and isinstance(proof.get("source_coverage_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", proof["source_coverage_sha256"]) is not None
         and proof.get("segments_contiguous") is True
         and proof.get("sequence_contiguous") is True
         and proof.get("tail_truncated") is False
@@ -959,7 +1008,7 @@ def main() -> int:
         "unverifiedAttributionCount": unverified_attribution_count,
         "unverifiedConfirmedRoundCount": unverified_confirmed_round_count,
         "maxShareLines": max_share_lines,
-        "shareLogCoverage": share_source,
+        "shareLogCoverage": {key: value for key, value in share_source.items() if not key.startswith("_") and key != "events"},
         "rounds": rounds_list,
     }
 

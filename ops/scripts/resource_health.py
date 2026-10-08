@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -108,14 +109,91 @@ def atomic_write(path: Path, payload: dict) -> None:
             pass
 
 
+def round_attribution_health(snapshot_path: Path) -> dict:
+    try:
+        data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        rounds = data.get("rounds", [])
+    except (OSError, ValueError, TypeError):
+        return {"available": False}
+    confirmed = [item for item in rounds if isinstance(item, dict) and item.get("status") == "confirmed"]
+    awaiting = [item for item in confirmed if item.get("attribution_coverage_verified") is not True]
+    verified = [item for item in rounds if isinstance(item, dict) and item.get("attribution_coverage_verified") is True]
+    def timestamp(item):
+        raw = item.get("submit_timestamp")
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return 0
+    latest = max(confirmed, key=timestamp, default=None)
+    newest_verified = max(verified, key=timestamp, default=None)
+    oldest = min(awaiting, key=timestamp, default=None)
+    reason = (latest or {}).get("attribution_reason")
+    missing_data = sum(1 for item in awaiting if item.get("attribution_reason") in {
+        "share_window_start_unbounded", "share_window_start_boundary_missing",
+        "share_window_end_boundary_missing", "share_window_boundary_sequence_missing",
+    })
+    incomplete_coverage = sum(1 for item in awaiting if item.get("attribution_reason") in {
+        "share_window_sequence_gap", "share_window_malformed_row", "share_log_segment_gap",
+        "share_log_sequence_gap_or_missing_sequence", "share_log_malformed_rows",
+    })
+    if latest and latest.get("attribution_coverage_verified") is True:
+        state = "persisted"
+    elif latest and reason == "share_window_start_unbounded":
+        state = "missing-share-boundary"
+    elif latest and reason and ("boundary" in reason or "sequence" in reason or "coverage" in reason):
+        state = "incomplete-coverage"
+    elif latest:
+        state = "awaiting-coverage"
+    else:
+        state = "no-confirmed-candidate"
+    now = time.time()
+    return {
+        "available": True,
+        "newestConfirmedPoolCandidateAt": (latest or {}).get("submit_timestamp"),
+        "newestVerifiedAttributionAt": (newest_verified or {}).get("submit_timestamp"),
+        "confirmedCandidatesAwaitingCoverage": len(awaiting),
+        "confirmedCandidatesMissingShareData": missing_data,
+        "confirmedCandidatesWithIncompleteCoverage": incomplete_coverage,
+        "oldestUnresolvedAttributionAgeSeconds": max(0, int(now - timestamp(oldest))) if oldest else 0,
+        "latestCompletedRoundPersisted": bool(latest and latest.get("attribution_persisted") is True
+                                                and latest.get("attribution_coverage_verified") is True),
+        "latestCompletedRoundState": state,
+        "latestCompletedRoundReason": reason,
+        "maturityWaitCandidateCount": sum(1 for item in rounds if isinstance(item, dict) and item.get("status") == "immature"),
+    }
+
+
+def operational_log_bytes() -> int:
+    roots = (Path("/home/ubuntu/pool-pepepow/.runtime/live-stratum"), Path("/var/lib/pepepow-pool"))
+    total = 0
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.glob("**/*"):
+            try:
+                if path.is_file() and (path.name.endswith((".log", ".jsonl")) or "evidence" in path.name):
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Write PEPEPOW resource health snapshot")
     parser.add_argument("--output", type=Path, default=Path("/var/lib/pepepow-pool/resource-health.json"))
     parser.add_argument("--memavailable-warning-bytes", type=int, default=1024 * 1024 * 1024)
     parser.add_argument("--swap-warning-percent", type=float, default=50.0)
     parser.add_argument("--daemon-rss-warning-bytes", type=int, default=2 * 1024 * 1024 * 1024)
+    parser.add_argument("--rounds-snapshot", type=Path,
+                        default=Path("/home/ubuntu/pool-pepepow/.runtime/live-stratum/rounds-snapshot.json"))
+    parser.add_argument("--rotation-state", type=Path,
+                        default=Path("/var/lib/pepepow-pool/logrotate-runtime.status"))
     args = parser.parse_args()
     memory = meminfo()
+    try:
+        previous_health = json.loads(args.output.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        previous_health = {}
     total = memory.get("MemTotal", 0)
     available = memory.get("MemAvailable", 0)
     swap_total = memory.get("SwapTotal", 0)
@@ -128,6 +206,13 @@ def main() -> int:
     filesystem = os.statvfs("/")
     root_used_percent = round((1 - filesystem.f_bavail / filesystem.f_blocks) * 100, 2)
     filesystem_status = filesystem_warning(root_used_percent)
+    current_log_bytes = operational_log_bytes()
+    previous_log = previous_health.get("operationalLogSample", {})
+    elapsed = max(1, int(time.time() - float(previous_log.get("sampledAtEpoch", time.time()))))
+    growth = max(0, current_log_bytes - int(previous_log.get("bytes", current_log_bytes)))
+    growth_rate = growth / elapsed
+    projected_free_hours = (filesystem.f_bavail * filesystem.f_frsize / growth_rate / 3600
+                            if growth_rate > 0 else None)
     payload = {
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "memAvailableBytes": available,
@@ -160,8 +245,15 @@ def main() -> int:
             "warning" if filesystem_status else "ok"
         ),
         "activeMaintenance": active_maintenance(),
+        "roundAttribution": round_attribution_health(args.rounds_snapshot),
+        "operationalLogSample": {"bytes": current_log_bytes, "sampledAtEpoch": time.time(),
+                                 "growthBytesPerSecond": round(growth_rate, 2),
+                                 "projectedFreeDiskHours": round(projected_free_hours, 1) if projected_free_hours else None},
     }
     warnings = []
+    attribution_health = payload["roundAttribution"]
+    if attribution_health.get("confirmedCandidatesAwaitingCoverage", 0):
+        warnings.append("pool-attribution-awaiting-coverage")
     if available < args.memavailable_warning_bytes:
         warnings.append("memavailable-low")
     if payload["swapUsedPercent"] > args.swap_warning_percent:
@@ -174,6 +266,21 @@ def main() -> int:
     if filesystem_status:
         warnings.append(filesystem_status)
         critical = filesystem_status == "root-filesystem-usage-critical"
+    rotation_result = subprocess.run(
+        ["systemctl", "show", "pepepow-pool-logrotate.service", "-p", "Result", "--value"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    rotation_timer_active = subprocess.run(
+        ["systemctl", "is-active", "--quiet", "pepepow-pool-logrotate.timer"], capture_output=True
+    ).returncode == 0
+    rotation_started = subprocess.run(
+        ["systemctl", "show", "pepepow-pool-logrotate.service", "-p", "ExecMainStartTimestamp", "--value"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    payload["logRotation"] = {"lastResult": rotation_result or "unknown", "stateFileExists": args.rotation_state.exists(),
+                              "timerActive": rotation_timer_active, "lastStartedAt": rotation_started or None}
+    if rotation_result not in {"", "success", "unknown"} or not rotation_timer_active:
+        warnings.append("runtime-log-rotation-failed")
     if daemon_current is not None and daemon_max and daemon_current >= daemon_max * 0.9:
         warnings.append("daemon-cgroup-max-critical")
         critical = True
@@ -185,6 +292,11 @@ def main() -> int:
         # stderr is captured by the service journal; keeping the message short
         # makes it useful as a low-noise early warning.
         print(message, file=sys.stderr)
+    if growth_rate >= 1024 * 1024 or (projected_free_hours is not None and projected_free_hours < 168):
+        warnings.append("operational-log-growth-dangerous")
+        payload["resourceWarnings"] = warnings
+        payload["resourceHealthLevel"] = "critical" if critical or (projected_free_hours is not None and projected_free_hours < 24) else "warning"
+        print("resource-health-warning operational-log-growth-dangerous", file=sys.stderr)
     atomic_write(args.output, payload)
     return 0
 

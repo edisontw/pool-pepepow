@@ -17,6 +17,45 @@ import track_rounds  # noqa: E402
 
 
 class TrackRoundsTests(unittest.TestCase):
+    def test_recent_complete_round_freezes_past_global_100k_tail_limit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            candidates = root / "accepted.json"
+            shares = root / "share-events.jsonl"
+            rounds = root / "rounds.json"
+            ledger = root / "attribution.jsonl"
+            candidates.write_text(json.dumps({"accepted_candidates": [
+                {"candidate_hash": "e" * 64, "lifecycle_status": "confirmed",
+                 "submit_timestamp": "2026-10-08T12:00:00Z", "mining_mode": "pool"},
+                {"candidate_hash": "a" * 64, "lifecycle_status": "confirmed",
+                 "submit_timestamp": "2026-10-08T12:05:00Z", "mining_mode": "pool"},
+            ]}), encoding="utf-8")
+            with shares.open("w", encoding="utf-8") as stream:
+                for sequence in range(1, 100006):
+                    stream.write(json.dumps({"sequence": sequence, "timestamp": "2026-10-08T11:00:00Z",
+                                             "accepted": False}) + "\n")
+                for item in [
+                    {"sequence": 100006, "timestamp": "2026-10-08T12:00:00Z", "accepted": False},
+                    {"sequence": 100007, "timestamp": "2026-10-08T12:03:00Z", "accepted": True,
+                     "wallet": "recent-wallet", "worker": "rig", "miningMode": "pool",
+                     "submit": {"difficulty": 3.5}},
+                    {"sequence": 100008, "timestamp": "2026-10-08T12:05:00Z", "accepted": False},
+                ]:
+                    stream.write(json.dumps(item) + "\n")
+            old_argv = sys.argv
+            sys.argv = ["track_rounds.py", "--accepted-candidates", str(candidates), "--share-log", str(shares),
+                        "--output", str(rounds), "--attribution-ledger", str(ledger)]
+            try:
+                self.assertEqual(track_rounds.main(), 0)
+            finally:
+                sys.argv = old_argv
+            data = json.loads(rounds.read_text(encoding="utf-8"))
+            latest = data["rounds"][1]
+            self.assertTrue(data["shareLogCoverage"]["tail_truncated"])
+            self.assertTrue(latest["attribution_coverage_verified"])
+            self.assertEqual(latest["shares"]["recent-wallet"]["share_score"], 3.5)
+            self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1)
+
     def test_freeze_requires_complete_share_window_coverage(self):
         cases = {
             "complete": ([
@@ -218,6 +257,14 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(initial_rounds[2]["shares"]["after-solo"]["share_count"], 1)
             self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
             frozen_record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+            coverage = frozen_record["share_window_coverage"]
+            start = datetime.fromisoformat("2026-06-05T12:05:00+00:00")
+            end = datetime.fromisoformat("2026-06-05T12:10:00+00:00")
+            self.assertTrue(track_rounds.saved_window_coverage_is_valid(
+                coverage, start, end, candidate_hash, "e" * 64, "e" * 64, frozen_record))
+            conflicting_proof = dict(coverage, previous_pool_boundary="c" * 64)
+            self.assertFalse(track_rounds.saved_window_coverage_is_valid(
+                conflicting_proof, start, end, candidate_hash, "e" * 64, "e" * 64, frozen_record))
             self.assertFalse(track_rounds.append_attribution(ledger, frozen_record))
             conflicting_record = dict(frozen_record)
             conflicting_record["round_id"] = "conflicting-round"
@@ -226,6 +273,7 @@ class TrackRoundsTests(unittest.TestCase):
 
             # Raw source disappears; the frozen ledger continues to supply exact weights.
             share_path.unlink()
+            out_path.unlink()  # proofs must come from the append-only ledger, not a regenerated snapshot
             second = run()["rounds"][1]
             self.assertTrue(second["attribution_persisted"])
             self.assertEqual(second["shares"], first["shares"])
@@ -359,6 +407,8 @@ class TrackRoundsTests(unittest.TestCase):
                 },
                 {"timestamp": "2026-06-05T12:16:00Z", "accepted": False},
             ]
+            for sequence, share in enumerate(shares, 1):
+                share["sequence"] = sequence
             with share_log.open("w", encoding="utf-8") as f:
                 for s in shares:
                     f.write(json.dumps(s) + "\n")
@@ -875,14 +925,15 @@ class TestRoundSharePercent(unittest.TestCase):
                 ]
             },
             shares=[
-                {"timestamp": "2026-06-05T17:54:00Z", "accepted": False},
+                {"timestamp": "2026-06-05T17:54:00Z", "accepted": False, "sequence": 1},
                 {
                     "wallet": "walletWindow",
                     "timestamp": "2026-06-05T17:56:00Z",
                     "accepted": True,
                     "submit": {"difficulty": 2.5},
+                    "sequence": 2,
                 },
-                {"timestamp": "2026-06-05T18:01:00Z", "accepted": False},
+                {"timestamp": "2026-06-05T18:01:00Z", "accepted": False, "sequence": 3},
             ],
         )
         round_item = data["rounds"][1]
@@ -1048,8 +1099,9 @@ class TestRoundSharePercent(unittest.TestCase):
                     "timestamp": "2026-06-05T17:55:00Z",
                     "accepted": True,
                     "submit": {"difficulty": 1.0},
+                    "sequence": 1,
                 },
-                {"timestamp": "2026-06-05T18:01:00Z", "accepted": False},
+                {"timestamp": "2026-06-05T18:01:00Z", "accepted": False, "sequence": 2},
             ],
         )
         round_item = data["rounds"][1]
