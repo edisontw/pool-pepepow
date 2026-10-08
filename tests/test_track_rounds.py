@@ -56,6 +56,21 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(latest["shares"]["recent-wallet"]["share_score"], 3.5)
             self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1)
 
+    def test_malformed_row_inside_candidate_window_blocks_coverage(self):
+        lines = [
+            json.dumps({"sequence": 1, "timestamp": "2026-10-08T12:00:00Z"}),
+            "{malformed row",
+            json.dumps({"sequence": 2, "timestamp": "2026-10-08T12:03:00Z"}),
+            json.dumps({"sequence": 3, "timestamp": "2026-10-08T12:05:00Z"}),
+        ]
+        source = track_rounds.analyze_share_source(lines, [], 100)
+        start = datetime.fromisoformat("2026-10-08T12:00:00+00:00")
+        end = datetime.fromisoformat("2026-10-08T12:05:00+00:00")
+        proof, reason = track_rounds.make_window_coverage(
+            source, start, end, "a" * 64, "e" * 64, "e" * 64)
+        self.assertIsNone(proof)
+        self.assertEqual(reason, "share_window_malformed_row")
+
     def test_freeze_requires_complete_share_window_coverage(self):
         cases = {
             "complete": ([
