@@ -10,8 +10,8 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/pool-pepepow
 EnvironmentFile=-/home/ubuntu/pool-pepepow/.runtime/systemd-smoke/core.env
 Environment=PEPEPOW_LIVE_STRATUM_RUNTIME_DIR=/home/ubuntu/pool-pepepow/.runtime/live-stratum
-ExecStart=/opt/pepepow-pool/ops/scripts/live-stratum.sh accepted-candidates
-ExecStart=/opt/pepepow-pool/ops/scripts/live-stratum.sh track-rounds
+ExecStart=/home/ubuntu/pool-pepepow/ops/scripts/live-stratum.sh accepted-candidates
+ExecStart=/home/ubuntu/pool-pepepow/ops/scripts/live-stratum.sh track-rounds
 StandardOutput=journal
 StandardError=journal
 
