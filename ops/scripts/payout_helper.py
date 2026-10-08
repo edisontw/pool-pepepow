@@ -1765,6 +1765,12 @@ def generate_payout_candidates(accepted_path: Path, rounds_path: Path, output_pa
                 reason = "immature_block"
             else:
                 reason = f"unconfirmed_status_{l_status}"
+        elif c_hash in rounds_map and (
+            rounds_map[c_hash].get("attribution_coverage_verified") is False
+            or rounds_map[c_hash].get("attribution_status") == "unverified"
+        ):
+            status = "blocked"
+            reason = "blocked_unverified_round_attribution"
         else:
             # Enforce validations
             # 1. Coinbase miner reward validation

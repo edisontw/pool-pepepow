@@ -133,6 +133,32 @@ class PayoutAccountingTests(unittest.TestCase):
         with self.output_path.open("r", encoding="utf-8") as f:
             return json.load(f)["items"][0]
 
+    def test_unverified_round_attribution_is_held_from_payout(self):
+        candidate_hash = "a" * 64
+        self._write_single_confirmed_candidate(candidate_hash, [{"value": 1000.0}])
+        self.rounds_path.write_text(json.dumps({"rounds": [{
+            "candidate_hash": candidate_hash,
+            "total_share_score": 5.0,
+            "total_share_count": 1,
+            "shares": {"walletA": {"share_count": 1, "share_score": 5.0}},
+            "attribution_status": "unverified",
+            "attribution_coverage_verified": False,
+        }]}), encoding="utf-8")
+        old_min = os.environ.get("PEPEPOW_MIN_PAYOUT")
+        os.environ["PEPEPOW_MIN_PAYOUT"] = "1"
+        try:
+            self.assertEqual(payout_helper.generate_payout_candidates(
+                self.accepted_path, self.rounds_path, self.output_path
+            ), 0)
+        finally:
+            if old_min is None:
+                os.environ.pop("PEPEPOW_MIN_PAYOUT", None)
+            else:
+                os.environ["PEPEPOW_MIN_PAYOUT"] = old_min
+        item = json.loads(self.output_path.read_text(encoding="utf-8"))["items"][0]
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["reason"], "blocked_unverified_round_attribution")
+
     def test_payout_candidates_cli_skips_concurrent_invocation(self):
         lock = payout_helper.NonBlockingFileLock(payout_helper.payout_candidates_lock_path(self.output_path))
         self.assertTrue(lock.acquire())

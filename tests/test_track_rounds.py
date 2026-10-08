@@ -17,6 +17,58 @@ import track_rounds  # noqa: E402
 
 
 class TrackRoundsTests(unittest.TestCase):
+    def test_freeze_requires_complete_share_window_coverage(self):
+        cases = {
+            "complete": ([
+                {"sequence": 1, "timestamp": "2026-06-05T17:54:00Z", "accepted": False},
+                {"sequence": 2, "wallet": "window-wallet", "timestamp": "2026-06-05T17:56:00Z",
+                 "accepted": True, "submit": {"difficulty": 2.0}},
+                {"sequence": 3, "timestamp": "2026-06-05T18:01:00Z", "accepted": False},
+            ], None, "ok", 1),
+            "partial": ([
+                {"sequence": 1, "wallet": "window-wallet", "timestamp": "2026-06-05T17:56:00Z",
+                 "accepted": True, "submit": {"difficulty": 2.0}},
+                {"sequence": 2, "timestamp": "2026-06-05T18:01:00Z", "accepted": False},
+            ], None, "incomplete", 0),
+            "truncated": ([
+                {"sequence": 1, "timestamp": "2026-06-05T17:54:00Z", "accepted": False},
+                {"sequence": 2, "wallet": "window-wallet", "timestamp": "2026-06-05T17:56:00Z",
+                 "accepted": True, "submit": {"difficulty": 2.0}},
+                {"sequence": 3, "timestamp": "2026-06-05T18:01:00Z", "accepted": False},
+            ], 2, "incomplete", 0),
+        }
+        for name, (events, max_lines, expected_status, expected_records) in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                candidates = root / "accepted-candidates.json"
+                share_log = root / "share-events.jsonl"
+                rounds = root / "rounds-snapshot.json"
+                ledger = root / "round-attribution.jsonl"
+                candidates.write_text(json.dumps({"accepted_candidates": [
+                    {"candidate_hash": "f" * 64, "lifecycle_status": "confirmed",
+                     "submit_timestamp": "2026-06-05T17:55:00Z", "mining_mode": "pool"},
+                    {"candidate_hash": "a" * 64, "lifecycle_status": "confirmed",
+                     "submit_timestamp": "2026-06-05T18:00:00Z", "mining_mode": "pool"},
+                ]}), encoding="utf-8")
+                share_log.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+                argv = ["track_rounds.py", "--accepted-candidates", str(candidates),
+                        "--share-log", str(share_log), "--output", str(rounds),
+                        "--attribution-ledger", str(ledger)]
+                if max_lines is not None:
+                    argv.extend(["--max-share-lines", str(max_lines)])
+                previous = sys.argv
+                sys.argv = argv
+                try:
+                    self.assertEqual(track_rounds.main(), 0)
+                finally:
+                    sys.argv = previous
+                output = json.loads(rounds.read_text(encoding="utf-8"))
+                target = output["rounds"][1]
+                self.assertEqual(target["attribution_status"], expected_status)
+                self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()) if ledger.exists() else 0,
+                                 expected_records)
+                self.assertEqual(target.get("attribution_coverage_verified", False), name == "complete")
+
     def test_live_stratum_defaults_attribution_ledger_to_runtime(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -73,6 +125,13 @@ class TrackRoundsTests(unittest.TestCase):
             ledger = root / "canonical" / "round-attribution.jsonl"
             (runtime / "accepted-candidates.json").write_text(json.dumps({
                 "accepted_candidates": [{
+                    "candidate_hash": "e" * 64,
+                    "lifecycle_status": "confirmed",
+                    "matched_height": 0,
+                    "submit_timestamp": "2026-06-05T12:08:00Z",
+                    "confirmations": 120,
+                    "mining_mode": "pool",
+                }, {
                     "candidate_hash": "a" * 64,
                     "lifecycle_status": "confirmed",
                     "matched_height": 1,
@@ -81,14 +140,14 @@ class TrackRoundsTests(unittest.TestCase):
                     "mining_mode": "pool",
                 }],
             }), encoding="utf-8")
-            (runtime / "share-events.jsonl").write_text(json.dumps({
-                "wallet": "pool-wallet",
-                "worker": "rig1",
-                "timestamp": "2026-06-05T12:09:00Z",
-                "accepted": True,
-                "miningMode": "pool",
-                "submit": {"difficulty": 2.5},
-            }) + "\n", encoding="utf-8")
+            with (runtime / "share-events.jsonl").open("w", encoding="utf-8") as stream:
+                stream.write(json.dumps({"sequence": 1, "timestamp": "2026-06-05T12:07:00Z", "accepted": False}) + "\n")
+                stream.write(json.dumps({
+                    "sequence": 2, "wallet": "pool-wallet", "worker": "rig1",
+                    "timestamp": "2026-06-05T12:09:00Z", "accepted": True,
+                    "miningMode": "pool", "submit": {"difficulty": 2.5},
+                }) + "\n")
+                stream.write(json.dumps({"sequence": 3, "timestamp": "2026-06-05T12:11:00Z", "accepted": False}) + "\n")
             script = Path(__file__).resolve().parents[1] / "ops" / "scripts" / "live-stratum.sh"
             env = dict(os.environ)
             env["PEPEPOW_LIVE_STRATUM_RUNTIME_DIR"] = str(runtime)
@@ -97,8 +156,9 @@ class TrackRoundsTests(unittest.TestCase):
             (runtime / "share-events.jsonl").unlink()
             subprocess.run([str(script), "track-rounds"], env=env, check=True, capture_output=True, text=True)
             snapshot = json.loads((runtime / "rounds-snapshot.json").read_text(encoding="utf-8"))
-            round_item = snapshot["rounds"][0]
+            round_item = snapshot["rounds"][1]
             self.assertTrue(round_item["attribution_persisted"])
+            self.assertTrue(round_item["attribution_coverage_verified"])
             self.assertEqual(round_item["shares"]["pool-wallet"]["share_score"], 2.5)
             self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1)
 
@@ -111,6 +171,9 @@ class TrackRoundsTests(unittest.TestCase):
             ledger = root / "round-attribution.jsonl"
             candidate_hash = "a" * 64
             candidates = {"accepted_candidates": [
+                {"candidate_hash": "e" * 64, "lifecycle_status": "confirmed",
+                 "matched_height": 0, "submit_timestamp": "2026-06-05T12:05:00Z",
+                 "confirmations": 120, "mining_mode": "pool"},
                 {"candidate_hash": candidate_hash, "lifecycle_status": "confirmed",
                  "matched_height": 1, "submit_timestamp": "2026-06-05T12:10:00Z",
                  "confirmations": 120, "mining_mode": "pool"},
@@ -136,21 +199,23 @@ class TrackRoundsTests(unittest.TestCase):
                 return json.loads(out_path.read_text(encoding="utf-8"))
 
             share_path.write_text("\n".join([
+                json.dumps({"sequence": 1, "timestamp": "2026-06-05T12:04:00Z", "accepted": False}),
                 json.dumps({"wallet": "pool-wallet", "worker": "rig1",
                             "timestamp": "2026-06-05T12:09:00Z", "accepted": True,
-                            "miningMode": "pool", "submit": {"difficulty": 2.5}}),
+                            "miningMode": "pool", "sequence": 2, "submit": {"difficulty": 2.5}}),
                 json.dumps({"wallet": "solo-wallet", "timestamp": "2026-06-05T12:09:30Z",
-                            "accepted": True, "miningMode": "solo",
+                            "accepted": True, "sequence": 3, "miningMode": "solo",
                             "submit": {"difficulty": 100.0}}),
                 json.dumps({"wallet": "after-solo", "timestamp": "2026-06-05T12:15:00Z",
-                            "accepted": True, "miningMode": "pool",
+                            "accepted": True, "sequence": 4, "miningMode": "pool",
                             "submit": {"difficulty": 1.0}}),
+                json.dumps({"sequence": 5, "timestamp": "2026-06-05T12:21:00Z", "accepted": False}),
             ]) + "\n", encoding="utf-8")
             initial_rounds = run()["rounds"]
-            first = initial_rounds[0]
+            first = initial_rounds[1]
             self.assertEqual(first["shares"]["pool-wallet"]["share_score"], 2.5)
             self.assertNotIn("solo-wallet", first["shares"])
-            self.assertEqual(initial_rounds[1]["shares"]["after-solo"]["share_count"], 1)
+            self.assertEqual(initial_rounds[2]["shares"]["after-solo"]["share_count"], 1)
             self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
             frozen_record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
             self.assertFalse(track_rounds.append_attribution(ledger, frozen_record))
@@ -161,7 +226,7 @@ class TrackRoundsTests(unittest.TestCase):
 
             # Raw source disappears; the frozen ledger continues to supply exact weights.
             share_path.unlink()
-            second = run()["rounds"][0]
+            second = run()["rounds"][1]
             self.assertTrue(second["attribution_persisted"])
             self.assertEqual(second["shares"], first["shares"])
             self.assertEqual(second["total_share_score"], 2.5)
@@ -171,7 +236,7 @@ class TrackRoundsTests(unittest.TestCase):
             share_path.write_text("{malformed\n" + json.dumps({
                 "wallet": "other", "timestamp": "2026-06-05T12:09:00Z", "accepted": True,
                 "submit": {"difficulty": 99.0}}) + "\n", encoding="utf-8")
-            third = run()["rounds"][0]
+            third = run()["rounds"][1]
             self.assertEqual(third["shares"], first["shares"])
             self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 2)
 
@@ -193,7 +258,8 @@ class TrackRoundsTests(unittest.TestCase):
             finally:
                 sys.argv = old_argv
             round_item = json.loads(out_path.read_text(encoding="utf-8"))["rounds"][0]
-            self.assertEqual(round_item["attribution_status"], "empty")
+            self.assertEqual(round_item["attribution_status"], "incomplete")
+            self.assertEqual(round_item["attribution_reason"], "share_window_start_unbounded")
             self.assertEqual(round_item["total_share_count"], 0)
             self.assertEqual(round_item["shares"], {})
 
@@ -291,6 +357,7 @@ class TrackRoundsTests(unittest.TestCase):
                     "accepted": True,
                     "submit": {"difficulty": 3.0},
                 },
+                {"timestamp": "2026-06-05T12:16:00Z", "accepted": False},
             ]
             with share_log.open("w", encoding="utf-8") as f:
                 for s in shares:
@@ -387,6 +454,7 @@ class TrackRoundsTests(unittest.TestCase):
             self.assertEqual(r3["total_share_count"], 1)
             self.assertEqual(r3["total_share_score"], 3.0)
             self.assertEqual(r3["attribution_status"], "ok")
+            self.assertTrue(r3["attribution_coverage_verified"])
             self.assertIsNone(r3["attribution_reason"])
             self.assertEqual(data["shareLogLinesRead"], len(shares))
             self.assertEqual(data["parsedAcceptedShares"], 4)
@@ -807,12 +875,14 @@ class TestRoundSharePercent(unittest.TestCase):
                 ]
             },
             shares=[
+                {"timestamp": "2026-06-05T17:54:00Z", "accepted": False},
                 {
                     "wallet": "walletWindow",
                     "timestamp": "2026-06-05T17:56:00Z",
                     "accepted": True,
                     "submit": {"difficulty": 2.5},
-                }
+                },
+                {"timestamp": "2026-06-05T18:01:00Z", "accepted": False},
             ],
         )
         round_item = data["rounds"][1]
@@ -820,6 +890,7 @@ class TestRoundSharePercent(unittest.TestCase):
         self.assertEqual(round_item["total_share_count"], 1)
         self.assertEqual(round_item["shares"]["walletWindow"]["share_score"], 2.5)
         self.assertEqual(round_item["attribution_status"], "ok")
+        self.assertTrue(round_item["attribution_coverage_verified"])
         self.assertIsNone(round_item["attribution_reason"])
 
     def test_confirmed_round_receives_shares_from_rotated_segment(self):
@@ -855,6 +926,12 @@ class TestRoundSharePercent(unittest.TestCase):
                 }, f)
             with rotated_log.open("w", encoding="utf-8") as f:
                 f.write(json.dumps({
+                    "sequence": 1,
+                    "timestamp": "2026-06-05T17:54:00Z",
+                    "accepted": False,
+                }) + "\n")
+                f.write(json.dumps({
+                    "sequence": 2,
                     "wallet": "walletWindow",
                     "timestamp": "2026-06-05T17:56:00Z",
                     "accepted": True,
@@ -862,6 +939,7 @@ class TestRoundSharePercent(unittest.TestCase):
                 }) + "\n")
             with share_log.open("w", encoding="utf-8") as f:
                 f.write(json.dumps({
+                    "sequence": 3,
                     "wallet": "walletLater",
                     "timestamp": "2026-06-05T18:05:00Z",
                     "accepted": True,
@@ -886,12 +964,13 @@ class TestRoundSharePercent(unittest.TestCase):
 
             data = json.loads(out_path.read_text(encoding="utf-8"))
             round_item = data["rounds"][1]
-            self.assertEqual(data["shareLogLinesRead"], 2)
+            self.assertEqual(data["shareLogLinesRead"], 3)
             self.assertEqual(data["shareLogSegmentCount"], 2)
             self.assertEqual(round_item["candidate_hash"], "hash-window")
             self.assertEqual(round_item["total_share_count"], 1)
             self.assertEqual(round_item["shares"]["walletWindow"]["share_score"], 2.5)
             self.assertEqual(round_item["attribution_status"], "ok")
+            self.assertTrue(round_item["attribution_coverage_verified"])
             self.assertIsNone(round_item["attribution_reason"])
 
     def test_empty_confirmed_round_old_timestamp_marks_tail_too_short(self):
@@ -917,7 +996,7 @@ class TestRoundSharePercent(unittest.TestCase):
         round_item = data["rounds"][0]
         self.assertEqual(round_item["total_share_count"], 0)
         self.assertEqual(round_item["attribution_status"], "incomplete")
-        self.assertEqual(round_item["attribution_reason"], "share_log_tail_too_short")
+        self.assertEqual(round_item["attribution_reason"], "share_window_start_unbounded")
 
     def test_empty_confirmed_round_with_covered_window_marks_no_shares(self):
         data = self._run_track(
@@ -941,7 +1020,8 @@ class TestRoundSharePercent(unittest.TestCase):
         )
         round_item = data["rounds"][0]
         self.assertEqual(round_item["total_share_count"], 1)
-        self.assertEqual(round_item["attribution_status"], "ok")
+        self.assertEqual(round_item["attribution_status"], "incomplete")
+        self.assertEqual(round_item["attribution_reason"], "share_window_start_unbounded")
 
         data = self._run_track(
             candidates_data={
@@ -968,7 +1048,8 @@ class TestRoundSharePercent(unittest.TestCase):
                     "timestamp": "2026-06-05T17:55:00Z",
                     "accepted": True,
                     "submit": {"difficulty": 1.0},
-                }
+                },
+                {"timestamp": "2026-06-05T18:01:00Z", "accepted": False},
             ],
         )
         round_item = data["rounds"][1]
@@ -1098,8 +1179,8 @@ class TestRoundSharePercent(unittest.TestCase):
             existing_output=existing_output,
         )
         round_item = data["rounds"][0]
-        self.assertEqual(round_item["attribution_status"], "preserved")
-        self.assertEqual(round_item["attribution_reason"], "preserved_existing_attribution_after_tail_short")
+        self.assertEqual(round_item["attribution_status"], "unverified")
+        self.assertEqual(round_item["attribution_reason"], "snapshot_attribution_source_unverifiable")
         self.assertTrue(round_item["attribution_preserved"])
         self.assertIn("attribution_preserved_at", round_item)
         self.assertEqual(round_item["shares"], existing_output["rounds"][0]["shares"])
@@ -1142,7 +1223,7 @@ class TestRoundSharePercent(unittest.TestCase):
         round_item = data["rounds"][0]
         self.assertEqual(round_item["total_share_count"], 0)
         self.assertEqual(round_item["attribution_status"], "incomplete")
-        self.assertEqual(round_item["attribution_reason"], "share_log_tail_too_short")
+        self.assertEqual(round_item["attribution_reason"], "share_window_start_unbounded")
         self.assertNotIn("attribution_preserved", round_item)
         self.assertEqual(data["preservedRoundAttributionCount"], 0)
         self.assertEqual(data["incompleteConfirmedRoundCount"], 1)
@@ -1192,13 +1273,12 @@ class TestRoundSharePercent(unittest.TestCase):
             existing_output=existing_output,
         )
         round_item = data["rounds"][0]
-        self.assertEqual(round_item["attribution_status"], "ok")
-        self.assertIsNone(round_item["attribution_reason"])
-        self.assertNotIn("walletOld", round_item["shares"])
-        self.assertEqual(round_item["shares"]["walletNew"]["share_count"], 1)
+        self.assertEqual(round_item["attribution_status"], "unverified")
+        self.assertEqual(round_item["attribution_reason"], "snapshot_attribution_source_unverifiable")
+        self.assertIn("walletOld", round_item["shares"])
         self.assertEqual(round_item["total_share_count"], 1)
-        self.assertEqual(round_item["total_share_score"], 3.0)
-        self.assertEqual(data["preservedRoundAttributionCount"], 0)
+        self.assertEqual(round_item["total_share_score"], 1.0)
+        self.assertEqual(data["preservedRoundAttributionCount"], 1)
 
     def test_solo_shares_and_candidates_excluded_from_pool_rounds(self):
         data = self._run_track(

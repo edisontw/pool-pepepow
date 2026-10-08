@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -105,6 +106,199 @@ def tail_share_log_segments(active_log_path: Path, max_lines: int) -> tuple[list
     return selected, len(segments)
 
 
+def analyze_share_source(lines: list[str], paths: list[Path], max_lines: int) -> dict[str, Any]:
+    """Describe whether the loaded event stream has detectable holes or truncation."""
+    rotated_ranges: list[tuple[int, int]] = []
+    pattern = re.compile(r"^share-events\.(\d{20})-(\d{20})\.jsonl$")
+    for path in paths:
+        match = pattern.fullmatch(path.name)
+        if match:
+            rotated_ranges.append((int(match.group(1)), int(match.group(2))))
+    rotated_ranges.sort()
+    segments_contiguous = all(
+        current[0] == previous[1] + 1
+        for previous, current in zip(rotated_ranges, rotated_ranges[1:])
+    )
+
+    timestamps: list[datetime] = []
+    sequences: list[int] = []
+    missing_sequence_count = 0
+    malformed_rows = 0
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            malformed_rows += 1
+            continue
+        timestamp = parse_timestamp(
+            item.get("timestamp") or item.get("submittedAt") or item.get("observedAt")
+        ) if isinstance(item, dict) else datetime.min.replace(tzinfo=timezone.utc)
+        if timestamp == datetime.min.replace(tzinfo=timezone.utc):
+            malformed_rows += 1
+        else:
+            timestamps.append(timestamp)
+        sequence = item.get("sequence") if isinstance(item, dict) else None
+        if isinstance(sequence, int) and not isinstance(sequence, bool):
+            sequences.append(sequence)
+        else:
+            missing_sequence_count += 1
+
+    truncated = max_lines <= 0 or len(lines) >= max_lines
+    if sequences and not missing_sequence_count:
+        sequence_contiguous = all(b == a + 1 for a, b in zip(sequences, sequences[1:]))
+        if rotated_ranges:
+            sequence_contiguous = sequence_contiguous and sequences[0] == rotated_ranges[0][0]
+            sequence_contiguous = sequence_contiguous and all(
+                last in sequences for _first, last in rotated_ranges
+            )
+    elif not sequences and not rotated_ranges:
+        # A single unrotated fixture or legacy file can be bounded by its first
+        # and last event timestamps. Production Stratum rows also carry sequence.
+        sequence_contiguous = True
+    else:
+        sequence_contiguous = False
+
+    return {
+        "first_event_at": min(timestamps).isoformat().replace("+00:00", "Z") if timestamps else None,
+        "last_event_at": max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else None,
+        "first_sequence": sequences[0] if sequences else None,
+        "last_sequence": sequences[-1] if sequences else None,
+        "tail_truncated": truncated,
+        "segments_contiguous": segments_contiguous,
+        "sequence_contiguous": sequence_contiguous,
+        "malformed_rows": malformed_rows,
+        "complete": bool(lines) and not truncated and segments_contiguous
+        and sequence_contiguous and malformed_rows == 0,
+    }
+
+
+def make_window_coverage(
+    source: dict[str, Any],
+    start_ts: datetime,
+    end_ts: datetime,
+    candidate_hash: str,
+    previous_boundary: str | None,
+    window_start_candidate_hash: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    minimum = datetime.min.replace(tzinfo=timezone.utc)
+    if start_ts == minimum:
+        return None, "share_window_start_unbounded"
+    if source.get("tail_truncated"):
+        return None, "share_log_tail_truncated"
+    if not source.get("segments_contiguous"):
+        return None, "share_log_segment_gap"
+    if not source.get("sequence_contiguous"):
+        return None, "share_log_sequence_gap_or_missing_sequence"
+    if source.get("malformed_rows"):
+        return None, "share_log_malformed_rows"
+    if not source.get("complete"):
+        return None, "share_log_coverage_unavailable"
+    first_event = parse_timestamp(source.get("first_event_at"))
+    last_event = parse_timestamp(source.get("last_event_at"))
+    if first_event == minimum or start_ts < first_event:
+        return None, "share_window_starts_before_retained_events"
+    if last_event == minimum or end_ts > last_event:
+        return None, "share_window_ends_after_retained_events"
+    proof = {
+        "status": "complete",
+        "candidate_hash": candidate_hash,
+        "previous_pool_boundary": previous_boundary,
+        "window_start_candidate_hash": window_start_candidate_hash,
+        "start_after": start_ts.isoformat().replace("+00:00", "Z"),
+        "end_at": end_ts.isoformat().replace("+00:00", "Z"),
+        "source_first_event_at": source["first_event_at"],
+        "source_last_event_at": source["last_event_at"],
+        "source_first_sequence": source.get("first_sequence"),
+        "source_last_sequence": source.get("last_sequence"),
+        "segments_contiguous": True,
+        "sequence_contiguous": True,
+        "tail_truncated": False,
+        "malformed_rows": 0,
+    }
+    return proof, None
+
+
+def attribution_digest(record: dict[str, Any]) -> str:
+    payload = {
+        key: record.get(key)
+        for key in ("candidate_hash", "total_share_count", "total_share_score", "wallet_count", "worker_count", "shares")
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def saved_window_coverage_is_valid(
+    proof: Any,
+    start_ts: datetime,
+    end_ts: datetime,
+    candidate_hash: str,
+    previous_boundary: str | None,
+    window_start_candidate_hash: str | None,
+    attribution: dict[str, Any],
+) -> bool:
+    if not isinstance(proof, dict) or proof.get("status") != "complete":
+        return False
+    minimum = datetime.min.replace(tzinfo=timezone.utc)
+    proof_start = parse_timestamp(proof.get("start_after"))
+    proof_end = parse_timestamp(proof.get("end_at"))
+    first_event = parse_timestamp(proof.get("source_first_event_at"))
+    last_event = parse_timestamp(proof.get("source_last_event_at"))
+    return (
+        proof.get("candidate_hash") == candidate_hash
+        and proof.get("previous_pool_boundary") == previous_boundary
+        and proof.get("window_start_candidate_hash") == window_start_candidate_hash
+        and proof_start == start_ts
+        and proof_end == end_ts
+        and first_event != minimum
+        and last_event != minimum
+        and first_event <= start_ts <= end_ts <= last_event
+        and proof.get("segments_contiguous") is True
+        and proof.get("sequence_contiguous") is True
+        and proof.get("tail_truncated") is False
+        and proof.get("malformed_rows") == 0
+        and proof.get("attribution_sha256") == attribution_digest(attribution)
+    )
+
+
+def attribution_matches(record: Any, round_item: dict[str, Any]) -> bool:
+    if not valid_attribution(record):
+        return False
+    for field in ("total_share_count", "wallet_count", "worker_count"):
+        try:
+            if int(record.get(field) or 0) != int(round_item.get(field) or 0):
+                return False
+        except (TypeError, ValueError):
+            return False
+    try:
+        if not math.isclose(float(record.get("total_share_score") or 0),
+                            float(round_item.get("total_share_score") or 0), rel_tol=1e-9, abs_tol=1e-9):
+            return False
+    except (TypeError, ValueError):
+        return False
+    left, right = record.get("shares"), round_item.get("shares")
+    if not isinstance(left, dict) or not isinstance(right, dict) or left.keys() != right.keys():
+        return False
+    numeric_fields = ("share_score", "share_percent")
+    for wallet in left:
+        a, b = left[wallet], right[wallet]
+        if int(a.get("share_count") or 0) != int(b.get("share_count") or 0):
+            return False
+        if any(not math.isclose(float(a.get(field) or 0), float(b.get(field) or 0), rel_tol=1e-9, abs_tol=1e-6)
+               for field in numeric_fields):
+            return False
+        aw, bw = a.get("workers"), b.get("workers")
+        if not isinstance(aw, dict) or not isinstance(bw, dict) or aw.keys() != bw.keys():
+            return False
+        for worker in aw:
+            x, y = aw[worker], bw[worker]
+            if int(x.get("share_count") or 0) != int(y.get("share_count") or 0):
+                return False
+            if any(not math.isclose(float(x.get(field) or 0), float(y.get(field) or 0), rel_tol=1e-9, abs_tol=1e-6)
+                   for field in ("share_score", "share_percent", "wallet_share_percent")):
+                return False
+    return True
+
+
 def valid_attribution(record: Any) -> bool:
     if not isinstance(record, dict) or not isinstance(record.get("shares"), dict):
         return False
@@ -165,8 +359,12 @@ def valid_attribution(record: Any) -> bool:
             and math.isclose(wallet_percent, 100.0, abs_tol=0.001))
 
 
-def attribution_record(round_item: dict[str, Any], previous_boundary: Any) -> dict[str, Any]:
-    return {
+def attribution_record(
+    round_item: dict[str, Any],
+    previous_boundary: Any,
+    source_coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    record = {
         "schema_version": 1,
         "miningMode": "pool",
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -180,6 +378,9 @@ def attribution_record(round_item: dict[str, Any], previous_boundary: Any) -> di
         "worker_count": round_item["worker_count"],
         "shares": round_item["shares"],
     }
+    if source_coverage is not None:
+        record["share_window_coverage"] = source_coverage
+    return record
 
 
 def load_attribution_ledger(path: Path) -> dict[str, dict[str, Any]]:
@@ -331,9 +532,11 @@ def main() -> int:
     shares: list[dict[str, Any]] = []
     tail_lines: list[str] = []
     share_log_segment_count = 0
+    share_log_paths: list[Path] = []
     if args.share_log:
         share_log_path = Path(args.share_log)
         if share_log_path.exists() or share_log_path.parent.exists():
+            share_log_paths = share_log_segments(share_log_path)
             tail_lines, share_log_segment_count = tail_share_log_segments(
                 share_log_path,
                 max_share_lines,
@@ -435,6 +638,8 @@ def main() -> int:
                     }
                 )
 
+    share_source = analyze_share_source(tail_lines, share_log_paths, max_share_lines)
+
     shares.sort(key=lambda s: s["timestamp"])
     share_timestamps = [s["timestamp"] for s in shares]
     earliest_share_ts = min(share_timestamps) if share_timestamps else None
@@ -463,18 +668,13 @@ def main() -> int:
     def attribution_for(
         status: str | None,
         total_shares: int,
-        candidate_ts: datetime,
+        coverage: dict[str, Any] | None,
+        coverage_reason: str | None,
     ) -> tuple[str, str | None]:
+        if coverage is None:
+            return "incomplete", coverage_reason or "share_window_coverage_unavailable"
         if total_shares > 0:
             return "ok", None
-        if not tail_lines:
-            return "incomplete", "no_share_log_loaded"
-        if (
-            status == "confirmed"
-            and earliest_share_ts is not None
-            and candidate_ts < earliest_share_ts
-        ):
-            return "incomplete", "share_log_tail_too_short"
         return "empty", "no_shares_in_round_window"
 
     preserved_now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -482,19 +682,24 @@ def main() -> int:
     # Compute rounds and attribute shares
     rounds_list = []
     previous_boundary_ts = datetime.min.replace(tzinfo=timezone.utc)
+    previous_boundary_hash: str | None = None
     attribution_added = 0
     for i, c in enumerate(round_cands):
         c_ts = parse_timestamp(c.get("submit_timestamp"))
         if c.get("lifecycle_status") == "orphan":
             if i == 0:
                 start_ts = datetime.min.replace(tzinfo=timezone.utc)
+                window_start_candidate_hash = None
             else:
                 start_ts = parse_timestamp(
                     round_cands[i - 1].get("submit_timestamp")
                 )
+                window_start_candidate_hash = str(round_cands[i - 1].get("candidate_hash") or "") or None
         else:
             start_ts = previous_boundary_ts
+            window_start_candidate_hash = previous_boundary_hash
             previous_boundary_ts = c_ts
+            previous_boundary_hash = str(c.get("candidate_hash") or "") or None
 
         # Attribute shares in range (start_ts, c_ts]
         attributed_shares: dict[str, Any] = {}
@@ -558,10 +763,21 @@ def main() -> int:
                 )
 
         status = c.get("lifecycle_status")
+        candidate_hash = str(c.get("candidate_hash") or "")
+        record_previous_boundary = previous_boundary_hash if status == "orphan" else window_start_candidate_hash
+        window_coverage, window_coverage_reason = make_window_coverage(
+            share_source,
+            start_ts,
+            c_ts,
+            candidate_hash,
+            record_previous_boundary,
+            window_start_candidate_hash,
+        )
         attribution_status, attribution_reason = attribution_for(
             status,
             total_round_shares,
-            c_ts,
+            window_coverage,
+            window_coverage_reason,
         )
         round_item = {
             "round_id": c.get("candidate_hash"),
@@ -577,34 +793,50 @@ def main() -> int:
             "worker_count": len(unique_workers_in_round),
             "attribution_status": attribution_status,
             "attribution_reason": attribution_reason,
+            "attribution_coverage_verified": False,
         }
+        if window_coverage is not None:
+            window_coverage["attribution_sha256"] = attribution_digest(round_item)
 
-        candidate_hash = str(c.get("candidate_hash") or "")
+        existing_round = existing_rounds_by_hash.get(str(c.get("candidate_hash")))
         persisted = ledger_by_hash.get(candidate_hash)
-        if persisted is None:
-            # A previously generated rounds snapshot is canonical historical evidence;
-            # migrate valid weights once so subsequent refreshes no longer depend on it.
-            old = existing_rounds_by_hash.get(candidate_hash)
-            if (re.fullmatch(r"[0-9a-fA-F]{64}", candidate_hash)
-                    and (str(c.get("mining_mode") or c.get("miningMode") or "pool").strip().lower() == "pool")
-                    and isinstance(old, dict) and valid_attribution(old)):
-                persisted_record = attribution_record(old, None)
-                try:
-                    if append_attribution(ledger_path, persisted_record):
-                        attribution_added += 1
-                    ledger_by_hash[candidate_hash] = persisted_record
-                except (OSError, ValueError) as exc:
-                    print(f"Error persisting attribution for {candidate_hash}: {exc}", file=sys.stderr)
-                    return 1
-                persisted = persisted_record
-        if persisted is None and candidate_hash and re.fullmatch(r"[0-9a-fA-F]{64}", candidate_hash):
-            if valid_attribution(round_item):
-                previous_hash = None
-                for earlier in reversed(round_cands[:i]):
-                    if earlier.get("lifecycle_status") != "orphan":
-                        previous_hash = earlier.get("candidate_hash")
-                        break
-                record = attribution_record(round_item, previous_hash)
+        coverage_verified = False
+        verified_coverage = None
+        if persisted is None and window_coverage is not None and valid_attribution(round_item):
+            coverage_verified = True
+            verified_coverage = window_coverage
+
+        if persisted is not None:
+            if window_coverage is not None and attribution_matches(persisted, round_item):
+                coverage_verified = True
+                verified_coverage = window_coverage
+            else:
+                persisted_coverage = persisted.get("share_window_coverage")
+                if saved_window_coverage_is_valid(
+                    persisted_coverage, start_ts, c_ts, candidate_hash,
+                    record_previous_boundary, window_start_candidate_hash,
+                    persisted,
+                ):
+                    coverage_verified = True
+                    verified_coverage = persisted_coverage
+                elif isinstance(existing_round, dict) and attribution_matches(persisted, existing_round):
+                    snapshot_coverage = existing_round.get("attribution_source_coverage")
+                    if saved_window_coverage_is_valid(
+                        snapshot_coverage, start_ts, c_ts, candidate_hash,
+                        record_previous_boundary, window_start_candidate_hash,
+                        persisted,
+                    ):
+                        coverage_verified = True
+                        verified_coverage = snapshot_coverage
+
+        elif candidate_hash and re.fullmatch(r"[0-9a-fA-F]{64}", candidate_hash):
+            old_is_valid = isinstance(existing_round, dict) and valid_attribution(existing_round)
+            old_coverage = existing_round.get("attribution_source_coverage") if isinstance(existing_round, dict) else None
+            if (old_is_valid and saved_window_coverage_is_valid(
+                    old_coverage, start_ts, c_ts, candidate_hash,
+                    record_previous_boundary, window_start_candidate_hash, existing_round,
+            )):
+                record = attribution_record(existing_round, record_previous_boundary, old_coverage)
                 try:
                     if append_attribution(ledger_path, record):
                         attribution_added += 1
@@ -613,45 +845,61 @@ def main() -> int:
                     print(f"Error persisting attribution for {candidate_hash}: {exc}", file=sys.stderr)
                     return 1
                 persisted = record
+                coverage_verified = True
+                verified_coverage = old_coverage
+            if persisted is None and window_coverage is not None and old_is_valid and attribution_matches(existing_round, round_item):
+                record = attribution_record(existing_round, record_previous_boundary, window_coverage)
+                try:
+                    if append_attribution(ledger_path, record):
+                        attribution_added += 1
+                    ledger_by_hash[candidate_hash] = record
+                except (OSError, ValueError) as exc:
+                    print(f"Error persisting attribution for {candidate_hash}: {exc}", file=sys.stderr)
+                    return 1
+                persisted = record
+                coverage_verified = True
+                verified_coverage = window_coverage
+            elif persisted is None and window_coverage is not None and valid_attribution(round_item):
+                record = attribution_record(round_item, record_previous_boundary, window_coverage)
+                try:
+                    if append_attribution(ledger_path, record):
+                        attribution_added += 1
+                    ledger_by_hash[candidate_hash] = record
+                except (OSError, ValueError) as exc:
+                    print(f"Error persisting attribution for {candidate_hash}: {exc}", file=sys.stderr)
+                    return 1
+                persisted = record
+                coverage_verified = True
+                verified_coverage = window_coverage
+
         if persisted is not None:
             round_item["shares"] = persisted["shares"]
             for field in ("total_share_count", "total_share_score", "wallet_count", "worker_count"):
                 round_item[field] = persisted[field]
-            round_item["attribution_status"] = "ok"
-            round_item["attribution_reason"] = None
             round_item["attribution_persisted"] = True
+            round_item["attribution_coverage_verified"] = coverage_verified
+            if coverage_verified:
+                round_item["attribution_status"] = "ok"
+                round_item["attribution_reason"] = None
+                round_item["attribution_source_coverage"] = verified_coverage
+            else:
+                round_item["attribution_status"] = "unverified"
+                round_item["attribution_reason"] = "existing_attribution_source_unverifiable"
+        elif isinstance(existing_round, dict) and valid_attribution(existing_round):
+            # Keep historical snapshot values visible, but never promote them to
+            # immutable accounting without matching, complete share-window evidence.
+            round_item["shares"] = existing_round["shares"]
+            for field in ("total_share_count", "total_share_score", "wallet_count", "worker_count"):
+                round_item[field] = existing_round[field]
+            round_item["attribution_status"] = "unverified"
+            round_item["attribution_reason"] = "snapshot_attribution_source_unverifiable"
+            round_item["attribution_preserved"] = True
+            round_item["attribution_preserved_at"] = preserved_now
 
-        existing_round = existing_rounds_by_hash.get(str(c.get("candidate_hash")))
-        if (
-            persisted is None
-            and total_round_shares == 0
-            and attribution_reason == "share_log_tail_too_short"
-            and isinstance(existing_round, dict)
-        ):
-            try:
-                existing_share_count = int(existing_round.get("total_share_count") or 0)
-            except (TypeError, ValueError):
-                existing_share_count = 0
-            existing_shares = existing_round.get("shares")
-            if existing_share_count > 0 and isinstance(existing_shares, dict):
-                round_item["shares"] = existing_shares
-                round_item["total_share_count"] = existing_share_count
-                try:
-                    round_item["total_share_score"] = float(existing_round.get("total_share_score") or 0.0)
-                except (TypeError, ValueError):
-                    round_item["total_share_score"] = 0.0
-                try:
-                    round_item["wallet_count"] = int(existing_round.get("wallet_count") or len(existing_shares))
-                except (TypeError, ValueError):
-                    round_item["wallet_count"] = len(existing_shares)
-                try:
-                    round_item["worker_count"] = int(existing_round.get("worker_count") or 0)
-                except (TypeError, ValueError):
-                    round_item["worker_count"] = 0
-                round_item["attribution_status"] = "preserved"
-                round_item["attribution_reason"] = "preserved_existing_attribution_after_tail_short"
-                round_item["attribution_preserved"] = True
-                round_item["attribution_preserved_at"] = preserved_now
+        if persisted is None:
+            round_item["attribution_coverage_verified"] = coverage_verified
+            if coverage_verified:
+                round_item["attribution_source_coverage"] = verified_coverage
 
         # Immature / orphan / chain_match_found safety
         if status in {"immature", "orphan", "chain_match_found"}:
@@ -676,6 +924,15 @@ def main() -> int:
         for item in rounds_list
         if item.get("status") == "confirmed" and item.get("attribution_status") == "empty"
     )
+    unverified_attribution_count = sum(
+        1 for item in rounds_list if item.get("attribution_coverage_verified") is not True
+        and item.get("total_share_count", 0) > 0
+    )
+    unverified_confirmed_round_count = sum(
+        1 for item in rounds_list
+        if item.get("status") == "confirmed" and item.get("attribution_coverage_verified") is not True
+        and item.get("total_share_count", 0) > 0
+    )
     output_data = {
         "updated_at": datetime.now(timezone.utc)
         .isoformat()
@@ -699,7 +956,10 @@ def main() -> int:
         "newAttributionRecords": attribution_added,
         "incompleteConfirmedRoundCount": incomplete_confirmed_round_count,
         "emptyConfirmedRoundCount": empty_confirmed_round_count,
+        "unverifiedAttributionCount": unverified_attribution_count,
+        "unverifiedConfirmedRoundCount": unverified_confirmed_round_count,
         "maxShareLines": max_share_lines,
+        "shareLogCoverage": share_source,
         "rounds": rounds_list,
     }
 
