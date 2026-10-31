@@ -11,6 +11,7 @@ POOL_CORE_DIR = Path(__file__).resolve().parents[1] / "apps" / "pool-core"
 sys.path.insert(0, str(POOL_CORE_DIR))
 
 from accounting import build_activity_snapshot  # noqa: E402
+from activity_engine import ActivityEngine  # noqa: E402
 from activity_ingest import load_share_events, parse_share_event  # noqa: E402
 from producer import SnapshotProducer  # noqa: E402
 
@@ -25,6 +26,38 @@ FIXTURE_PATH = (
 
 
 class PoolCoreAccountingTests(unittest.TestCase):
+    def test_late_old_event_does_not_corrupt_rolling_windows(self):
+        old_event = parse_share_event(
+            {
+                "timestamp": "2026-04-13T09:00:00Z",
+                "wallet": "PEPEPOWWalletDelayed444444444444",
+                "worker": "worker01",
+            }
+        )
+        current_event = parse_share_event(
+            {
+                "timestamp": "2026-04-13T10:13:30Z",
+                "wallet": "PEPEPOWWalletDelayed444444444444",
+                "worker": "worker01",
+            }
+        )
+        engine = ActivityEngine()
+        engine.ingest_event(current_event)
+        engine.ingest_event(old_event)
+
+        snapshot = engine.build_snapshot(
+            now=datetime(2026, 4, 13, 10, 14, 0, tzinfo=timezone.utc),
+            activity_mode="testing-local-ingest",
+            activity_data_source="local-jsonl-share-log",
+            synthetic_job_mode="disabled",
+            share_validation_mode="none",
+        )
+        rolling = snapshot["miners"]["PEPEPOWWalletDelayed444444444444"]["summary"]["rolling"]
+
+        self.assertEqual(rolling["1m"]["shareCount"], 1)
+        self.assertEqual(rolling["5m"]["shareCount"], 1)
+        self.assertEqual(rolling["15m"]["shareCount"], 1)
+
     def test_accounting_parses_jsonl_and_aggregates_active_counts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             share_log_path = Path(tmp_dir) / "activity-events.jsonl"

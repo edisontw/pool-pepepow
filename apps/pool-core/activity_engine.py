@@ -45,6 +45,15 @@ class WindowCounter:
         self._last_seen_second: int | None = None
 
     def increment(self, second: int, count: int = 1) -> None:
+        # Replay can deliver an old event after newer events have already
+        # advanced this counter. Ignore events that are outside the current
+        # window; otherwise they can overwrite a newer ring bucket and leave
+        # the rolling total inconsistent with the other window sizes.
+        if (
+            self._last_seen_second is not None
+            and second <= self._last_seen_second - self.window_seconds
+        ):
+            return
         self._advance(second)
         index = second % self.window_seconds
         if self._stamps[index] != second:
