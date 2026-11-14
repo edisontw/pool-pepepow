@@ -30,3 +30,34 @@ PEPEPOW_ROUND_ATTRIBUTION_LEDGER=/var/lib/pepepow-pool/round-attribution.jsonl \
 ```
 
 Confirmed Pool candidates blocked with `missing_share_data` have historical attribution unavailable; keep them blocked and outside normal unpaid-ready reporting unless a valid frozen attribution record exists. Do not infer wallet weights or treat their aggregate reward as payable.
+
+## Pinned payout change address (Pool and SOLO)
+
+`pepepow-pool-auto-payout.service.d/fixed-change.conf` enables an opt-in
+wallet-owned change destination for both existing Pool and canonical SOLO payouts.
+Install it as an *additional* drop-in in
+`/etc/systemd/system/pepepow-pool-auto-payout.service.d/`; do not replace
+`solo-canonical.conf` or change the current payout guard settings.
+
+- `PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED=true` enables the guarded raw-tx path.
+- `PEPEPOW_PAYOUT_FIXED_CHANGE_ADDRESS=PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho`
+  pins change to the existing pool reward address. It must equal the configured
+  pool coinbase reward address and be `ismine=true` in the sending wallet.
+- The payout destination and exact amount remain unchanged. If Core does not
+  support required legacy raw RPCs or a transaction cannot be signed and
+  verified, the send fails closed without falling back to `sendtoaddress`.
+- For ambiguous broadcast failures, an unresolved payment intent blocks
+  automatic re-sending until reconciled; raw sends do not carry the former
+  `sendtoaddress` wallet comment. Do not bypass this guard.
+- Disable via an override `PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED=false` only
+  for rollback to the prior transaction-building behavior; retain every payment
+  audit file. Do not manually resend an unresolved transaction.
+
+Before enabling, run
+`python3 -m unittest tests.test_payout_fixed_change tests.test_payout_accounting`,
+verify the actual daemon supports `createrawtransaction`,
+`fundrawtransaction`, `decoderawtransaction`, `signrawtransaction`,
+`sendrawtransaction`, and confirm
+`PEPEPOW-cli validateaddress PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho`
+returns both `isvalid=true` and `ismine=true`. Never send a live
+transaction solely to test this deployment.
