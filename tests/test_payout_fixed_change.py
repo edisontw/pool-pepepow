@@ -17,15 +17,18 @@ POOL = "PKTwq3nHNxwcVgDX4QwVxQGX5DYjJB8nho"
 RANDOM_CHANGE = "PAnotherWalletOwnedChangeAddress"
 INPUT_TXID = "a" * 64
 SENT_TXID = "b" * 64
-VIN = [{"txid": INPUT_TXID, "vout": 0, "sequence": 4294967295}]
+VIN = [{"txid": INPUT_TXID, "vout": 0, "sequence": 4294967294}]
 
 
 def out(address, value):
     return {"value": value, "scriptPubKey": {"addresses": [address]}}
 
 
-def decoded(outputs, txid=None):
-    result = {"version": 1, "locktime": 0, "vin": VIN, "vout": outputs}
+def decoded(outputs, txid=None, *, sequence=4294967294, locktime=1):
+    result = {
+        "version": 1, "locktime": locktime,
+        "vin": [dict(VIN[0], sequence=sequence)], "vout": outputs,
+    }
     if txid:
         result["txid"] = txid
     return result
@@ -33,7 +36,9 @@ def decoded(outputs, txid=None):
 
 class FakeCli:
     def __init__(self, *, foreign_change=False, owner=True, fee="0.001", complete=True,
-                 broadcast_timeout=False, no_change=False):
+                 broadcast_timeout=False, no_change=False, funded_sequence=4294967294,
+                 rebuilt_sequence=4294967294, signed_sequence=4294967294,
+                 signed_locktime=1):
         self.calls = []
         self.foreign_change = foreign_change
         self.owner = owner
@@ -41,6 +46,10 @@ class FakeCli:
         self.complete = complete
         self.broadcast_timeout = broadcast_timeout
         self.no_change = no_change
+        self.funded_sequence = funded_sequence
+        self.rebuilt_sequence = rebuilt_sequence
+        self.signed_sequence = signed_sequence
+        self.signed_locktime = signed_locktime
 
     def __call__(self, argv, **kwargs):
         method = argv[1]
@@ -56,13 +65,18 @@ class FakeCli:
                 outputs = [out(RECIPIENT, 50)] if self.no_change else [
                     out(RECIPIENT, 50), out(RANDOM_CHANGE, 49.999)
                 ]
-                result = decoded(outputs)
+                result = decoded(outputs, sequence=self.funded_sequence)
             else:
                 outputs = [out(RECIPIENT, 50)] if self.no_change else [
                     out(RECIPIENT, 50),
                     out(RANDOM_CHANGE if self.foreign_change else POOL, 49.999),
                 ]
-                result = decoded(outputs, SENT_TXID if argv[2] == "signed-raw" else None)
+                is_signed = argv[2] == "signed-raw"
+                result = decoded(
+                    outputs, SENT_TXID if is_signed else None,
+                    sequence=self.signed_sequence if is_signed else self.rebuilt_sequence,
+                    locktime=self.signed_locktime if is_signed else 1,
+                )
         elif method == "signrawtransaction":
             result = {"hex": "signed-raw", "complete": self.complete}
         elif method == "sendrawtransaction":
@@ -89,6 +103,34 @@ class FixedChangePayoutTests(unittest.TestCase):
         rebuild = next(call for call in fake.calls if call[1] == "createrawtransaction" and call[2] != "[]")
         self.assertEqual(json.loads(rebuild[3]), {RECIPIENT: "50", POOL: "49.999"})
         self.assertNotIn("sendtoaddress", commands)
+        create_calls = [c for c in fake.calls if c[1] == "createrawtransaction"]
+        self.assertEqual([call[-1] for call in create_calls], ["1", "1"])
+        self.assertEqual(VIN[0]["sequence"], 4294967294)
+
+
+    def test_non_reproducible_input_sequence_fails_closed(self):
+        fake = FakeCli(funded_sequence=4294967295)
+        with self.assertRaisesRegex(FixedChangeError, "unsupported_input"):
+            self.run_fake(fake)
+        self.assertNotIn("sendrawtransaction", [call[1] for call in fake.calls])
+
+    def test_rebuilt_sequence_mismatch_fails_before_signing(self):
+        fake = FakeCli(rebuilt_sequence=4294967295)
+        with self.assertRaisesRegex(FixedChangeError, "rebuilt_sequence_changed"):
+            self.run_fake(fake)
+        self.assertNotIn("signrawtransaction", [call[1] for call in fake.calls])
+
+    def test_signed_sequence_tampering_blocks_broadcast(self):
+        fake = FakeCli(signed_sequence=4294967295)
+        with self.assertRaisesRegex(FixedChangeError, "signed_sequence_changed"):
+            self.run_fake(fake)
+        self.assertNotIn("sendrawtransaction", [call[1] for call in fake.calls])
+
+    def test_signed_locktime_tampering_blocks_broadcast(self):
+        fake = FakeCli(signed_locktime=0)
+        with self.assertRaisesRegex(FixedChangeError, "signed_locktime_changed"):
+            self.run_fake(fake)
+        self.assertNotIn("sendrawtransaction", [call[1] for call in fake.calls])
 
     def test_foreign_change_output_never_broadcasts(self):
         fake = FakeCli(foreign_change=True)
