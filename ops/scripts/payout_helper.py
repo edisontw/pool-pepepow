@@ -907,6 +907,11 @@ def find_wallet_tx_for_intent(intent: dict[str, Any]) -> tuple[bool | None, dict
         (False, None) if wallet history is readable and definitely no matching tx exists.
         (None, None) if wallet history is unreachable/unreadable.
     """
+    # Raw transactions have no sendtoaddress comment. Absence from wallet
+    # history is not proof that an uncertain broadcast did not succeed.
+    # Require operator txid reconciliation rather than clearing the intent.
+    if intent.get("payoutMode") == "fixed_change":
+        return None, None
     txs = wallet_readonly_call("listtransactions", ["*", 1000, 0, True])
     if not isinstance(txs, list):
         return None, None
@@ -3855,19 +3860,28 @@ def payout_wallet_send_once(
                 "wallet": wallet,
                 "amount": expected_amount,
                 "status": "intent",
+                "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                 "timestamp": generated_at,
             }
             append_payment_action(actions_log_path, intent_action)
 
             send_attempted = True
             try:
-                proc = subprocess.run(
-                    [cli_path, "sendtoaddress", wallet, str(expected_amount), intent_id],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
+                if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true":
+                    from payout_fixed_change import send_fixed_change
+
+                    change_address = locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ADDRESS", "").strip()
+                    if not change_address or change_address != expected_pool_reward_address():
+                        raise ValueError("fixed_change_address_missing_or_reward_wallet_mismatch")
+                    proc = send_fixed_change(cli_path, wallet, str(expected_amount), change_address)
+                else:
+                    proc = subprocess.run(
+                        [cli_path, "sendtoaddress", wallet, str(expected_amount), intent_id],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
             except (subprocess.TimeoutExpired, TimeoutError) as exc:
                 warnings.append("sendtoaddress timed out")
                 ambiguous_action = {
@@ -3877,6 +3891,7 @@ def payout_wallet_send_once(
                     "wallet": wallet,
                     "amount": expected_amount,
                     "status": "ambiguous",
+                    "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                     "error": "timeout_expired",
                     "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 }
@@ -4178,6 +4193,7 @@ def payout_wallet_send_aggregated_once(
                 "wallet": wallet,
                 "amount": expected_amount,
                 "status": "intent",
+                "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                 "sourceCandidateIds": source_candidate_ids,
                 "sourceCount": len(source_candidate_ids),
                 "timestamp": generated_at,
@@ -4189,13 +4205,21 @@ def payout_wallet_send_aggregated_once(
 
             send_attempted = True
             try:
-                proc = subprocess.run(
-                    [cli_path, "sendtoaddress", wallet, send_amount, intent_id],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
+                if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true":
+                    from payout_fixed_change import send_fixed_change
+
+                    change_address = locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ADDRESS", "").strip()
+                    if not change_address or change_address != expected_pool_reward_address():
+                        raise ValueError("fixed_change_address_missing_or_reward_wallet_mismatch")
+                    proc = send_fixed_change(cli_path, wallet, send_amount, change_address)
+                else:
+                    proc = subprocess.run(
+                        [cli_path, "sendtoaddress", wallet, send_amount, intent_id],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
             except (subprocess.TimeoutExpired, TimeoutError) as exc:
                 warnings.append("sendtoaddress timed out")
                 ambiguous_action = {
@@ -4205,6 +4229,7 @@ def payout_wallet_send_aggregated_once(
                     "wallet": wallet,
                     "amount": expected_amount,
                     "status": "ambiguous",
+                    "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                     "error": "timeout_expired",
                     "sourceCandidateIds": source_candidate_ids,
                     "sourceCount": len(source_candidate_ids),
