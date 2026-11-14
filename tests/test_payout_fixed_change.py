@@ -135,5 +135,35 @@ class FixedChangePayoutTests(unittest.TestCase):
         self.assertEqual(fake.calls, [])
 
 
+    def test_uncertain_raw_broadcast_is_not_cleared_by_missing_wallet_history(self):
+        import tempfile
+        import payout_helper
+        with tempfile.TemporaryDirectory() as directory:
+            actions = Path(directory) / "payment-actions.jsonl"
+            payout_helper.append_payment_action(actions, {
+                "action": "payment_intent",
+                "intent_id": "intent:raw:1",
+                "candidate_id": "height-1",
+                "wallet": RECIPIENT,
+                "amount": 50,
+                "status": "intent",
+                "payoutMode": "fixed_change",
+            })
+            payout_helper.append_payment_action(actions, {
+                "action": "payment_intent_ambiguous",
+                "intent_id": "intent:raw:1",
+                "candidate_id": "height-1",
+                "wallet": RECIPIENT,
+                "amount": 50,
+                "status": "ambiguous",
+                "payoutMode": "fixed_change",
+            })
+            with patch("payout_helper.wallet_readonly_call", return_value=[]):
+                summary = payout_helper.reconcile_unresolved_payment_intents(actions)
+            self.assertEqual(summary["pendingCount"], 1)
+            self.assertEqual(summary["reconciledFailed"], 0)
+            self.assertEqual(len(payout_helper.get_unresolved_payment_intents(actions)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
