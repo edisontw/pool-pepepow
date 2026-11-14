@@ -21,6 +21,11 @@ from typing import Any
 
 _ATOM = Decimal("0.00000001")
 _TXID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+# Legacy Core FundTransaction adds inputs with sequence max_uint32 - 1.
+# Its createrawtransaction RPC only reproduces that sequence with nonzero locktime.
+# Locktime 1 is already final on the live PEPEPOW chain and is preserved end-to-end.
+_LEGACY_SEQUENCE = 4294967294
+_COMPAT_LOCKTIME = 1
 
 
 class FixedChangeError(RuntimeError):
@@ -114,7 +119,8 @@ def send_fixed_change(cli_path: str, recipient: str, amount: str,
             raise FixedChangeError("fixed_change_address_not_wallet_owned_or_invalid")
 
     raw = _rpc(cli_path, "createrawtransaction", "[]",
-               json.dumps({recipient: format(payout, "f")}, separators=(",", ":")))
+               json.dumps({recipient: format(payout, "f")}, separators=(",", ":")),
+               str(_COMPAT_LOCKTIME))
     funded = _json_rpc(cli_path, "fundrawtransaction", raw)
     funded_hex = funded.get("hex")
     change_pos = funded.get("changepos")
@@ -129,14 +135,14 @@ def send_fixed_change(cli_path: str, recipient: str, amount: str,
     outputs = decoded.get("vout")
     if not isinstance(inputs, list) or not inputs or not isinstance(outputs, list):
         raise FixedChangeError("fixed_change_invalid_funding")
-    if decoded.get("version") != 1 or decoded.get("locktime") != 0:
+    if decoded.get("version") != 1 or decoded.get("locktime") != _COMPAT_LOCKTIME:
         raise FixedChangeError("fixed_change_unsupported_raw_transaction")
 
     selected = []
     for item in inputs:
         if not isinstance(item, dict) or not isinstance(item.get("txid"), str) or not _TXID_RE.fullmatch(item["txid"]):
             raise FixedChangeError("fixed_change_invalid_input")
-        if type(item.get("vout")) is not int or item["vout"] < 0 or item.get("sequence") != 4294967295:
+        if type(item.get("vout")) is not int or item["vout"] < 0 or item.get("sequence") != _LEGACY_SEQUENCE:
             raise FixedChangeError("fixed_change_unsupported_input")
         selected.append({"txid": item["txid"], "vout": item["vout"]})
     if len({(i["txid"], i["vout"]) for i in selected}) != len(selected):
@@ -165,8 +171,13 @@ def send_fixed_change(cli_path: str, recipient: str, amount: str,
                 recipient: format(payout, "f"),
                 change_address: format(change_amount, "f"),
             }, separators=(",", ":")),
+            str(_COMPAT_LOCKTIME),
         )
         rebuilt = _json_rpc(cli_path, "decoderawtransaction", unsigned)
+        if rebuilt.get("version") != 1 or rebuilt.get("locktime") != _COMPAT_LOCKTIME:
+            raise FixedChangeError("fixed_change_rebuilt_locktime_changed")
+        if any(i.get("sequence") != _LEGACY_SEQUENCE for i in rebuilt.get("vin", [])):
+            raise FixedChangeError("fixed_change_rebuilt_sequence_changed")
         if [
             (v.get("txid"), v.get("vout")) for v in rebuilt.get("vin", [])
         ] != [(v["txid"], v["vout"]) for v in selected]:
@@ -178,6 +189,10 @@ def send_fixed_change(cli_path: str, recipient: str, amount: str,
         raise FixedChangeError("fixed_change_sign_incomplete")
     signed_hex = signed["hex"]
     checked = _json_rpc(cli_path, "decoderawtransaction", signed_hex)
+    if checked.get("version") != 1 or checked.get("locktime") != _COMPAT_LOCKTIME:
+        raise FixedChangeError("fixed_change_signed_locktime_changed")
+    if any(i.get("sequence") != _LEGACY_SEQUENCE for i in checked.get("vin", [])):
+        raise FixedChangeError("fixed_change_signed_sequence_changed")
     if [
         (v.get("txid"), v.get("vout")) for v in checked.get("vin", [])
     ] != [(v["txid"], v["vout"]) for v in selected]:
