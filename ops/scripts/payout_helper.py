@@ -907,6 +907,11 @@ def find_wallet_tx_for_intent(intent: dict[str, Any]) -> tuple[bool | None, dict
         (False, None) if wallet history is readable and definitely no matching tx exists.
         (None, None) if wallet history is unreachable/unreadable.
     """
+    # Raw transactions have no sendtoaddress comment. Absence from wallet
+    # history is not proof that an uncertain broadcast did not succeed.
+    # Require operator txid reconciliation rather than clearing the intent.
+    if intent.get("payoutMode") == "fixed_change":
+        return None, None
     txs = wallet_readonly_call("listtransactions", ["*", 1000, 0, True])
     if not isinstance(txs, list):
         return None, None
@@ -3855,6 +3860,7 @@ def payout_wallet_send_once(
                 "wallet": wallet,
                 "amount": expected_amount,
                 "status": "intent",
+                "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                 "timestamp": generated_at,
             }
             append_payment_action(actions_log_path, intent_action)
@@ -3885,6 +3891,7 @@ def payout_wallet_send_once(
                     "wallet": wallet,
                     "amount": expected_amount,
                     "status": "ambiguous",
+                    "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                     "error": "timeout_expired",
                     "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 }
@@ -4186,6 +4193,7 @@ def payout_wallet_send_aggregated_once(
                 "wallet": wallet,
                 "amount": expected_amount,
                 "status": "intent",
+                "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                 "sourceCandidateIds": source_candidate_ids,
                 "sourceCount": len(source_candidate_ids),
                 "timestamp": generated_at,
@@ -4221,6 +4229,7 @@ def payout_wallet_send_aggregated_once(
                     "wallet": wallet,
                     "amount": expected_amount,
                     "status": "ambiguous",
+                    "payoutMode": "fixed_change" if locked_env.get("PEPEPOW_PAYOUT_FIXED_CHANGE_ENABLED", "false").strip().lower() == "true" else "sendtoaddress",
                     "error": "timeout_expired",
                     "sourceCandidateIds": source_candidate_ids,
                     "sourceCount": len(source_candidate_ids),
