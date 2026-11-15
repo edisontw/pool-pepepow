@@ -89,8 +89,11 @@ class TestWalletReconciliation(unittest.TestCase):
             )
 
         self.assertEqual(recon["status"], "ok")
-        self.assertEqual(recon["reconciliationDifference"], 0.0)
+        self.assertIsNone(recon["reconciliationDifference"])
+        self.assertIsNone(recon["actualLiquidityChange"])
+        self.assertFalse(recon["balanceReconciled"])
         self.assertAlmostEqual(recon["expectedLiquidityChange"], 599.999, places=3)
+        self.assertAlmostEqual(recon["minerNetFlow24h"], 599.999, places=3)
         self.assertEqual(recon["unrecordedExternalTransactions"], 0)
         self.assertEqual(recon["duplicateOrExcessPayouts"], 0)
 
@@ -153,8 +156,9 @@ class TestWalletReconciliation(unittest.TestCase):
 
         self.assertEqual(recon["status"], "ok")
         self.assertAlmostEqual(recon["expectedLiquidityChange"], -500.001, places=3)
-        self.assertAlmostEqual(recon["actualLiquidityChange"], -500.001, places=3)
-        self.assertEqual(recon["reconciliationDifference"], 0.0)
+        self.assertIsNone(recon["actualLiquidityChange"])
+        self.assertIsNone(recon["reconciliationDifference"])
+        self.assertAlmostEqual(recon["minerNetFlow24h"], -500.001, places=3)
 
     @patch("payout_helper.wallet_readonly_call")
     @patch("payout_helper.daemon_readonly_call")
@@ -443,6 +447,73 @@ class TestWalletReconciliation(unittest.TestCase):
         self.assertEqual(recon["poolMatureBlockCount"], 1)
         self.assertEqual(recon["soloMatureBlockCount"], 1)
 
+
+    @patch("payout_helper.wallet_readonly_call")
+    def test_masternode_coinbase_and_receive_excluded_from_miner_growth(self, mock_wallet):
+        # Same coinbase transaction can pay the pool miner output and a masternode.
+        # Separate non-mining receipts must not inflate public miner growth.
+        txs = [
+            {"txid": "shared_coinbase", "blockhash": "block_pool", "vout": 0,
+             "address": pool_wallet_monitor.POOL_WALLET, "category": "generate",
+             "amount": 1000.0, "confirmations": 150, "time": self.t_now - 1000},
+            {"txid": "shared_coinbase", "blockhash": "block_pool", "vout": 1,
+             "address": "P_MASTERNODE_OTHER", "category": "generate",
+             "amount": 350.0, "confirmations": 150, "time": self.t_now - 1000},
+            {"txid": "mn_receive", "address": "P_MASTERNODE_OTHER",
+             "category": "receive", "amount": 150.0,
+             "confirmations": 150, "time": self.t_now - 900},
+        ]
+        mock_wallet.side_effect = lambda method, params: txs if method == "listtransactions" else {}
+        with patch("pool_wallet_monitor.RUNTIME_DIR", self.tmp_path):
+            recon = pool_wallet_monitor.compute_wallet_reconciliation(
+                now_dt=self.now_dt, wallet_address=pool_wallet_monitor.POOL_WALLET,
+            )
+        self.assertEqual(recon["poolRewardsReceived"], 1000.0)
+        self.assertEqual(recon["soloRewardsReceived"], 0.0)
+        self.assertEqual(recon["nonPoolCoinbaseRewardsExcluded"], 350.0)
+        self.assertEqual(recon["nonPoolCoinbaseCount"], 1)
+        self.assertEqual(recon["otherIncome"], 500.0)
+        self.assertEqual(recon["minerRewardReceipts24h"], 1000.0)
+        self.assertEqual(recon["minerNetFlow24h"], 1000.0)
+        self.assertEqual(recon["expectedLiquidityChange"], 1500.0)
+        self.assertIsNone(recon["actualLiquidityChange"])
+        self.assertIsNone(recon["reconciliationDifference"])
+
+    @patch("payout_helper.wallet_readonly_call")
+    def test_public_growth_uses_miner_rewards_not_explorer_total_received(self, mock_wallet):
+        txs = [
+            {"txid": "pool_income", "address": pool_wallet_monitor.POOL_WALLET,
+             "category": "generate", "amount": 1000.0,
+             "confirmations": 150, "time": self.t_now - 600},
+            {"txid": "mn_income", "address": "P_OTHER", "category": "receive",
+             "amount": 350.0, "confirmations": 150, "time": self.t_now - 500},
+        ]
+        mock_wallet.side_effect = lambda method, params: txs if method == "listtransactions" else {}
+        explorer_payload = {"totalReceived": 999999.0, "balance": 50000.0, "totalSent": 100.0}
+        def fake_fetch(url):
+            if "/ext/getaddress/" in url:
+                return explorer_payload
+            if "/api/getblockcount" in url:
+                return 5234703
+            return 50000.0
+        with (
+            patch("pool_wallet_monitor.RUNTIME_DIR", self.tmp_path),
+            patch("pool_wallet_monitor.STATE_PATH", self.tmp_path / "monitor-state.json"),
+            patch("pool_wallet_monitor.SNAPSHOT_PATH", self.tmp_path / "monitor-output.json"),
+            patch("pool_wallet_monitor.PUBLIC_SNAPSHOT_PATH", self.tmp_path / "public-output.json"),
+            patch("pool_wallet_monitor.fetch_json_or_text", side_effect=fake_fetch),
+            patch("pool_wallet_monitor.datetime") as clock,
+        ):
+            clock.now.return_value = self.now_dt
+            # Keep datetime construction/fromtimestamp behavior under the clock patch.
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            clock.fromtimestamp.side_effect = datetime.fromtimestamp
+            snapshot = pool_wallet_monitor.build_snapshot()
+        self.assertEqual(snapshot["totalReceived"], 999999.0)
+        self.assertEqual(snapshot["poolRewardAddressReceived24h"], 1000.0)
+        self.assertEqual(snapshot["minerRewardReceipts24h"], 1000.0)
+        self.assertEqual(snapshot["minerNetFlow24h"], 1000.0)
+        self.assertFalse(snapshot["balanceReconciled"])
 
 if __name__ == "__main__":
     unittest.main()

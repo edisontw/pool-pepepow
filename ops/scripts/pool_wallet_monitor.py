@@ -235,8 +235,10 @@ def window_delta(history: list[dict[str, Any]], total_received: float | None, no
 def load_optional_notes(delta_balance: float | None, recon: dict[str, Any] | None = None) -> list[str]:
     notes: list[str] = []
     if recon and recon.get("reconciliationComplete"):
-        diff = recon.get("reconciliationDifference", 0.0)
-        if abs(diff) <= float(RECONCILIATION_TOLERANCE):
+        diff = as_number(recon.get("reconciliationDifference"))
+        if diff is None:
+            notes.append("Independent 24h balance reconciliation is not available.")
+        elif abs(diff) <= float(RECONCILIATION_TOLERANCE):
             notes.append("No unexplained wallet movement detected.")
         else:
             notes.append(f"Unexplained difference detected: {diff:+.4f} PEPEW.")
@@ -306,7 +308,7 @@ def compute_wallet_reconciliation(
     window_generates = []
     window_sends: dict[str, list[dict[str, Any]]] = defaultdict(list)
     window_receives = []
-    seen_gen_txids: set[str] = set()
+    seen_gen_outputs: set[tuple[str, Any, str]] = set()
 
     for tx in all_txs:
         if not isinstance(tx, dict):
@@ -317,8 +319,11 @@ def compute_wallet_reconciliation(
         cat = tx.get("category")
         txid = str(tx.get("txid") or "")
         if cat in ("generate", "immature"):
-            if txid and txid not in seen_gen_txids:
-                seen_gen_txids.add(txid)
+            # A coinbase may pay both the miner and a masternode in different outputs.
+            # Deduplicate output records, not an entire coinbase txid.
+            gen_key = (txid, tx.get("vout"), str(tx.get("address") or ""))
+            if txid and gen_key not in seen_gen_outputs:
+                seen_gen_outputs.add(gen_key)
                 window_generates.append(tx)
         elif cat == "send" and txid:
             window_sends[txid].append(tx)
@@ -349,6 +354,8 @@ def compute_wallet_reconciliation(
     solo_mature_count = 0
     immature_pool_count = 0
     immature_solo_count = 0
+    non_pool_coinbase_received = Decimal("0")
+    non_pool_coinbase_count = 0
 
     for g in window_generates:
         bh = str(g.get("blockhash") or "")
@@ -358,6 +365,15 @@ def compute_wallet_reconciliation(
             amt = Decimal("0")
         confirms = int(g.get("confirmations", 0))
         cat = g.get("category")
+        # Pool and SOLO templates send the miner output to the configured
+        # pool reward address. Other wallet-owned coinbase outputs (including
+        # masternode rewards) are NOT pool mining revenue.
+        output_address = str(g.get("address") or "")
+        if output_address and output_address != wallet_address:
+            if confirms >= 100 and cat == "generate":
+                non_pool_coinbase_received += amt
+                non_pool_coinbase_count += 1
+            continue
         is_solo = bh in solo_cands
 
         if confirms >= 100 and cat == "generate":
@@ -519,7 +535,7 @@ def compute_wallet_reconciliation(
             unrecorded_txids.append(txid)
 
     # 5. Other income
-    other_income = Decimal("0")
+    other_income = non_pool_coinbase_received
     for r in window_receives:
         if isinstance(r, dict):
             try:
@@ -538,8 +554,18 @@ def compute_wallet_reconciliation(
         - transaction_fees
     )
 
-    actual_liquidity_change = expected_liquidity_change
-    reconciliation_difference = actual_liquidity_change - expected_liquidity_change
+    # The event-derived expected flow is NOT an independent balance observation.
+    # Do not fabricate a zero reconciliation difference by comparing it to itself.
+    actual_liquidity_change = None
+    reconciliation_difference = None
+    miner_reward_receipts = pool_rewards_received + solo_rewards_received
+    miner_net_flow = (
+        miner_reward_receipts
+        - pool_external_payouts
+        - solo_external_payouts
+        - unrecorded_external_payouts
+        - transaction_fees
+    )
 
     unrecorded_count = len(unrecorded_txids)
     reconciliation_complete = len(errors) == 0 and unknown_output_count == 0
@@ -552,17 +578,15 @@ def compute_wallet_reconciliation(
             status_reason = errors[0]
         elif unknown_output_count > 0:
             status_reason = f"{unknown_output_count} outputs with unknown ownership"
-    elif unrecorded_count > 0 or duplicate_or_excess_payouts > 0 or abs(reconciliation_difference) > tolerance:
+    elif unrecorded_count > 0 or duplicate_or_excess_payouts > 0:
         status = "critical"
         if unrecorded_count > 0:
             status_reason = f"{unrecorded_count} unrecorded external transaction(s)"
         elif duplicate_or_excess_payouts > 0:
             status_reason = f"{duplicate_or_excess_payouts} duplicate or excess payout(s)"
-        else:
-            status_reason = f"reconciliation difference {float(reconciliation_difference):.4f} exceeds tolerance"
     else:
         status = "ok"
-        status_reason = "No unexplained wallet movement detected."
+        status_reason = "No unrecorded external sends or duplicate payment actions detected; balance change is not independently reconciled."
 
     return {
         "windowHours": window_hours,
@@ -574,13 +598,18 @@ def compute_wallet_reconciliation(
         "poolRewardsReceived": float(pool_rewards_received),
         "soloRewardsReceived": float(solo_rewards_received),
         "otherIncome": float(other_income),
+        "nonPoolCoinbaseRewardsExcluded": float(non_pool_coinbase_received),
+        "nonPoolCoinbaseCount": non_pool_coinbase_count,
+        "minerRewardReceipts24h": float(miner_reward_receipts),
+        "minerNetFlow24h": float(miner_net_flow),
         "poolExternalPayouts": float(pool_external_payouts),
         "soloExternalPayouts": float(solo_external_payouts),
         "unrecordedExternalPayouts": float(unrecorded_external_payouts),
         "transactionFees": float(transaction_fees),
         "expectedLiquidityChange": float(expected_liquidity_change),
-        "actualLiquidityChange": float(actual_liquidity_change),
-        "reconciliationDifference": float(reconciliation_difference),
+        "actualLiquidityChange": actual_liquidity_change,
+        "reconciliationDifference": reconciliation_difference,
+        "balanceReconciled": False,
         "immatureRewardTotal": float(immature_reward_total),
         "poolMatureBlockCount": pool_mature_count,
         "soloMatureBlockCount": solo_mature_count,
@@ -669,8 +698,8 @@ def build_snapshot() -> dict[str, Any]:
 
     status = recon.get("status", "ok")
     if status == "ok":
-        headline = "Reconciliation OK"
-        summary = "No unexplained wallet movement detected across 24h window."
+        headline = "Wallet activity OK"
+        summary = "No unrecorded external sends detected in reviewed activity. Independent balance reconciliation is not available."
     elif status == "warning":
         headline = "Reconciliation incomplete"
         summary = recon.get("statusReason") or "Wallet reconciliation incomplete. Some data could not be verified."
@@ -705,7 +734,9 @@ def build_snapshot() -> dict[str, Any]:
         "previousTotalReceived": previous_received,
         "deltaBalance": delta_balance,
         "deltaTotalReceived": delta_received,
-        "poolRewardAddressReceived24h": primary_delta,
+        # Do not use Explorer totalReceived here: it includes non-mining receipts
+        # such as masternode rewards sent to the wallet/address.
+        "poolRewardAddressReceived24h": recon["minerRewardReceipts24h"],
         # Reconciliation model fields
         "windowHours": recon["windowHours"],
         "windowStart": recon["windowStart"],
@@ -715,6 +746,10 @@ def build_snapshot() -> dict[str, Any]:
         "poolRewardsReceived": recon["poolRewardsReceived"],
         "soloRewardsReceived": recon["soloRewardsReceived"],
         "otherIncome": recon["otherIncome"],
+        "nonPoolCoinbaseRewardsExcluded": recon["nonPoolCoinbaseRewardsExcluded"],
+        "nonPoolCoinbaseCount": recon["nonPoolCoinbaseCount"],
+        "minerRewardReceipts24h": recon["minerRewardReceipts24h"],
+        "minerNetFlow24h": recon["minerNetFlow24h"],
         "poolExternalPayouts": recon["poolExternalPayouts"],
         "soloExternalPayouts": recon["soloExternalPayouts"],
         "unrecordedExternalPayouts": recon["unrecordedExternalPayouts"],
@@ -722,6 +757,7 @@ def build_snapshot() -> dict[str, Any]:
         "expectedLiquidityChange": recon["expectedLiquidityChange"],
         "actualLiquidityChange": recon["actualLiquidityChange"],
         "reconciliationDifference": recon["reconciliationDifference"],
+        "balanceReconciled": recon["balanceReconciled"],
         "immatureRewardTotal": recon["immatureRewardTotal"],
         "poolMatureBlockCount": recon["poolMatureBlockCount"],
         "soloMatureBlockCount": recon["soloMatureBlockCount"],
