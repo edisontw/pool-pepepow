@@ -83,6 +83,19 @@ MANUAL_SHARE_DIFFICULTY_MAX = 1_000_000.0
 MANUAL_SHARE_DIFFICULTY_WIRE_SCALE = 65536.0
 
 
+def _share_accounting_difficulty(
+    state: ConnectionState, cached_job: Any | None, fallback: float
+) -> float:
+    assigned_difficulty = getattr(cached_job, "assigned_difficulty", None)
+    if (
+        isinstance(assigned_difficulty, (int, float))
+        and math.isfinite(assigned_difficulty)
+        and assigned_difficulty > 0
+    ):
+        return float(assigned_difficulty)
+    return state.current_difficulty or fallback
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -744,7 +757,9 @@ class StratumIngressService:
                 worker=worker,
                 occurred_at=observed_at,
                 accepted=accepted_submit,
-                difficulty=state.current_difficulty or self._synthetic_difficulty(),
+                difficulty=_share_accounting_difficulty(
+                    state, cached_job, self._synthetic_difficulty()
+                ),
                 mining_mode=self._config.mining_mode,
             )
             share_event_candidate_possible = assessment.candidate_possible
@@ -875,7 +890,9 @@ class StratumIngressService:
                 "sequence": sequence,
                 "jobId": submit_job_id,
                 "jobStatus": assessment.job_status,
-                "difficulty": state.current_difficulty or self._synthetic_difficulty(),
+                "difficulty": _share_accounting_difficulty(
+                    state, cached_job, self._synthetic_difficulty()
+                ),
                 "syntheticWork": cached_job is None or cached_job.source == "synthetic",
                 "blockchainVerified": False,
                 "shareValidationMode": SHARE_VALIDATION_MODE,

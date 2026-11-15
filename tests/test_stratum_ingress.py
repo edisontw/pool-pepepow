@@ -6981,6 +6981,7 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         job = _Job()
         job.source = "daemon-template"
         job.template_anchor = "anchor-1"
+        job.assigned_difficulty = 0.25
         job.target_context = {"bits": "1d00ffff"}
         job.preimage_context = {"source": "template-derived"}
         return job
@@ -7052,6 +7053,7 @@ class LowDifficultyShareLogThrottleTests(unittest.TestCase):
         self.assertIn("targetContext", payload)
         self.assertIn("preimageContext", payload)
         self.assertNotIn("lowDifficultyShareLogSampled", payload)
+        self.assertEqual(payload["difficulty"], 0.25)
 
     def test_non_low_difficulty_rejection_still_writes_full_event(self):
         service = self._make_service(low_diff_share_full_log_every_n=10)
