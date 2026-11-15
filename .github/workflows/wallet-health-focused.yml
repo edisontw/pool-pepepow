@@ -1,5 +1,7 @@
 name: Pool wallet health focused tests
 on:
+  pull_request:
+    branches: [main]
   push:
     branches:
       - fix/wallet-health-exclude-masternode-20261115
