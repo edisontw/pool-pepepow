@@ -1,0 +1,19 @@
+name: Pool wallet health focused tests
+on:
+  push:
+    branches:
+      - fix/wallet-health-exclude-masternode-20261115
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python wallet reconciliation regression
+        run: PYTHONPATH=ops/scripts python3 -m unittest tests.test_wallet_reconciliation
+      - name: Browser JS syntax
+        run: node --check apps/frontend/site/assets/pool-wallet-watch.js
+      - name: Diff whitespace
+        run: git diff --check HEAD~1 HEAD
