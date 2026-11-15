@@ -78,14 +78,14 @@
     root.setAttribute("aria-labelledby", "pool-wallet-watch-title");
     root.innerHTML = `
       <p class="eyebrow">Pool Wallet Health</p>
-      <h3 id="pool-wallet-watch-title">24h Wallet Reconciliation</h3>
+      <h3 id="pool-wallet-watch-title">24h Miner Reward Flow</h3>
       <article class="pool-wallet-watch-hero" aria-live="polite">
         <div class="pool-wallet-watch-hero-top">
           <span class="pool-wallet-watch-status" id="pool-wallet-watch-status">Waiting for monitor</span>
-          <span class="pool-wallet-watch-diff" id="pool-wallet-watch-diff">Difference -</span>
+          <span class="pool-wallet-watch-diff" id="pool-wallet-watch-diff">Balance comparison unavailable</span>
         </div>
         <strong class="pool-wallet-watch-main" id="pool-wallet-watch-main">-</strong>
-        <span class="pool-wallet-watch-sub" id="pool-wallet-watch-expected">Expected: -</span>
+        <span class="pool-wallet-watch-sub" id="pool-wallet-watch-expected">Pool + SOLO rewards minus external sends and fees</span>
         <div class="pool-wallet-watch-stats">
           <div class="pool-wallet-watch-stat">
             <span>Pool + SOLO Rewards</span>
@@ -103,7 +103,7 @@
       </article>
       <div class="pool-wallet-watch-body">
         <article class="pool-wallet-watch-address-card">
-          <span>Pool reward address received</span>
+          <span>Pool + SOLO miner rewards received (24h)</span>
           <strong id="pool-wallet-watch-addr-received">-</strong>
           <code id="pool-wallet-watch-address">${POOL_WALLET}</code>
         </article>
@@ -198,12 +198,9 @@
       const data = await response.json();
       const status = typeof data.status === "string" ? data.status : "unknown";
 
-      const actualDelta = typeof data.actualLiquidityChange === "number"
-        ? data.actualLiquidityChange
-        : (typeof data.deltaBalance === "number" ? data.deltaBalance : null);
-
-      const expectedDelta = typeof data.expectedLiquidityChange === "number" ? data.expectedLiquidityChange : null;
-      const diff = typeof data.reconciliationDifference === "number" ? data.reconciliationDifference : 0.0;
+      // Only show the mine-reward net flow. Explorer address totalReceived
+      // and full-wallet balance include unrelated receipts, e.g. masternodes.
+      const minerNetFlow = typeof data.minerNetFlow24h === "number" ? data.minerNetFlow24h : null;
 
       const poolRewards = typeof data.poolRewardsReceived === "number" ? data.poolRewardsReceived : 0.0;
       const soloRewards = typeof data.soloRewardsReceived === "number" ? data.soloRewardsReceived : 0.0;
@@ -217,9 +214,10 @@
       const fees = typeof data.transactionFees === "number" ? data.transactionFees : 0.0;
       const unrecordedSends = typeof data.unrecordedExternalTransactions === "number" ? data.unrecordedExternalTransactions : 0;
 
-      const addrReceived = typeof data.poolRewardAddressReceived24h === "number"
-        ? data.poolRewardAddressReceived24h
-        : (typeof data.primaryWindowDeltaTotalReceived === "number" ? data.primaryWindowDeltaTotalReceived : data.deltaTotalReceived);
+      const addrReceived = typeof data.minerRewardReceipts24h === "number"
+        ? data.minerRewardReceipts24h
+        : (typeof data.poolRewardsReceived === "number" && typeof data.soloRewardsReceived === "number"
+          ? data.poolRewardsReceived + data.soloRewardsReceived : null);
 
       const headline = data.headline || statusLabel(status);
       const summary = data.summary || (status === "ok" ? "No unexplained wallet movement detected." : "Reconciliation complete.");
@@ -232,9 +230,9 @@
       if (cls) root.classList.add(cls);
 
       setText("pool-wallet-watch-status", statusLabel(status));
-      setText("pool-wallet-watch-diff", `Difference ${Math.abs(diff).toFixed(3)} PEPEW`);
-      setText("pool-wallet-watch-main", actualDelta !== null ? `Actual: ${actualDelta >= 0 ? "+" : ""}${formatPepew(actualDelta)} PEPEW` : "-");
-      setText("pool-wallet-watch-expected", expectedDelta !== null ? `Expected: ${expectedDelta >= 0 ? "+" : ""}${formatPepew(expectedDelta)} PEPEW` : "Expected: -");
+      setText("pool-wallet-watch-diff", "Balance comparison: not independently verified");
+      setText("pool-wallet-watch-main", minerNetFlow !== null ? `Net miner flow: ${minerNetFlow >= 0 ? "+" : ""}${formatPepew(minerNetFlow)} PEPEW` : "Net miner flow: -");
+      setText("pool-wallet-watch-expected", "Pool + SOLO rewards less external sends and fees (24h)");
 
       setText("pool-wallet-watch-rewards", `+${formatPepew(totalRewards)} PEPEW`);
       setText("pool-wallet-watch-payouts", `-${formatPepew(totalPayouts)} PEPEW`);
@@ -244,7 +242,7 @@
       setText("pool-wallet-watch-address", wallet);
 
       setText("pool-wallet-watch-headline", headline);
-      setText("pool-wallet-watch-sub-status", status === "ok" ? "Wallet accounting reconciled." : summary);
+      setText("pool-wallet-watch-sub-status", summary);
       setText("pool-wallet-watch-note", summary);
       setText("pool-wallet-watch-timestamp", `last 24h · Updated ${formatAge(updatedAt)}`);
 
@@ -261,9 +259,9 @@
       root.classList.remove("is-ok", "is-guarded");
       root.classList.add("is-alert");
       setText("pool-wallet-watch-status", "Waiting for monitor");
-      setText("pool-wallet-watch-diff", "Difference -");
+      setText("pool-wallet-watch-diff", "Balance comparison unavailable");
       setText("pool-wallet-watch-main", "-");
-      setText("pool-wallet-watch-expected", "Expected: -");
+      setText("pool-wallet-watch-expected", "Pool + SOLO rewards less external sends and fees (24h)");
       setText("pool-wallet-watch-headline", "No server snapshot yet");
       setText("pool-wallet-watch-sub-status", "Run live-stratum pool wallet monitor to publish the snapshot.");
       setText("pool-wallet-watch-note", "Server-side monitor snapshot is not available yet.");
