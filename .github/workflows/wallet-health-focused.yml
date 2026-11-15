@@ -18,4 +18,6 @@ jobs:
       - name: Browser JS syntax
         run: node --check apps/frontend/site/assets/pool-wallet-watch.js
       - name: Diff whitespace
-        run: git diff --check HEAD~1 HEAD
+        run: |
+          git fetch --depth=2 origin main
+          git diff --check FETCH_HEAD HEAD
